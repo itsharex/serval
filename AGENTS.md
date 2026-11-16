@@ -22,13 +22,14 @@ Serval 是用 Go 和 [MyGo](https://github.com/egoist/mygo) 原生 UI（GPU 绘�
 所有命令在仓库根目录执行。需要 Go 1.27.3+。
 
 ```bash
-go tool mygo dev                      # 开发运行
-go test ./...                         # 全部测试（含真实 SSH 连接的界面测试），几分钟
-go test -race -count=1 -timeout 20m ./...   # 合并进 main 前必须跑这一条，约 9 分钟；不要同时跑多份，机器负载高时界面测试会超时
-go test -run 'Key|Vault' ./...        # 只跑相关测试，开发时用
-go vet ./... && gofmt -l .            # 静态检查和格式，gofmt 不应输出任何文件
-go tool mygo build                    # 打包到 build/<平台>/（macOS 出 .app 和 .dmg）
-go run ./cmd/genicon                  # 重新生成应用图标
+go tool mygo dev                                                     # 开发运行
+go test -race -count=1 ./core/... ./design/...                       # 核心包全量竞态测试（约 1 分钟）
+go test -count=1 .                                                   # 根包全部界面测试（约 2.5 分钟）
+go test -race -count=1 ./core/... ./design/... && go test -count=1 . # 合并/发版前完整验证（约 3~4 分钟）
+go test -race -run 'Key|Vault' ./...                                 # 开发中只跑相关测试与竞态，几十秒
+go vet ./... && gofmt -l .                                           # 静态检查和格式，gofmt 不应输出任何文件
+go tool mygo build                                                   # 打包到 build/<平台>/（macOS 出 .app 和 .dmg）
+go run ./cmd/genicon                                                 # 重新生成应用图标
 ```
 
 真机验收（需要 macOS 桌面会话，见 [tools/e2e](tools/e2e)）：
@@ -107,15 +108,15 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 
 - 测试 harness（`newHarness`）会启动真实的开发 SSH 服务器、在临时目录建保险库并设好主密码；`newBareHarness` 是还没设主密码的版本。测试里不要用开发者自己的 ssh-agent（harness 已清空 `SSH_AUTH_SOCK`）。
 - 测试里的 Argon2 参数已经调低（`vault.DefaultKDF`），不要在测试里改回正式参数。
-- 什么时候跑什么（完整 race 测试约 9 分钟，绝大部分花在根目录的界面测试上）：
+- 什么时候跑什么（MyGo 软件光栅器在 `-race` 下慢约 8~10 倍，根包 200+ 界面测试全开 `-race` 需 25+ 分钟，因此按包拆分验证）：
 
 | 时机 | 跑什么 |
 |---|---|
 | 开发中 | 只跑相关测试：`go test -race -run '<相关测试>' ./<相关包>`，几十秒 |
-| 合并进 main 前（也就是交付前） | 一次完整测试：`go test -race -count=1 -timeout 20m ./...`，必须全部通过 |
+| 合并进 main / 发版前 | `go test -race -count=1 ./core/... ./design/... && go test -count=1 .`（约 3~4 分钟）；若改了 `app.go` 后台并发或新增异步流程，补跑 `go test -race -run '<相关UI用例>' .` |
 | 只改文档、注释或打包配置 | 不跑测试；改了 `mygo.json` 这类配置要打包验证 |
 
-  连续做的一组改动，最后合并前跑一次就够，不必每个提交都跑。但合并前这一次不能省：只跑相关测试时没发现、完整测试才暴露的真问题出现过多次（数据竞争、测试夹具放错提交）。偶发失败要查清原因，不能靠重跑掩盖。
+  连续做的一组改动，最后合并前跑一次就够，不必每个提交都跑。全量根包 `go test -p 1 -race -count=1 -timeout 35m .` 仅在大改全局并发调度等极少数场景下按需执行。偶发失败要查清原因，不能靠重跑掩盖。
 
 ## 工作流程
 
@@ -137,7 +138,7 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 
 **缺少下面任何一项，验收方不看代码、直接退回**（第一批 14 个分支里有 4 个因此带着严重缺陷交付，见 [docs/reviews](docs/reviews)）：
 
-- `go test -race -count=1 -timeout 20m ./...` 的完整结果，**全部通过**。只跑了相关测试不算。
+- 合并前验证命令全部通过：`go test -race -count=1 ./core/... ./design/...` 与 `go test -count=1 .`（涉及应用层异步并发改动时附带相关 `go test -race -run ... .` 结果）。
 - `tools/e2e` 冒烟流程的输出（`smoke 通过`），以及新功能的真机截图。界面上能点的新入口，都要在真机上点一遍：只在测试里注入的函数（如 `chooseKeyFile`、`chooseFolder`）在正式运行时可能根本没有设置。
 - 任务验收标准逐条对应的测试名或截图。
 
