@@ -263,7 +263,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
 		resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, mapHTTPError(resp.StatusCode)
+		return nil, parseAPIError(resp.StatusCode, body, c.apiKey)
 	}
 
 	var models []string
@@ -282,7 +282,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 
 	if len(models) == 0 {
 		if resp.StatusCode != http.StatusOK {
-			return nil, mapHTTPError(resp.StatusCode)
+			return nil, parseAPIError(resp.StatusCode, body, c.apiKey)
 		}
 		return nil, ErrEmptyResponse
 	}
@@ -380,25 +380,34 @@ func filterChatModelIDs(raw []string) []string {
 }
 
 var preferredModelRanks = map[string]int{
-	"gpt-5.4":           10,
-	"gpt-5.4-mini":      11,
-	"gpt-5":             12,
-	"gpt-5-mini":        13,
-	"gpt-4.1":           14,
-	"gpt-4.1-mini":      15,
-	"gpt-4o":            16,
-	"gpt-4o-mini":       17,
-	"o3":                18,
-	"o4-mini":           19,
-	"deepseek-chat":     20,
-	"deepseek-reasoner": 21,
-	"qwen3-max":         30,
-	"qwen-max":          31,
-	"qwen-plus":         32,
-	"kimi-k2":           40,
-	"moonshot-v1-auto":  41,
-	"glm-4.5":           50,
-	"glm-4-plus":        51,
+	"gpt-5.4":            10,
+	"gpt-5.4-mini":       11,
+	"gpt-5":              12,
+	"gpt-5-mini":         13,
+	"gpt-4.1":            14,
+	"gpt-4.1-mini":       15,
+	"gpt-4o":             16,
+	"gpt-4o-mini":        17,
+	"o3":                 18,
+	"o4-mini":            19,
+	"deepseek-chat":      20,
+	"deepseek-reasoner":  21,
+	"qwen3-max":          30,
+	"qwen-max":           31,
+	"qwen-plus":          32,
+	"kimi-k2":            40,
+	"moonshot-v1-auto":   41,
+	"glm-4.5":            50,
+	"glm-4-plus":         51,
+	"gemini-2.5-pro":     55,
+	"gemini-2.5-flash":   56,
+	"gemini-2.0-flash":   57,
+	"minimax-m3.1-flash": 60,
+	"minimax-m3":         61,
+	"minimax-m2.7":       62,
+	"minimax-m2.5":       63,
+	"minimax-m2.1":       64,
+	"minimax-text-01":    65,
 }
 
 func modelPreferenceRank(id string) int {
@@ -466,6 +475,9 @@ func isChatModelID(id string) bool {
 		"search-preview",
 		"computer-use",
 		"codex-mini",
+		"imagen",
+		"veo",
+		"lyria",
 	}
 	for _, kw := range excluded {
 		if strings.Contains(low, kw) {

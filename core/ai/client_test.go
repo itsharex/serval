@@ -332,3 +332,41 @@ func TestModelPrioritySortingAndSelection(t *testing.T) {
 		t.Fatalf("ChoosePreferredModel = %q, want gpt-5.4", best)
 	}
 }
+
+func TestGoogleAndMiniMaxModelFiltering(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{
+				{"id": "models/gemini-2.5-flash-preview-05-20"},
+				{"id": "models/imagen-3.0-generate-002"},
+				{"id": "models/veo-2.0-generate-001"},
+				{"id": "models/gemini-2.5-pro"},
+				{"id": "models/gemini-2.5-flash"},
+				{"id": "MiniMax-M2.5"},
+				{"id": "MiniMax-M3.1-Flash"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-test"})
+	models, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	want := []string{
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+		"MiniMax-M3.1-Flash",
+		"MiniMax-M2.5",
+		"gemini-2.5-flash-preview-05-20",
+	}
+	if !slices.Equal(models, want) {
+		t.Fatalf("ListModels got %v, want %v", models, want)
+	}
+}

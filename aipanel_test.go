@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"serval/core/ai"
+	"serval/core/hosts"
 	"serval/core/vault"
 	"serval/locales"
 )
@@ -120,8 +121,8 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 		t.Fatal("没有打开终端标签")
 	}
 
-	// 打开 AI 助手面板
-	h.click("AI 助手")
+	// 打开 AI Agent 面板（统一顶部标签栏入口）
+	h.click("AI Agent（" + shortcutText("I") + "）")
 	h.tt.Frame()
 	if !h.a.ai.open {
 		t.Fatal("AI 助手面板未打开")
@@ -673,8 +674,8 @@ func TestAIAgentMultiStepSSHInspection(t *testing.T) {
 	// 连接测试 SSH 服务器
 	h.connectDev()
 
-	// 点击“AI 助手”打开停靠侧栏并点击“这台服务配置如何”快捷提问
-	h.click("AI 助手")
+	// 点击顶部标签栏“AI Agent”打开停靠侧栏并点击“这台服务配置如何”快捷提问
+	h.click("AI Agent（" + shortcutText("I") + "）")
 	h.tt.Frame()
 	h.click("这台服务配置如何")
 
@@ -1100,5 +1101,252 @@ func TestDedupAIProfiles(t *testing.T) {
 	}
 	if deduped[1].ID != "deepseek" || deduped[1].Model != "deepseek-reasoner" || deduped[1].APIKey != "sk-ds-new" || len(deduped[1].Models) != 2 {
 		t.Fatalf("DeepSeek 合并记录异常: %+v", deduped[1])
+	}
+}
+
+func TestGoogleAndMiniMaxProviderPresets(t *testing.T) {
+	if got := providerIDFor("Google", ""); got != "google" {
+		t.Fatalf("providerIDFor(Google) = %q, want google", got)
+	}
+	if got := providerIDFor("", "https://generativelanguage.googleapis.com/v1beta/openai"); got != "google" {
+		t.Fatalf("providerIDFor(google url) = %q, want google", got)
+	}
+	if got := providerIDFor("MiniMax", ""); got != "minimax" {
+		t.Fatalf("providerIDFor(MiniMax) = %q, want minimax", got)
+	}
+	for _, u := range []string{"https://api.minimaxi.com/v1", "https://api.minimax.io/v1"} {
+		if got := providerIDFor("", u); got != "minimax" {
+			t.Fatalf("providerIDFor(%q) = %q, want minimax", u, got)
+		}
+	}
+
+	h := newHarness(t)
+	h.a.openSettings()
+	h.pump("打开设置", func() bool { return h.a.settingsPanel.open })
+	h.click("AI")
+	h.tt.Frame()
+
+	for _, want := range []struct {
+		name string
+		id   string
+		url  string
+	}{
+		{"Google", "google", "https://generativelanguage.googleapis.com/v1beta/openai"},
+		{"MiniMax", "minimax", "https://api.minimaxi.com/v1"},
+	} {
+		h.click("+ 添加提供商")
+		h.tt.Frame()
+		h.click(want.name)
+		h.tt.Frame()
+		if h.a.settingsPanel.editingProfileID != want.id || h.a.settingsPanel.aiBaseURL != want.url {
+			t.Fatalf("选择 %s 预设失败: id=%q url=%q", want.name, h.a.settingsPanel.editingProfileID, h.a.settingsPanel.aiBaseURL)
+		}
+	}
+}
+
+func TestAISessionIsolatedPerTab(t *testing.T) {
+	req1Started := make(chan struct{})
+	req1Release := make(chan struct{})
+	var reqCount atomic.Int32
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		n := reqCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			close(req1Started)
+			select {
+			case <-req1Release:
+			case <-r.Context().Done():
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]string{"content": `{"explanation":"tab1 result","command":"uptime"}`}},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `{"explanation":"tab2 result","command":"whoami"}`}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+
+	tab1 := h.connectDev()
+	h.a.openLocalTerminal()
+	if len(h.a.tabs) != 2 {
+		t.Fatalf("期望打开 2 个标签页，实际=%d", len(h.a.tabs))
+	}
+	tab2 := h.a.tabs[1]
+
+	// 切回标签 1 打开 AI 与 SFTP 抽屉，并发起异步 AI 请求
+	h.a.active = 0
+	h.a.openAI()
+	h.a.toggleFiles()
+	h.tt.Frame()
+	if !h.a.ai.open || !h.a.filesOpen {
+		t.Fatalf("标签 1 应同时展开 AI 与 SFTP: ai=%v files=%v", h.a.ai.open, h.a.filesOpen)
+	}
+	h.a.ai.query = "question from tab1"
+	h.a.runAIGenerate()
+	select {
+	case <-req1Started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("标签 1 AI 请求未启动")
+	}
+
+	// 新建或切换到标签 2：抽屉开关与会话均独立，默认关闭且不受标签 1 影响
+	h.a.active = 1
+	h.tt.Frame()
+	if h.a.ai.open || h.a.filesOpen || len(h.a.ai.turns) != 0 || h.a.ai.loading {
+		t.Fatalf("切换到标签 2 后抽屉开关和会话都应独立: aiOpen=%v filesOpen=%v loading=%v turns=%+v", h.a.ai.open, h.a.filesOpen, h.a.ai.loading, h.a.ai.turns)
+	}
+
+	// 标签 1 后台请求在切走期间完成，结果必须只落入标签 1 的会话而不污染标签 2
+	close(req1Release)
+	h.pump("标签 1 后台会话完成", func() bool {
+		s := h.a.aiSessionForTab(tab1.id)
+		return !s.loading && len(s.turns) == 1 && !s.turns[0].running
+	})
+	if h.a.ai.open || len(h.a.ai.turns) != 0 || h.a.ai.command != "" {
+		t.Fatalf("标签 1 后台完成不应污染标签 2 当前界面: open=%v turns=%+v cmd=%q", h.a.ai.open, h.a.ai.turns, h.a.ai.command)
+	}
+
+	// 在标签 2 自己打开 AI 并发起一轮对话
+	h.a.openAI()
+	h.a.ai.query = "question from tab2"
+	h.a.runAIGenerate()
+	h.pump("标签 2 会话完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+	if h.a.ai.turns[0].query != "question from tab2" || h.a.ai.command != "whoami" {
+		t.Fatalf("标签 2 对话内容异常: query=%q cmd=%q", h.a.ai.turns[0].query, h.a.ai.command)
+	}
+
+	// 关闭标签 2 的 AI 抽屉，切回标签 1 后标签 1 的 AI、SFTP 与对话依然保持打开
+	h.a.toggleAI()
+	h.tt.Frame()
+	if h.a.ai.open {
+		t.Fatal("关闭标签 2 的 AI 抽屉后应为关闭状态")
+	}
+
+	h.a.active = 0
+	h.tt.Frame()
+	if !h.a.ai.open || !h.a.filesOpen || len(h.a.ai.turns) != 1 || h.a.ai.turns[0].query != "question from tab1" || h.a.ai.command != "uptime" {
+		t.Fatalf("切回标签 1 未恢复标签 1 的抽屉和独立会话: aiOpen=%v filesOpen=%v turns=%+v cmd=%q", h.a.ai.open, h.a.filesOpen, h.a.ai.turns, h.a.ai.command)
+	}
+
+	// 验证再新开一个 SSH 标签页时，不会继承标签 1 已打开的 SFTP / AI 抽屉
+	h.a.connect(hosts.Host{ID: "dev2", Name: "dev2", Address: "127.0.0.1", Port: h.server.Addr().Port, User: "tester", Password: testPassword}, nil)
+	h.pump("连接第三个 SSH 标签页", func() bool { return len(h.a.tabs) == 3 })
+	tab3 := h.a.tabs[2]
+	h.tt.Frame()
+	if h.a.current() != tab3 || h.a.ai.open || h.a.filesOpen {
+		t.Fatalf("新开的 SSH 标签页不应继承旧标签的 AI/SFTP 展开状态: aiOpen=%v filesOpen=%v", h.a.ai.open, h.a.filesOpen)
+	}
+	h.a.closeTab(tab3)
+	h.a.active = 0
+	h.tt.Frame()
+
+	h.a.closeTab(tab1)
+	h.tt.Frame()
+	if h.a.current() != tab2 {
+		t.Fatalf("关闭标签 1 后应切到标签 2")
+	}
+	if h.a.ai.open || len(h.a.ai.turns) != 1 || h.a.ai.turns[0].query != "question from tab2" || h.a.ai.command != "whoami" {
+		t.Fatalf("关闭标签 1 不应破坏标签 2 的 AI 状态: aiOpen=%v turns=%+v cmd=%q", h.a.ai.open, h.a.ai.turns, h.a.ai.command)
+	}
+}
+
+func TestAIPerTabConversationHistoryAndNewChat(t *testing.T) {
+	ts := mockAIServer(t)
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+
+	h.connectDev()
+	h.a.openLocalTerminal()
+	h.a.active = 0
+	h.a.openAI()
+	h.tt.Frame()
+
+	// 第一条会话
+	h.a.ai.query = "第一条历史提问"
+	h.a.runAIGenerate()
+	h.pump("第一条会话完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+
+	// 点击“新开会话”按钮后当前进入空白会话，且第一条已存入本终端历史
+	h.click("新开会话")
+	h.tt.Frame()
+	if len(h.a.ai.turns) != 0 || len(h.a.ai.convs) != 1 {
+		t.Fatalf("新开会话后当前应空白且保留 1 条历史: turns=%d convs=%d", len(h.a.ai.turns), len(h.a.ai.convs))
+	}
+
+	// 第二条会话
+	h.a.ai.query = "第二条历史提问"
+	h.a.runAIGenerate()
+	h.pump("第二条会话完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+
+	// 打开历史会话列表应看到 2 条属于当前终端的历史
+	h.click("历史会话")
+	h.tt.Frame()
+	if !h.tt.HasText("本终端历史会话（2）") || !h.tt.HasText("第一条历史提问") || !h.tt.HasText("第二条历史提问") {
+		t.Fatalf("历史会话列表未正确显示两条会话: texts=%q", h.tt.Texts())
+	}
+
+	// 切换到标签 2：其历史会话应为空，完全隔离
+	h.a.active = 1
+	h.a.openAI()
+	h.tt.Frame()
+	h.click("历史会话")
+	h.tt.Frame()
+	if !h.tt.HasText("本终端历史会话（0）") {
+		t.Fatalf("标签 2 不应看到标签 1 的历史会话: texts=%q", h.tt.Texts())
+	}
+
+	// 切回标签 1，点击第一条历史会话恢复查看，再删除第二条会话
+	h.a.active = 0
+	h.tt.Frame()
+	h.click("打开会话 第一条历史提问")
+	h.tt.Frame()
+	if h.a.ai.showHistory || len(h.a.ai.turns) != 1 || h.a.ai.turns[0].query != "第一条历史提问" {
+		t.Fatalf("未能切回第一条历史会话: showHistory=%v turns=%+v", h.a.ai.showHistory, h.a.ai.turns)
+	}
+
+	h.click("历史会话")
+	h.tt.Frame()
+	secondID := ""
+	for _, c := range h.a.ai.convs {
+		if c.Title == "第二条历史提问" {
+			secondID = c.ID
+		}
+	}
+	if secondID == "" {
+		t.Fatal("找不到第二条历史会话 ID")
+	}
+	h.click("删除会话 " + secondID)
+	h.tt.Frame()
+	if len(h.a.ai.convs) != 1 || !h.tt.HasText("本终端历史会话（1）") {
+		t.Fatalf("删除历史会话后应剩 1 条: convs=%d texts=%q", len(h.a.ai.convs), h.tt.Texts())
 	}
 }

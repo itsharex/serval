@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -68,7 +69,28 @@ type aiApproval struct {
 	answer     chan bool
 }
 
-// aiPanel 是右侧停靠的 AI Agent 侧栏状态。
+// aiConversation 表示某个终端标签页内的一条独立历史/当前 AI 对话会话。
+type aiConversation struct {
+	ID              string
+	Title           string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Turns           []aiTurn
+	ChatHistory     []ai.Message
+	Explanation     string
+	Command         string
+	Commands        []string
+	Loading         bool
+	Cancel          context.CancelFunc
+	ReqSeq          uint64
+	Err             string
+	ContextError    string
+	Attached        []string
+	PendingApproval *aiApproval
+	ScrollY         float32
+}
+
+// aiPanel 是右侧停靠的 AI Agent 侧栏状态（每个标签页各自拥有独立的一份）。
 type aiPanel struct {
 	open         bool
 	fresh        bool
@@ -85,6 +107,14 @@ type aiPanel struct {
 	err          string
 	contextError string
 	targetOS     string
+
+	// 会话管理：每个终端可保存多条历史对话并自由新开或切换
+	convID      string
+	convTitle   string
+	convCreated time.Time
+	convs       []*aiConversation
+	showHistory bool
+	convSeq     int
 
 	// @ 上下文引用与 / 快捷命令浮层状态
 	attachedContexts []string // "terminal", "host", "clipboard"
@@ -103,6 +133,18 @@ type aiPanel struct {
 	pendingCmd    string
 }
 
+func (s *aiPanel) convByID(id string) *aiConversation {
+	if s == nil || id == "" {
+		return nil
+	}
+	for _, c := range s.convs {
+		if c != nil && c.ID == id {
+			return c
+		}
+	}
+	return nil
+}
+
 type aiSlashCommand struct {
 	Cmd     string
 	Title   string
@@ -110,6 +152,7 @@ type aiSlashCommand struct {
 	Prompt  string
 	Attach  []string
 	IsClear bool
+	IsNew   bool
 }
 
 var aiSlashCommands = []aiSlashCommand{
@@ -142,6 +185,12 @@ var aiSlashCommands = []aiSlashCommand{
 		Attach: []string{"host"},
 	},
 	{
+		Cmd:   "/new",
+		Title: "新开会话",
+		Desc:  "保存当前对话到历史并开启新会话",
+		IsNew: true,
+	},
+	{
 		Cmd:     "/clear",
 		Title:   "清空当前对话",
 		Desc:    "重置当前 AI Agent 会话历史与上下文",
@@ -172,16 +221,284 @@ func (a *app) activeTargetOS() string {
 	return t.host.Distro
 }
 
-// openAI 打开 AI Agent 侧栏并定位到当前活动环境（保留现有对话记录与权限模式）。
+func (a *app) currentAITabID() int {
+	if t := a.current(); t != nil && t.id > 0 {
+		return t.id
+	}
+	return 0
+}
+
+// syncAITab 在切换标签页后把当前 a.ai 状态保存回旧标签，并切出新标签独立的 AI 会话与抽屉开关状态。
+func (a *app) syncAITab() {
+	curID := a.currentAITabID()
+	if curID == a.aiActiveTabID {
+		return
+	}
+	if a.aiSessions == nil {
+		a.aiSessions = map[int]*aiPanel{}
+	}
+	saveActiveConversation(&a.ai)
+	prev := a.ai
+	a.aiSessions[a.aiActiveTabID] = &prev
+
+	mode := a.ai.mode
+	if next, ok := a.aiSessions[curID]; ok && next != nil {
+		a.ai = *next
+	} else {
+		a.ai = aiPanel{
+			mode:     mode,
+			targetOS: a.activeTargetOS(),
+		}
+	}
+	a.aiActiveTabID = curID
+}
+
+// aiSessionForTab 返回指定标签页对应的 AI 会话状态指针，后台协程更新仅作用于发起该轮对话的标签页。
+func (a *app) aiSessionForTab(tabID int) *aiPanel {
+	a.syncAITab()
+	if tabID == a.aiActiveTabID {
+		return &a.ai
+	}
+	if a.aiSessions == nil {
+		a.aiSessions = map[int]*aiPanel{}
+	}
+	if s, ok := a.aiSessions[tabID]; ok && s != nil {
+		return s
+	}
+	s := &aiPanel{}
+	a.aiSessions[tabID] = s
+	return s
+}
+
+func stopAIConversation(c *aiConversation) {
+	if c == nil {
+		return
+	}
+	c.ReqSeq++
+	if c.Cancel != nil {
+		c.Cancel()
+		c.Cancel = nil
+	}
+	if c.PendingApproval != nil {
+		select {
+		case c.PendingApproval.answer <- false:
+		default:
+		}
+		c.PendingApproval = nil
+	}
+	c.Loading = false
+	for i := range c.Turns {
+		c.Turns[i].running = false
+	}
+}
+
+func stopAISession(s *aiPanel) {
+	if s == nil {
+		return
+	}
+	s.reqSeq++
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	if s.pendingApproval != nil {
+		select {
+		case s.pendingApproval.answer <- false:
+		default:
+		}
+		s.pendingApproval = nil
+	}
+	s.loading = false
+	for i := range s.turns {
+		s.turns[i].running = false
+	}
+	for _, c := range s.convs {
+		stopAIConversation(c)
+	}
+}
+
+func (a *app) closeAISessionForTab(tabID int) {
+	if tabID <= 0 {
+		return
+	}
+	if tabID == a.aiActiveTabID {
+		stopAISession(&a.ai)
+		mode := a.ai.mode
+		a.ai = aiPanel{mode: mode}
+		a.aiActiveTabID = 0
+	}
+	if s, ok := a.aiSessions[tabID]; ok {
+		stopAISession(s)
+		delete(a.aiSessions, tabID)
+	}
+}
+
+func (a *app) stopAllAISessions() {
+	stopAISession(&a.ai)
+	for id, s := range a.aiSessions {
+		stopAISession(s)
+		delete(a.aiSessions, id)
+	}
+	a.aiSessions = nil
+	a.aiActiveTabID = 0
+	a.ai = aiPanel{}
+}
+
+func convTitleFromTurns(turns []aiTurn) string {
+	for _, t := range turns {
+		q := strings.TrimSpace(strings.ReplaceAll(t.query, "\n", " "))
+		if q == "" {
+			continue
+		}
+		r := []rune(q)
+		if len(r) > 36 {
+			return string(r[:36]) + "…"
+		}
+		return q
+	}
+	return "新会话"
+}
+
+func saveActiveConversation(s *aiPanel) {
+	if s == nil {
+		return
+	}
+	if len(s.turns) == 0 && !s.loading && s.convID == "" {
+		return
+	}
+	now := time.Now()
+	if s.convID == "" {
+		s.convSeq++
+		s.convID = fmt.Sprintf("conv-%d", s.convSeq)
+		s.convCreated = now
+	}
+	if s.convTitle == "" && len(s.turns) > 0 {
+		s.convTitle = convTitleFromTurns(s.turns)
+	}
+	title := s.convTitle
+	if title == "" {
+		title = "新会话"
+	}
+	created := s.convCreated
+	if created.IsZero() {
+		created = now
+	}
+	c := s.convByID(s.convID)
+	if c == nil {
+		c = &aiConversation{ID: s.convID, CreatedAt: created}
+		s.convs = append([]*aiConversation{c}, s.convs...)
+	}
+	c.Title = title
+	c.UpdatedAt = now
+	c.Turns = s.turns
+	c.ChatHistory = s.chatHistory
+	c.Explanation = s.explanation
+	c.Command = s.command
+	c.Commands = s.commands
+	c.Loading = s.loading
+	c.Cancel = s.cancel
+	c.ReqSeq = s.reqSeq
+	c.Err = s.err
+	c.ContextError = s.contextError
+	c.Attached = s.attachedContexts
+	c.PendingApproval = s.pendingApproval
+	c.ScrollY = s.scroll.Y
+}
+
+func loadConversationInto(s *aiPanel, c *aiConversation) {
+	if s == nil || c == nil {
+		return
+	}
+	s.convID = c.ID
+	s.convTitle = c.Title
+	s.convCreated = c.CreatedAt
+	s.turns = c.Turns
+	s.chatHistory = c.ChatHistory
+	s.explanation = c.Explanation
+	s.command = c.Command
+	s.commands = c.Commands
+	s.loading = c.Loading
+	s.cancel = c.Cancel
+	s.reqSeq = c.ReqSeq
+	s.err = c.Err
+	s.contextError = c.ContextError
+	s.attachedContexts = c.Attached
+	s.pendingApproval = c.PendingApproval
+	s.scroll.Y = c.ScrollY
+	s.showHistory = false
+	s.showMentions = false
+	s.showSlash = false
+	s.confirmDanger = false
+	s.pendingCmd = ""
+}
+
+func resetActiveConversationDraft(s *aiPanel, targetOS string) {
+	if s == nil {
+		return
+	}
+	open, mode, convs, seq := s.open, s.mode, s.convs, s.convSeq
+	*s = aiPanel{
+		open:     open,
+		mode:     mode,
+		targetOS: targetOS,
+		convs:    convs,
+		convSeq:  seq,
+	}
+}
+
+// newAIConversation 保存当前会话到本终端历史记录并开启一个新的空白会话。
+func (a *app) newAIConversation() {
+	a.syncAITab()
+	saveActiveConversation(&a.ai)
+	resetActiveConversationDraft(&a.ai, a.activeTargetOS())
+}
+
+// selectAIConversation 在当前终端内切换到指定历史会话。
+func (a *app) selectAIConversation(id string) {
+	a.syncAITab()
+	if id == a.ai.convID {
+		a.ai.showHistory = false
+		return
+	}
+	saveActiveConversation(&a.ai)
+	c := a.ai.convByID(id)
+	if c == nil {
+		return
+	}
+	loadConversationInto(&a.ai, c)
+}
+
+// deleteAIConversation 删除当前终端内的一条历史会话（若为当前会话则切换回新空白页）。
+func (a *app) deleteAIConversation(id string) {
+	a.syncAITab()
+	idx := slices.IndexFunc(a.ai.convs, func(c *aiConversation) bool { return c != nil && c.ID == id })
+	if idx >= 0 {
+		stopAIConversation(a.ai.convs[idx])
+		a.ai.convs = slices.Delete(a.ai.convs, idx, idx+1)
+	}
+	if a.ai.convID == id {
+		showHist := a.ai.showHistory
+		stopAISession(&a.ai)
+		resetActiveConversationDraft(&a.ai, a.activeTargetOS())
+		a.ai.showHistory = showHist
+	}
+}
+
+// openAI 打开 AI Agent 侧栏并定位到当前活动环境（保留该标签页自己的对话记录与权限模式）。
 func (a *app) openAI() {
+	a.syncTabDrawers()
 	a.ai.open = true
 	a.ai.fresh = true
 	a.lastDrawer = "ai"
+	if cur := a.current(); cur != nil {
+		cur.lastDrawer = "ai"
+	}
 	a.ai.targetOS = a.activeTargetOS()
 }
 
 // toggleAI 切换 AI Agent 侧栏展开与收起，不丢失已有对话。
 func (a *app) toggleAI() {
+	a.syncTabDrawers()
 	if a.ai.open {
 		a.ai.open = false
 		return
@@ -189,15 +506,16 @@ func (a *app) toggleAI() {
 	a.openAI()
 }
 
-// clearAIChat 清空当前 AI Agent 对话并停止进行中的请求。
+// clearAIChat 清空当前正在查看的对话并停止该对话进行中的请求（保留其他历史会话）。
 func (a *app) clearAIChat() {
-	a.stopAIRequest()
-	mode := a.ai.mode
-	a.ai = aiPanel{
-		open:     true,
-		mode:     mode,
-		targetOS: a.activeTargetOS(),
+	a.syncAITab()
+	if a.ai.convID != "" {
+		a.deleteAIConversation(a.ai.convID)
+		a.ai.showHistory = false
+		return
 	}
+	a.stopAIRequest()
+	resetActiveConversationDraft(&a.ai, a.activeTargetOS())
 }
 
 // openAIExplain 打开 AI Agent 并立即分析传入的报错文本。
@@ -268,7 +586,9 @@ func (a *app) buildAttachedContextBlock(snap aiSessionSnapshot, attached []strin
 			tags = append(tags, "@终端输出")
 			tail := strings.TrimSpace(extraErr)
 			if tail == "" {
-				tail = a.captureActiveTerminalTail(80)
+				if t := a.targetTabForSnapshot(snap); t != nil && t.focus != nil && t.focus.term != nil {
+					tail = captureTermTail(t.focus.term.Text(), 80)
+				}
 			}
 			if tail != "" {
 				parts = append(parts, "[附加终端输出]\n"+tail)
@@ -294,6 +614,7 @@ func (a *app) buildAttachedContextBlock(snap aiSessionSnapshot, attached []strin
 
 // runAIGenerate 发起一轮多步流式 Agent 执行。
 func (a *app) runAIGenerate() {
+	a.syncAITab()
 	query := strings.TrimSpace(a.ai.query)
 	if query == "" {
 		return
@@ -307,6 +628,7 @@ func (a *app) runAIGenerate() {
 
 // runAIExplain 异步调用 AI 分析终端报错。
 func (a *app) runAIExplain() {
+	a.syncAITab()
 	errText := strings.TrimSpace(a.ai.contextError)
 	if errText == "" {
 		return
@@ -316,6 +638,10 @@ func (a *app) runAIExplain() {
 }
 
 func (a *app) startAgentRun(displayQuery, promptText string, attached []string, extraErr string) {
+	a.syncAITab()
+	targetTabID := a.currentAITabID()
+	a.ai.showHistory = false
+
 	if a.ai.cancel != nil {
 		a.ai.cancel()
 		a.ai.cancel = nil
@@ -353,6 +679,8 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 		contextTags: tags,
 		running:     true,
 	})
+	saveActiveConversation(&a.ai)
+	targetConvID := a.ai.convID
 
 	sysMsg := ai.Message{Role: "system", Content: agentSystemPrompt(snap, mode)}
 	history := make([]ai.Message, 0, len(a.ai.chatHistory)+2)
@@ -360,6 +688,28 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 	history = append(history, a.ai.chatHistory...)
 	history = append(history, ai.Message{Role: "user", Content: userContent})
 	tools := agentToolDefinitions()
+
+	updateConv := func(fn func(c *aiConversation)) {
+		sess := a.aiSessionForTab(targetTabID)
+		c := sess.convByID(targetConvID)
+		if c == nil || seq != c.ReqSeq {
+			return
+		}
+		fn(c)
+		c.UpdatedAt = time.Now()
+		if sess.convID == targetConvID {
+			sess.turns = c.Turns
+			sess.chatHistory = c.ChatHistory
+			sess.loading = c.Loading
+			sess.cancel = c.Cancel
+			sess.err = c.Err
+			sess.explanation = c.Explanation
+			sess.command = c.Command
+			sess.commands = c.Commands
+			sess.pendingApproval = c.PendingApproval
+			sess.autoScroll = true
+		}
+	}
 
 	go func() {
 		var mu sync.Mutex
@@ -385,18 +735,18 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 				mu.Lock()
 				rec := toolByID[call.ID]
 				mu.Unlock()
-				return a.executeAgentTool(tctx, seq, snap, mode, rec, call)
+				return a.executeAgentTool(tctx, targetConvID, seq, snap, mode, rec, call)
 			},
 			OnEvent: func(ev ai.AgentEvent) {
 				switch ev.Kind {
 				case ai.EventStepStart:
 					stepRec := getStep(ev.Step)
 					a.post(func() {
-						if seq != a.ai.reqSeq || turnIdx >= len(a.ai.turns) {
-							return
-						}
-						a.ai.turns[turnIdx].steps = append(a.ai.turns[turnIdx].steps, stepRec)
-						a.ai.autoScroll = true
+						updateConv(func(c *aiConversation) {
+							if turnIdx < len(c.Turns) {
+								c.Turns[turnIdx].steps = append(c.Turns[turnIdx].steps, stepRec)
+							}
+						})
 					})
 				case ai.EventStepProgress:
 					now := time.Now()
@@ -411,15 +761,16 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 					}
 					th, thSec, ct, usage := ev.Thinking, ev.ThinkingSeconds, ev.Content, ev.TotalUsage
 					a.post(func() {
-						if seq != a.ai.reqSeq || turnIdx >= len(a.ai.turns) {
-							return
-						}
-						s := getStep(ev.Step)
-						s.Thinking = th
-						s.ThinkingSeconds = thSec
-						s.Content = ct
-						a.ai.turns[turnIdx].usage = usage
-						a.ai.autoScroll = true
+						updateConv(func(c *aiConversation) {
+							if turnIdx >= len(c.Turns) {
+								return
+							}
+							s := getStep(ev.Step)
+							s.Thinking = th
+							s.ThinkingSeconds = thSec
+							s.Content = ct
+							c.Turns[turnIdx].usage = usage
+						})
 					})
 				case ai.EventToolStart:
 					summary, args := summarizeToolCall(ev.ToolCall)
@@ -434,12 +785,13 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 					toolByID[ev.ToolCall.ID] = rec
 					mu.Unlock()
 					a.post(func() {
-						if seq != a.ai.reqSeq || turnIdx >= len(a.ai.turns) {
-							return
-						}
-						s := getStep(ev.Step)
-						s.Tools = append(s.Tools, rec)
-						a.ai.autoScroll = true
+						updateConv(func(c *aiConversation) {
+							if turnIdx >= len(c.Turns) {
+								return
+							}
+							s := getStep(ev.Step)
+							s.Tools = append(s.Tools, rec)
+						})
 					})
 				case ai.EventToolDone:
 					mu.Lock()
@@ -447,31 +799,33 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 					mu.Unlock()
 					out, isErr := ev.ToolOutput, ev.ToolError
 					a.post(func() {
-						if seq != a.ai.reqSeq || rec == nil {
-							return
-						}
-						rec.Output = out
-						if rec.Status != toolDenied {
-							if isErr {
-								rec.Status = toolError
-							} else {
-								rec.Status = toolDone
+						updateConv(func(c *aiConversation) {
+							if rec == nil {
+								return
 							}
-						}
-						a.ai.autoScroll = true
+							rec.Output = out
+							if rec.Status != toolDenied {
+								if isErr {
+									rec.Status = toolError
+								} else {
+									rec.Status = toolDone
+								}
+							}
+						})
 					})
 				case ai.EventStepDone:
 					th, thSec, ct, usage := ev.Thinking, ev.ThinkingSeconds, ev.Content, ev.TotalUsage
 					a.post(func() {
-						if seq != a.ai.reqSeq || turnIdx >= len(a.ai.turns) {
-							return
-						}
-						s := getStep(ev.Step)
-						s.Thinking = th
-						s.ThinkingSeconds = thSec
-						s.Content = ct
-						a.ai.turns[turnIdx].usage = usage
-						a.ai.autoScroll = true
+						updateConv(func(c *aiConversation) {
+							if turnIdx >= len(c.Turns) {
+								return
+							}
+							s := getStep(ev.Step)
+							s.Thinking = th
+							s.ThinkingSeconds = thSec
+							s.Content = ct
+							c.Turns[turnIdx].usage = usage
+						})
 					})
 				}
 			},
@@ -480,30 +834,32 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 		a.post(func() {
 			canceled := ctx.Err() == context.Canceled
 			cancel()
-			if canceled || seq != a.ai.reqSeq {
+			if canceled {
 				return
 			}
-			a.ai.loading = false
-			a.ai.cancel = nil
-			a.ai.pendingApproval = nil
-			if turnIdx < len(a.ai.turns) {
-				a.ai.turns[turnIdx].running = false
-			}
-			if err != nil {
-				msg := friendlyAIError(err)
-				a.ai.err = msg
-				if turnIdx < len(a.ai.turns) {
-					a.ai.turns[turnIdx].err = msg
+			updateConv(func(c *aiConversation) {
+				c.Loading = false
+				c.Cancel = nil
+				c.PendingApproval = nil
+				if turnIdx < len(c.Turns) {
+					c.Turns[turnIdx].running = false
 				}
-				return
-			}
-			a.finishAgentTurn(turnIdx, userContent, res)
+				if err != nil {
+					msg := friendlyAIError(err)
+					c.Err = msg
+					if turnIdx < len(c.Turns) {
+						c.Turns[turnIdx].err = msg
+					}
+					return
+				}
+				finishConversationTurn(c, turnIdx, userContent, res)
+			})
 		})
 	}()
 }
 
-func (a *app) finishAgentTurn(turnIdx int, userContent string, res *ai.AgentRunResult) {
-	if res == nil {
+func finishConversationTurn(c *aiConversation, turnIdx int, userContent string, res *ai.AgentRunResult) {
+	if c == nil || res == nil {
 		return
 	}
 	parsed := ai.ParseMarkdown(res.FinalText)
@@ -516,14 +872,14 @@ func (a *app) finishAgentTurn(turnIdx int, userContent string, res *ai.AgentRunR
 			if parsedResult.Explanation != "" {
 				md.WriteString(parsedResult.Explanation)
 			}
-			for _, c := range parsedResult.Commands {
+			for _, cmd := range parsedResult.Commands {
 				if md.Len() > 0 {
 					md.WriteString("\n\n")
 				}
-				md.WriteString("```bash\n" + c + "\n```")
+				md.WriteString("```bash\n" + cmd + "\n```")
 			}
-			if turnIdx < len(a.ai.turns) {
-				steps := a.ai.turns[turnIdx].steps
+			if turnIdx < len(c.Turns) {
+				steps := c.Turns[turnIdx].steps
 				if len(steps) > 0 {
 					steps[len(steps)-1].Content = md.String()
 				}
@@ -545,35 +901,38 @@ func (a *app) finishAgentTurn(turnIdx int, userContent string, res *ai.AgentRunR
 		}
 	}
 
-	a.ai.explanation = explain
-	a.ai.commands = cmds
+	c.Explanation = explain
+	c.Commands = cmds
 	if len(cmds) > 0 {
-		a.ai.command = cmds[0]
+		c.Command = cmds[0]
 	} else {
-		a.ai.command = ""
+		c.Command = ""
 	}
-	if turnIdx < len(a.ai.turns) {
-		a.ai.turns[turnIdx].explanation = explain
-		a.ai.turns[turnIdx].commands = cmds
-		a.ai.turns[turnIdx].usage = res.Usage
+	if turnIdx < len(c.Turns) {
+		c.Turns[turnIdx].explanation = explain
+		c.Turns[turnIdx].commands = cmds
+		c.Turns[turnIdx].usage = res.Usage
 		if res.ReachedMax {
-			a.ai.turns[turnIdx].err = "已达到单轮最大工具调用步数（12 步），可继续追问让我深入排查。"
+			c.Turns[turnIdx].err = "已达到单轮最大工具调用步数（12 步），可继续追问让我深入排查。"
 		}
 	}
 
 	// 将本轮消息写入上下文历史（保留多轮 tool/assistant 记录，剥离临时 system 提示）
 	if len(res.Messages) > 1 {
-		a.ai.chatHistory = append([]ai.Message(nil), res.Messages[1:]...)
+		c.ChatHistory = append([]ai.Message(nil), res.Messages[1:]...)
 	} else {
-		a.ai.chatHistory = append(a.ai.chatHistory,
+		c.ChatHistory = append(c.ChatHistory,
 			ai.Message{Role: "user", Content: userContent},
 			ai.Message{Role: "assistant", Content: res.FinalText},
 		)
 	}
-	a.ai.autoScroll = true
 }
 
 func (a *app) stopAIRequest() {
+	a.syncAITab()
+	if c := a.ai.convByID(a.ai.convID); c != nil {
+		stopAIConversation(c)
+	}
 	a.ai.reqSeq++
 	if a.ai.cancel != nil {
 		a.ai.cancel()
@@ -628,6 +987,7 @@ func (a *app) insertCommandToTerminal(cmd string) {
 }
 
 func (a *app) submitAIInput() {
+	a.syncAITab()
 	if a.ai.loading {
 		return
 	}
@@ -650,6 +1010,10 @@ func (a *app) submitAIInput() {
 func (a *app) runSlashCommand(sc aiSlashCommand) {
 	a.ai.showSlash = false
 	a.ai.query = ""
+	if sc.IsNew {
+		a.newAIConversation()
+		return
+	}
 	if sc.IsClear {
 		a.clearAIChat()
 		return
@@ -663,6 +1027,7 @@ func (a *app) runSlashCommand(sc aiSlashCommand) {
 
 // aiDrawer 在右侧渲染可拖拽调节宽度的 AI Agent 停靠面板。
 func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32) {
+	a.syncAITab()
 	p := &a.ai
 	if !p.open {
 		return
@@ -697,11 +1062,15 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 	drawer := raised(ui.Column(c).Key("aiDrawer").Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	drawer.Transition(design.SlideIn(18)).Children(func() {
 		a.aiDrawerHeader(c, colors)
-		a.aiMessageStream(c, colors)
-		if p.pendingApproval != nil {
-			a.aiApprovalCard(c, colors, p.pendingApproval)
+		if p.showHistory {
+			a.aiHistoryView(c, colors)
+		} else {
+			a.aiMessageStream(c, colors)
+			if p.pendingApproval != nil {
+				a.aiApprovalCard(c, colors, p.pendingApproval)
+			}
+			a.aiComposer(c, colors)
 		}
-		a.aiComposer(c, colors)
 	})
 
 	// 代码块填入高危命令的弹窗二次确认（默认按钮放取消）
@@ -743,12 +1112,81 @@ func (a *app) aiDrawerHeader(c *ui.Context, colors design.Colors) {
 			ui.Text(c, targetText).FontSize(design.TextSmall).TextColor(chipFg).SingleLine().Ellipsis("…")
 		})
 
-		if len(a.ai.turns) > 0 && !a.ai.loading {
-			iconButton(c, colors, "plus", locales.AiClearChat(), a.clearAIChat).Key("aiClearBtn")
+		histBtn := iconButton(c, colors, "history", "历史会话", func() {
+			saveActiveConversation(&a.ai)
+			a.ai.showHistory = !a.ai.showHistory
+		}).Key("aiHistoryBtn")
+		if a.ai.showHistory {
+			histBtn.Background(colors.Hover)
+		}
+		if len(a.ai.turns) > 0 || a.ai.showHistory {
+			iconButton(c, colors, "plus", "新开会话", a.newAIConversation).Key("aiNewChatBtn")
 		}
 		iconButton(c, colors, "x", "关闭 AI 面板", func() {
 			a.ai.open = false
 		}).Key("aiCloseBtn")
+	})
+}
+
+func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
+	p := &a.ai
+	t := c.Theme()
+	ui.Column(c).Grow(1).MinHeight(0).Padding(12).Gap(10).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
+			ui.Text(c, fmt.Sprintf("本终端历史会话（%d）", len(p.convs))).
+				FontSize(design.TextBody).FontWeight(600).Grow(1).MinWidth(0)
+			ui.Button(c, "新建会话").Key("aiHistoryNewBtn").Height(26).Padding(0, 10).OnClick(a.newAIConversation)
+			ui.Button(c, "返回对话").Key("aiHistoryBackBtn").Height(26).Padding(0, 10).OnClick(func() {
+				p.showHistory = false
+			})
+		})
+		ui.Scroll(c).Key("aiHistoryScroll").Grow(1).MinHeight(0).Children(func() {
+			if len(p.convs) == 0 {
+				ui.Box(c).Padding(14).Radius(design.RadiusRow).Background(colors.Hover).Children(func() {
+					ui.Text(c, "当前终端暂无历史会话，发送消息后会自动记录在这里。").
+						FontSize(design.TextSmall).TextColor(t.TextMuted)
+				})
+				return
+			}
+			ui.Column(c).Gap(6).Children(func() {
+				for _, conv := range p.convs {
+					if conv == nil {
+						continue
+					}
+					item := conv
+					isCur := item.ID == p.convID
+					row := ui.Row(c).Gap(6).Padding(8, 10).Radius(design.RadiusRow).AlignItems(ui.Center)
+					if isCur {
+						row.Background(t.Accent.Alpha(0.12)).Border(1, t.Accent.Alpha(0.35))
+					} else {
+						row.Background(colors.Hover).Border(1, colors.Hairline)
+					}
+					row.Children(func() {
+						openBtn := ui.ButtonBase(c).Key("aiConv:" + item.ID).Label("打开会话 " + item.Title).
+							Grow(1).MinWidth(0).OnClick(func() {
+							a.selectAIConversation(item.ID)
+						})
+						openBtn.Children(func() {
+							ui.Column(c).Gap(2).Children(func() {
+								ui.Text(c, item.Title).FontSize(design.TextBody).FontWeight(600).
+									TextColor(t.Text).SingleLine().Ellipsis("…")
+								meta := fmt.Sprintf("%d 轮 · %s", len(item.Turns), item.UpdatedAt.Format("15:04"))
+								if isCur {
+									meta += " · 当前"
+								}
+								if item.Loading {
+									meta += " · 进行中"
+								}
+								ui.Text(c, meta).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+							})
+						})
+						iconButton(c, colors, "trash-2", "删除会话 "+item.ID, func() {
+							a.deleteAIConversation(item.ID)
+						}).Key("aiDelConv:" + item.ID).Tooltip("删除该会话")
+					})
+				}
+			})
+		})
 	})
 }
 
@@ -1191,6 +1629,9 @@ func (a *app) resolveAgentApproval(ap *aiApproval, ok bool) {
 		return
 	}
 	a.ai.pendingApproval = nil
+	if c := a.ai.convByID(a.ai.convID); c != nil && c.PendingApproval == ap {
+		c.PendingApproval = nil
+	}
 	select {
 	case ap.answer <- ok:
 	default:

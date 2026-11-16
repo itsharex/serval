@@ -372,7 +372,11 @@ func (a *app) openFilesForHost(h hosts.Host) {
 	for i, t := range a.tabs {
 		if !t.local && t.host.ID == h.ID && t.client != nil {
 			a.active = i
+			t.filesOpen = true
+			t.lastDrawer = "files"
+			a.syncTabDrawers()
 			a.filesOpen = true
+			a.lastDrawer = "files"
 			a.ensureFiles(t)
 			a.saveSessionLayout()
 			return

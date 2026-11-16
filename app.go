@@ -102,15 +102,16 @@ type app struct {
 
 	sidebarOpen bool
 	// sidebarWidth 是左侧主机列表宽度（DIP），默认 240，范围 200~360。
-	sidebarWidth    float32
-	sidebarResizing bool
-	filesOpen       bool
+	sidebarWidth     float32
+	sidebarResizing  bool
+	filesOpen        bool
+	filesActiveTabID int
 	// filesWidth 是文件抽屉的宽度（DIP），filesSplit 是抽屉内本地栏所占百分比。
 	filesWidth float32
 	filesSplit float32
 	// aiWidth 是右侧 AI Agent 侧栏的宽度（DIP）。
 	aiWidth float32
-	// lastDrawer 记录最近一次主动打开的右侧抽屉（"files" 或 "ai"），窄窗口两者放不下时保留它。
+	// lastDrawer 记录当前标签最近一次主动打开的右侧抽屉（"files" 或 "ai"），窄窗口两者放不下时保留它。
 	lastDrawer string
 	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
 	hostFilter string
@@ -163,6 +164,8 @@ type app struct {
 	aiFetchSeq    uint64
 	aiFetchTimer  *time.Timer
 	ai            aiPanel
+	aiSessions    map[int]*aiPanel // 按标签页 id 隔离各自的 AI 对话与流式任务状态
+	aiActiveTabID int              // 当前绑定到 a.ai 的标签页 id（0 表示未连接终端标签页）
 	updateURL     string
 	httpClient    *http.Client
 	update        updateModel
@@ -303,6 +306,9 @@ type tab struct {
 	// restoreSlot 是恢复会话时这个标签在上次会话里的位置（从 1 开始），普通标签为 0。
 	restoreSlot int
 
+	filesOpen  bool
+	lastDrawer string
+
 	reconnecting     bool
 	reconnectAttempt int
 	reconnectCancel  context.CancelFunc
@@ -414,8 +420,10 @@ func (a *app) lockVault() {
 	a.stopSyncLoop()
 	a.stopSyncDir()
 	a.syncErr = ""
-	a.stopAIRequest()
-	a.ai = aiPanel{}
+	a.stopAllAISessions()
+	a.filesOpen = false
+	a.filesActiveTabID = 0
+	a.lastDrawer = ""
 	a.lastCopiedText = ""
 	if a.probeCancel != nil {
 		a.probeCancel()
@@ -1012,11 +1020,13 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	go a.watchLatency(ctx, t, t.client, a.pingInterval)
 	if a.openFilesOnHostID != "" && a.openFilesOnHostID == h.ID {
 		a.openFilesOnHostID = ""
-		a.filesOpen = true
+		t.filesOpen = true
+		t.lastDrawer = "files"
 	}
-	if a.filesOpen {
+	if t.filesOpen {
 		a.ensureFiles(t)
 	}
+	a.syncTabDrawers()
 	a.saveSessionLayout()
 	a.syncHostForwards(h.ID)
 	if a.shouldAutoMonitor(h.ID) {
@@ -1212,11 +1222,13 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 	go a.watchLatency(ctx, t, t.client, a.pingInterval)
 	if a.openFilesOnHostID != "" && a.openFilesOnHostID == h.ID {
 		a.openFilesOnHostID = ""
-		a.filesOpen = true
+		t.filesOpen = true
+		t.lastDrawer = "files"
 	}
-	if a.filesOpen {
+	if t.filesOpen {
 		a.ensureFiles(t)
 	}
+	a.syncTabDrawers()
 	a.saveSessionLayout()
 	a.syncHostForwards(h.ID)
 	if a.shouldAutoMonitor(h.ID) {
@@ -1716,6 +1728,12 @@ func (a *app) closeTab(t *tab) {
 	}
 	a.dropTabBroadcast(t)
 	a.stopTabMonitor(t)
+	a.closeAISessionForTab(t.id)
+	if t.id == a.filesActiveTabID {
+		a.filesOpen = false
+		a.lastDrawer = ""
+		a.filesActiveTabID = 0
+	}
 	hostID := t.host.ID
 	a.tabs = slices.Delete(a.tabs, i, i+1)
 	if a.active >= len(a.tabs) {
@@ -1767,6 +1785,10 @@ func (a *app) closeAll() {
 		a.probeCancel = nil
 	}
 	a.clearDragOut()
+	a.stopAllAISessions()
+	a.filesOpen = false
+	a.filesActiveTabID = 0
+	a.lastDrawer = ""
 	a.saveSessionLayout()
 	byTab := map[int][]*liveTunnel{}
 	tabIDs := map[int]bool{}
@@ -1936,7 +1958,7 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 		t.files = nil
 		go oldFiles.Close()
 	}
-	if a.filesOpen && a.current() == t {
+	if t.filesOpen && a.current() == t {
 		a.ensureFiles(t)
 	}
 	t.stop()
@@ -2160,18 +2182,55 @@ func (a *app) cancelChallenge() {
 	ch.answerChan <- challengeResult{err: errChallengeCancelled}
 }
 
-// toggleFiles 打开或收起文件抽屉。SFTP 通道到需要时才打开，不用文件的会话不占这份资源。
+// toggleFiles 打开或收起当前标签页的文件抽屉（按标签页隔离）。SFTP 通道到需要时才打开，不用文件的会话不占这份资源。
 func (a *app) toggleFiles() {
+	a.syncTabDrawers()
 	t := a.current()
 	if t == nil || t.local || t.client == nil {
 		a.filesOpen = false
+		if t != nil {
+			t.filesOpen = false
+		}
 		return
 	}
-	a.filesOpen = !a.filesOpen
-	if a.filesOpen {
+	open := !t.filesOpen
+	t.filesOpen = open
+	a.filesOpen = open
+	if open {
+		t.lastDrawer = "files"
 		a.lastDrawer = "files"
 		a.ensureFiles(t)
 	}
+}
+
+// syncFilesTab 按当前活动标签页隔离 SFTP 文件抽屉的展开状态。
+func (a *app) syncFilesTab() {
+	curID := a.currentAITabID()
+	if curID == a.filesActiveTabID {
+		if cur := a.current(); cur != nil && cur.id > 0 {
+			cur.filesOpen = a.filesOpen
+			cur.lastDrawer = a.lastDrawer
+		}
+		return
+	}
+	if prev := a.tabByID(a.filesActiveTabID); prev != nil {
+		prev.filesOpen = a.filesOpen
+		prev.lastDrawer = a.lastDrawer
+	}
+	if cur := a.current(); cur != nil && cur.id > 0 {
+		a.filesOpen = cur.filesOpen
+		a.lastDrawer = cur.lastDrawer
+	} else {
+		a.filesOpen = false
+		a.lastDrawer = ""
+	}
+	a.filesActiveTabID = curID
+}
+
+// syncTabDrawers 同步当前活动标签页的 AI 会话与 SFTP 抽屉隔离状态。
+func (a *app) syncTabDrawers() {
+	a.syncAITab()
+	a.syncFilesTab()
 }
 
 func (a *app) ensureFiles(t *tab) {

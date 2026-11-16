@@ -50,6 +50,7 @@ func (a *app) view(c *ui.Context) {
 		return
 	}
 	a.shortcuts(c)
+	a.syncTabDrawers()
 	ui.Row(c).Fill().AlignItems(ui.Stretch).LinearGradient(colors.Glow).Children(func() {
 		if a.sidebarOpen {
 			a.sidebar(c, colors)
@@ -462,7 +463,6 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					snipTip = fmt.Sprintf("代码片段（%d）", len(a.snippets))
 				}
 				snipBtn.Tooltip(snipTip)
-				sidebarIconButton(c, colors, "openAI", "sparkles", locales.AiAssistant(), 0, a.openAI)
 				sidebarIconButton(c, colors, "openSettings", "settings", locales.Settings(), 0, a.openSettings).
 					Tooltip(locales.Settings() + "（" + shortcutText(",") + "）")
 			})
@@ -755,10 +755,6 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
 			iconButton(c, colors, "search", locales.ViewFindShortcut(shortcutText("F")), func() { a.openSearch(t) })
-			if t.local || t.client != nil {
-				iconButton(c, colors, "columns-2", locales.ViewSplitRightShortcut(shortcutText("D")), func() { a.split(t, false) })
-				iconButton(c, colors, "rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
-			}
 			if !t.local && t.client != nil {
 				iconButton(c, colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
 			}
@@ -945,6 +941,9 @@ func (a *app) drawerBudget(c *ui.Context, hasFiles, hasAI bool) (filesW, filesMa
 		if totalBudget < minFiles+minAI {
 			if a.lastDrawer == "ai" {
 				a.filesOpen = false
+				if cur := a.current(); cur != nil {
+					cur.filesOpen = false
+				}
 				hasFiles = false
 			} else {
 				a.ai.open = false
@@ -1322,22 +1321,6 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				a.togglePaneBroadcast(t, p)
 			})
 		}
-		aiLabel := locales.AiAnalyzeOutput()
-		if t.root.leaves() > 1 {
-			aiLabel = fmt.Sprintf("%s %d", locales.AiAnalyzeOutput(), paneOrdinal(t.root, p))
-		}
-		aiPaneBtn := ui.ButtonBase(c).Key(fmt.Sprintf("paneAI:%d", p.id)).Label(aiLabel).
-			Tooltip(locales.AiAnalyzeOutput()+"（"+shortcutText("E")+"）").
-			Size(26, 26).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
-		if aiPaneBtn.Hovered() {
-			aiPaneBtn.Background(colors.Hover)
-		}
-		aiPaneBtn.Children(func() {
-			ui.Icon(c, design.Icon("sparkles")).FontSize(13).TextColor(theme.TextMuted)
-		}).OnClick(func() {
-			t.focus = p
-			a.openAIExplainFromActivePane()
-		})
 		moreLabel := locales.PaneMoreActions()
 		if t.root.leaves() > 1 {
 			moreLabel = fmt.Sprintf("%s %d", locales.PaneMoreActions(), paneOrdinal(t.root, p))
@@ -1436,7 +1419,10 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 			} else {
 				ui.Spacer(c)
 			}
-			iconButton(c, colors, "x", "关闭文件抽屉", func() { a.filesOpen = false }).
+			iconButton(c, colors, "x", "关闭文件抽屉", func() {
+				a.filesOpen = false
+				t.filesOpen = false
+			}).
 				Key("filesClose").Tooltip("关闭文件抽屉（" + shortcutText("J") + "）")
 		})
 		// 抽屉本身接收拖放，目标是当前列出的目录，不是终端的工作目录。

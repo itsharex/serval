@@ -294,17 +294,18 @@ func (a *app) runMainSync(ctx context.Context, fn func()) error {
 	}
 }
 
-func (a *app) requestAgentApproval(ctx context.Context, seq uint64, tool *aiToolRecord, cmd, reason, target string, dangerous, production bool) (bool, error) {
+func (a *app) targetTabForSnapshot(snap aiSessionSnapshot) *tab {
+	if snap.hasTab {
+		return a.tabByID(snap.tabID)
+	}
+	return a.current()
+}
+
+func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string, seq uint64, tool *aiToolRecord, cmd, reason, target string, dangerous, production bool) (bool, error) {
 	ch := make(chan bool, 1)
 	if err := a.runMainSync(ctx, func() {
-		if seq != a.ai.reqSeq {
-			ch <- false
-			return
-		}
-		if tool != nil {
-			tool.Status = toolWaitingApproval
-		}
-		a.ai.pendingApproval = &aiApproval{
+		sess := a.aiSessionForTab(tabID)
+		ap := &aiApproval{
 			seq:        seq,
 			tool:       tool,
 			command:    cmd,
@@ -314,6 +315,28 @@ func (a *app) requestAgentApproval(ctx context.Context, seq uint64, tool *aiTool
 			production: production,
 			answer:     ch,
 		}
+		if conv := sess.convByID(convID); conv != nil {
+			if seq != conv.ReqSeq {
+				ch <- false
+				return
+			}
+			if tool != nil {
+				tool.Status = toolWaitingApproval
+			}
+			conv.PendingApproval = ap
+			if sess.convID == convID {
+				sess.pendingApproval = ap
+			}
+			return
+		}
+		if seq != sess.reqSeq {
+			ch <- false
+			return
+		}
+		if tool != nil {
+			tool.Status = toolWaitingApproval
+		}
+		sess.pendingApproval = ap
 	}); err != nil {
 		return false, err
 	}
@@ -323,15 +346,19 @@ func (a *app) requestAgentApproval(ctx context.Context, seq uint64, tool *aiTool
 		return ok, nil
 	case <-ctx.Done():
 		a.post(func() {
-			if a.ai.pendingApproval != nil && a.ai.pendingApproval.answer == ch {
-				a.ai.pendingApproval = nil
+			sess := a.aiSessionForTab(tabID)
+			if conv := sess.convByID(convID); conv != nil && conv.PendingApproval != nil && conv.PendingApproval.answer == ch {
+				conv.PendingApproval = nil
+			}
+			if sess.pendingApproval != nil && sess.pendingApproval.answer == ch {
+				sess.pendingApproval = nil
 			}
 		})
 		return false, ctx.Err()
 	}
 }
 
-func (a *app) executeAgentTool(ctx context.Context, seq uint64, snap aiSessionSnapshot, mode aiPermissionMode, toolRec *aiToolRecord, tc ai.ToolCall) (string, bool) {
+func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, snap aiSessionSnapshot, mode aiPermissionMode, toolRec *aiToolRecord, tc ai.ToolCall) (string, bool) {
 	switch tc.Function.Name {
 	case "host_info":
 		if !snap.hasTab {
@@ -367,10 +394,7 @@ func (a *app) executeAgentTool(ctx context.Context, seq uint64, snap aiSessionSn
 		var text, user, dir string
 		var found bool
 		if err := a.runMainSync(ctx, func() {
-			t := a.tabByID(snap.tabID)
-			if t == nil {
-				t = a.current()
-			}
+			t := a.targetTabForSnapshot(snap)
 			if t == nil || t.focus == nil || t.focus.term == nil {
 				return
 			}
@@ -413,7 +437,7 @@ func (a *app) executeAgentTool(ctx context.Context, seq uint64, snap aiSessionSn
 			if snap.liveUser != "" && snap.hostAddr != "" {
 				target = snap.liveUser + "@" + snap.hostAddr
 			}
-			approved, err := a.requestAgentApproval(ctx, seq, toolRec, cmd, params.Reason, target, dangerous, snap.production)
+			approved, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, cmd, params.Reason, target, dangerous, snap.production)
 			if err != nil {
 				return "等待确认已取消", true
 			}
@@ -586,17 +610,14 @@ func (a *app) executeAgentTool(ctx context.Context, seq uint64, snap aiSessionSn
 		}
 		dangerous := ai.IsDangerousCommand(cmd)
 		if mode == aiModeConfirm || dangerous {
-			approved, err := a.requestAgentApproval(ctx, seq, toolRec, cmd, "填入当前终端输入框（不回车）", snap.hostName, dangerous, snap.production)
+			approved, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, cmd, "填入当前终端输入框（不回车）", snap.hostName, dangerous, snap.production)
 			if err != nil || !approved {
 				return "已取消填入终端。", true
 			}
 		}
 		var pasted bool
 		if err := a.runMainSync(ctx, func() {
-			t := a.tabByID(snap.tabID)
-			if t == nil {
-				t = a.current()
-			}
+			t := a.targetTabForSnapshot(snap)
 			if t == nil || t.focus == nil || t.focus.term == nil {
 				return
 			}

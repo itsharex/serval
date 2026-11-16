@@ -667,7 +667,12 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 	if p != nil && p.term != nil {
 		cwd = p.term.Dir()
 	}
-	a.filesOpen = true
+	t.filesOpen = true
+	t.lastDrawer = "files"
+	if a.current() == t {
+		a.filesOpen = true
+		a.lastDrawer = "files"
+	}
 	start := func() {
 		if !slices.Contains(a.tabs, t) || t.files == nil {
 			return

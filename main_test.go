@@ -570,7 +570,7 @@ func TestSplitAndClosePanes(t *testing.T) {
 	tb := h.connectDev()
 	first := tb.focus
 
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.tt.Key(chromeShortcut(), ui.KeyD)
 	h.pump("拆分", func() bool { return tb.root.leaves() == 2 })
 	if tb.focus == first {
 		t.Error("新窗格应获得焦点")
@@ -598,7 +598,11 @@ func TestSplitAndClosePanes(t *testing.T) {
 func TestOneClickSplitsOnce(t *testing.T) {
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.click("窗格操作")
+	h.tt.Frame()
+	if err := h.tt.ChooseMenuItem("向右拆分"); err != nil {
+		t.Fatalf("点窗格菜单拆分失败: %v", err)
+	}
 	h.pump("拆分", func() bool { return tb.root.leaves() >= 2 })
 	settle := time.Now().Add(1500 * time.Millisecond)
 	h.pump("稳定", func() bool { return time.Now().After(settle) })
@@ -680,7 +684,7 @@ func TestManyTabsStayReachable(t *testing.T) {
 	}
 	h.a.active = 0
 	h.tt.Frame()
-	if box, ok := h.tt.Find("向右拆分（" + shortcutText("D") + "）"); !ok || box.X+box.W > 1180 {
+	if box, ok := h.tt.Find("AI Agent（" + shortcutText("I") + "）"); !ok || box.X+box.W > 1180 {
 		t.Errorf("标签过多时把工具按钮挤出了窗口: %+v", box)
 	}
 }
@@ -1229,7 +1233,11 @@ func TestLocalTerminal(t *testing.T) {
 		t.Fatalf("“本地终端”出现了 %d 次，标签和侧栏按钮重名: %q", n, texts)
 	}
 
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.click("窗格操作")
+	h.tt.Frame()
+	if err := h.tt.ChooseMenuItem("向右拆分"); err != nil {
+		t.Fatalf("本地终端点窗格菜单拆分失败: %v", err)
+	}
 	h.pump("本地终端拆分", func() bool { return tab.root.leaves() == 2 })
 	if tab.root.leaves() != 2 {
 		t.Fatalf("本地终端应能正常拆分窗格，leaves=%d", tab.root.leaves())
@@ -1688,7 +1696,7 @@ func TestKeyboardInteractiveChallengeFlow(t *testing.T) {
 	}
 }
 
-// 在远程标签打开文件抽屉后切到本地终端：抽屉说明原因，不是一块空白。
+// 在远程标签打开文件抽屉后切到本地终端：抽屉状态按标签隔离保持收起；若本地标签展开抽屉也应说明原因，不是一块空白。
 func TestFilesDrawerOnLocalTabExplains(t *testing.T) {
 	h := newHarness(t)
 	h.connectDev()
@@ -1697,6 +1705,12 @@ func TestFilesDrawerOnLocalTabExplains(t *testing.T) {
 	h.click("新建")
 	h.tt.Frame()
 	h.click("本地终端")
+	h.tt.Frame()
+	if h.a.filesOpen {
+		t.Fatal("新开本地标签不应继承远程标签的文件抽屉展开状态")
+	}
+	h.a.tabs[1].filesOpen = true
+	h.a.filesOpen = true
 	h.tt.Frame()
 	if !h.tt.HasText("文件抽屉用于浏览远程主机的文件") {
 		t.Fatalf("本地标签的文件抽屉应说明原因: %q", h.tt.Texts())

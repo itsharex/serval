@@ -241,13 +241,21 @@ func TestPaneQuickAIButtonAndShortcut(t *testing.T) {
 	tb.focus.term.Feed([]byte("fatal error: connection refused\r\n"))
 	h.tt.Frame()
 
-	// 点击窗格标题栏的快捷 AI 分析按钮
-	h.click(locales.AiAnalyzeOutput())
-	h.pump("窗格快捷 AI 按钮触发分析", func() bool {
-		return h.a.ai.open && h.a.ai.command != ""
-	})
+	// 确认侧栏底部与窗格标题栏不再重复出现多余的 AI / 拆分入口
+	for _, dup := range []string{"AI 助手", "在当前窗格打开 AI", "向右拆分（" + shortcutText("D") + "）", "向下拆分"} {
+		if _, ok := h.tt.Find(dup); ok {
+			t.Fatalf("应已清理重复按钮 %q，保留唯一统一入口", dup)
+		}
+	}
 
-	// 关闭 AI 抽屉后测试 Cmd+E / Ctrl+Shift+E 快捷键
+	// 点击顶部标签栏的唯一 AI Agent 按钮只打开侧栏，不自动发起报错分析
+	h.click("AI Agent（" + shortcutText("I") + "）")
+	h.tt.Frame()
+	if !h.a.ai.open || h.a.ai.loading || len(h.a.ai.turns) != 0 {
+		t.Fatalf("点击 AI Agent 按钮不应自动执行分析: open=%v loading=%v turns=%d", h.a.ai.open, h.a.ai.loading, len(h.a.ai.turns))
+	}
+
+	// 关闭 AI 抽屉后测试 Cmd+E / Ctrl+Shift+E 快捷键触发报错分析
 	h.a.ai.open = false
 	h.a.ai.command = ""
 	h.tt.Frame()

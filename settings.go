@@ -1169,6 +1169,8 @@ var aiPresets = []aiPreset{
 	{ID: "deepseek", Name: "DeepSeek", Short: "DS", BaseURL: "https://api.deepseek.com/v1"},
 	{ID: "qwen", Name: "通义千问", Short: "QW", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
 	{ID: "kimi", Name: "Kimi", Short: "KM", BaseURL: "https://api.moonshot.cn/v1"},
+	{ID: "google", Name: "Google", Short: "GG", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai"},
+	{ID: "minimax", Name: "MiniMax", Short: "MM", BaseURL: "https://api.minimaxi.com/v1"},
 	{ID: "ollama", Name: "Ollama", Short: "OL", BaseURL: "http://localhost:11434/v1"},
 	{ID: "openrouter", Name: "OpenRouter", Short: "OR", BaseURL: "https://openrouter.ai/api/v1"},
 	{ID: "zhipu", Name: "智谱 GLM", Short: "ZP", BaseURL: "https://open.bigmodel.cn/api/paas/v4"},
@@ -1195,6 +1197,10 @@ func providerIDFor(name, baseURL string) string {
 		return "qwen"
 	case strings.Contains(lowURL, "moonshot"):
 		return "kimi"
+	case strings.Contains(lowURL, "generativelanguage.googleapis.com"):
+		return "google"
+	case strings.Contains(lowURL, "minimax"):
+		return "minimax"
 	case strings.Contains(lowURL, ":11434") || strings.Contains(lowURL, "ollama"):
 		return "ollama"
 	case strings.Contains(lowURL, "openrouter"):
@@ -1218,6 +1224,10 @@ func providerIDFor(name, baseURL string) string {
 		return "qwen"
 	case "kimi", "moonshot":
 		return "kimi"
+	case "google", "google ai", "google gemini", "gemini":
+		return "google"
+	case "minimax":
+		return "minimax"
 	case "ollama":
 		return "ollama"
 	case "openrouter":

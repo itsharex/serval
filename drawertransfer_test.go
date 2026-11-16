@@ -253,7 +253,8 @@ func TestDragOutSeparatesTabs(t *testing.T) {
 	h.click("信任并连接")
 	h.pump("第二个会话建立", func() bool { return len(h.a.tabs) == 2 })
 	tb2 := h.a.tabs[1]
-	// 抽屉是全局开关，第二台主机连上后已经对着新标签列出目录，直接刷新即可。
+	// 文件抽屉按标签页隔离，第二个标签默认收起，点开后再列出目录。
+	h.click("文件（" + shortcutText("J") + "）")
 	h.pump("打开第二个标签的文件列表", func() bool { return tb2.dir != "" })
 	h.click("刷新")
 	h.pump("列出第二个标签的文件", func() bool {

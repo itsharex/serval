@@ -108,7 +108,7 @@ func TestBroadcastInputReachesMembers(t *testing.T) {
 	tb := h.connectDev()
 	first := tb.focus
 
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.tt.Key(chromeShortcut(), ui.KeyD)
 	h.pump("拆分", func() bool { return tb.root.leaves() == 2 })
 	second := tb.focus
 	if second == first {
@@ -209,7 +209,7 @@ func TestBroadcastProductionConfirm(t *testing.T) {
 	}
 
 	first := tb.focus
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.tt.Key(chromeShortcut(), ui.KeyD)
 	h.pump("拆分", func() bool { return tb.root.leaves() == 2 })
 	second := tb.focus
 	if h.a.broadcast[second.id] {
@@ -250,7 +250,7 @@ func TestBroadcastOneClickExit(t *testing.T) {
 	tb := h.connectDev()
 	first := tb.focus
 
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.tt.Key(chromeShortcut(), ui.KeyD)
 	h.pump("拆分", func() bool { return tb.root.leaves() == 2 })
 	second := tb.focus
 
@@ -289,11 +289,11 @@ func TestBroadcastBarSelectAllAndChips(t *testing.T) {
 	tb := h.connectDev()
 	p1 := tb.focus
 
-	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.tt.Key(chromeShortcut(), ui.KeyD)
 	h.pump("第一次拆分", func() bool { return tb.root.leaves() == 2 })
 	p2 := tb.focus
 
-	h.click("向下拆分")
+	h.tt.Key(chromeShortcut()|ui.Alt, ui.KeyD)
 	h.pump("第二次拆分", func() bool { return tb.root.leaves() == 3 })
 	p3 := tb.focus
 
