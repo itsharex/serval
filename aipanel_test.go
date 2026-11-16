@@ -829,19 +829,36 @@ func TestAIAgentPermissionModes(t *testing.T) {
 	}
 }
 
-// TestAIAgentComposerSlashMentionsAndProfiles 测试设置页多模型配置保存、底部模型切换、@ 引用上下文与 / 快捷命令。
+// TestAIAgentComposerSlashMentionsAndProfiles 测试设置页多服务商独立保存、自动拉取模型、底部厂商模型切换、@ 引用上下文与 / 快捷命令。
 func TestAIAgentComposerSlashMentionsAndProfiles(t *testing.T) {
 	var seenModel string
 	var seenUserPrompt string
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if auth != "Bearer sk-ds-1" && auth != "Bearer test-sk" {
+		if auth != "Bearer sk-ds-1" && auth != "Bearer sk-oai-1" && auth != "Bearer test-sk" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		if r.URL.Path == "/models" {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+			w.Header().Set("Content-Type", "application/json")
+			if auth == "Bearer sk-oai-1" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": []map[string]string{
+						{"id": "gpt-6.1-terra"},
+						{"id": "gpt-5.4"},
+						{"id": "gpt-5.4-mini"},
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]string{
+					{"id": "deepseek-chat"},
+					{"id": "deepseek-reasoner"},
+					{"id": "text-embedding-3-small"},
+				},
+			})
 			return
 		}
 		var req map[string]any
@@ -866,23 +883,91 @@ func TestAIAgentComposerSlashMentionsAndProfiles(t *testing.T) {
 	h.tt.Frame()
 	h.click("AI")
 	h.tt.Frame()
+	if !h.tt.HasText("尚未添加 AI 提供商") {
+		t.Fatalf("未添加提供商时应展示引导提示，界面=%q", h.tt.Texts())
+	}
 
-	// 点击 DeepSeek 预设后填入本地 mock 地址并保存为多模型配置
+	// 1. 添加 Ollama 后删除并关闭设置再打开：验证删除后绝不会复活
+	h.click("+ 添加提供商")
+	h.tt.Frame()
+	h.click("Ollama")
+	h.tt.Frame()
+	if len(h.a.settings.AIProfiles) != 1 || h.a.settings.AIProfiles[0].ID != "ollama" {
+		t.Fatalf("添加 Ollama 失败: %+v", h.a.settings.AIProfiles)
+	}
+	h.click("删除 Ollama")
+	h.tt.Frame()
+	h.click(locales.Done())
+	h.tt.Frame()
+	if len(h.a.settings.AIProfiles) != 0 {
+		t.Fatalf("删除 Ollama 后关闭设置不应复活: %+v", h.a.settings.AIProfiles)
+	}
+
+	// 2. 重新打开设置，添加 DeepSeek 并从接口获取模型（不填任何硬编码旧模型）
+	h.click("设置")
+	h.tt.Frame()
+	h.click("AI")
+	h.tt.Frame()
+	h.click("+ 添加提供商")
+	h.tt.Frame()
 	h.click("DeepSeek")
 	h.tt.Frame()
+	if h.a.settingsPanel.aiModel != "" {
+		t.Fatalf("新建提供商不应预填硬编码默认模型，实际=%q", h.a.settingsPanel.aiModel)
+	}
 	h.a.settingsPanel.aiBaseURL = ts.URL
 	h.a.settingsPanel.aiKey = "sk-ds-1"
 	h.tt.Frame()
-	h.click("存为新配置")
+	h.click("获取模型")
+	h.pump("获取 DeepSeek 模型列表", func() bool {
+		return !h.a.settingsPanel.aiFetchBusy && len(h.a.settingsPanel.aiModels) == 2
+	})
+	if h.a.settingsPanel.aiModels[0] != "deepseek-chat" || h.a.settingsPanel.aiModels[1] != "deepseek-reasoner" {
+		t.Fatalf("获取并过滤模型列表失败: %+v", h.a.settingsPanel.aiModels)
+	}
+
+	// 3. 添加 OpenAI：DeepSeek 保持活跃，且 OpenAI 不应残留 DeepSeek 的 Key
+	h.click("+ 添加提供商")
 	h.tt.Frame()
-	if len(h.a.settings.AIProfiles) != 1 || h.a.settings.AIProfiles[0].Name != "DeepSeek" {
-		t.Fatalf("未能保存多模型配置: %+v", h.a.settings.AIProfiles)
+	h.click("OpenAI")
+	h.tt.Frame()
+	if h.a.settingsPanel.aiKey != "" {
+		t.Fatalf("新增 OpenAI 时不应残留上一个服务商的 Key: %q", h.a.settingsPanel.aiKey)
+	}
+	if h.a.settings.ActiveAIProfile != "deepseek" {
+		t.Fatalf("添加第二个服务商时原活跃服务商应保持活跃，实际=%q", h.a.settings.ActiveAIProfile)
+	}
+	h.a.settingsPanel.aiBaseURL = ts.URL
+	h.a.settingsPanel.aiKey = "sk-oai-1"
+	h.tt.Frame()
+	h.click("获取模型")
+	h.pump("获取 OpenAI 模型列表", func() bool {
+		return !h.a.settingsPanel.aiFetchBusy && len(h.a.settingsPanel.aiModels) == 3
+	})
+	if h.a.settingsPanel.aiModel != "gpt-5.4" {
+		t.Fatalf("应优先选用主流模型 gpt-5.4 而非 gpt-6.1-terra，实际=%q", h.a.settingsPanel.aiModel)
+	}
+	if h.tt.HasText("默认模型") {
+		t.Fatal("已从接口自动获取模型后不应再展示混淆的「默认模型」下拉项")
+	}
+
+	// 验证支持多个提供商同时处于活跃状态，并测试关闭/重新启用 OpenAI 开关
+	if len(h.a.configuredAIProfiles()) != 2 {
+		t.Fatalf("DeepSeek 与 OpenAI 均配置后应同时活跃: %+v", h.a.configuredAIProfiles())
+	}
+	h.click("启用 OpenAI")
+	h.tt.Frame()
+	if act := h.a.configuredAIProfiles(); len(act) != 1 || act[0].ID != "deepseek" {
+		t.Fatalf("关闭 OpenAI 开关后应仅剩 DeepSeek 活跃: %+v", act)
 	}
 
 	h.click(locales.Done())
 	h.tt.Frame()
+	if len(h.a.settings.AIProfiles) != 2 {
+		t.Fatalf("期望保存 2 个提供商卡片，实际=%+v", h.a.settings.AIProfiles)
+	}
 
-	// 打开本地终端与 AI 侧栏
+	// 打开本地终端与 AI 侧栏：此时 OpenAI 已关闭，底部菜单不应出现 OpenAI
 	h.click("新建")
 	h.tt.Frame()
 	h.click("本地终端")
@@ -890,9 +975,81 @@ func TestAIAgentComposerSlashMentionsAndProfiles(t *testing.T) {
 	h.a.openAI()
 	h.tt.Frame()
 
-	if !h.tt.HasText("DeepSeek · deepseek-chat") {
-		t.Fatalf("底部模型切换栏应显示当前激活配置，界面=%q", h.tt.Texts())
+	h.click("DeepSeek · deepseek-chat")
+	h.tt.Frame()
+	if h.tt.HasText("OpenAI") {
+		t.Fatalf("未活跃的 OpenAI 不应出现在 AI 面板模型菜单中，界面=%q", h.tt.Texts())
 	}
+	h.tt.CloseMenu()
+	h.tt.Frame()
+
+	// 回到设置重新打开 OpenAI 开关，确认多活跃提供商同时可见
+	h.click("设置")
+	h.tt.Frame()
+	h.click("AI")
+	h.tt.Frame()
+	h.click("启用 OpenAI")
+	h.tt.Frame()
+	if act := h.a.configuredAIProfiles(); len(act) != 2 {
+		t.Fatalf("重新开启 OpenAI 后应两个提供商同时活跃: %+v", act)
+	}
+	h.click(locales.Done())
+	h.tt.Frame()
+
+	if !h.tt.HasText("DeepSeek · deepseek-chat") {
+		t.Fatalf("底部模型切换栏应完整显示当前激活配置，界面=%q", h.tt.Texts())
+	}
+	btnBox, ok := h.tt.Find("DeepSeek · deepseek-chat")
+	if !ok || btnBox.W < 130 {
+		t.Fatalf("底部模型切换文字应完整展开不被截断: ok=%v box=%+v", ok, btnBox)
+	}
+
+	// 4. 在底部栏打开固定结构的厂商/模型菜单，通过子菜单切换同一厂商的不同模型
+	h.click("DeepSeek · deepseek-chat")
+	h.tt.Frame()
+	if !h.tt.HasText("DeepSeek") || !h.tt.HasText("OpenAI") {
+		t.Fatalf("多厂商时顶层菜单应保持固定一致的提供商列表，界面=%q", h.tt.Texts())
+	}
+	dsMenuBox, ok := h.tt.Find("DeepSeek")
+	if !ok {
+		t.Fatalf("未找到 DeepSeek 菜单项")
+	}
+	h.tt.Move(dsMenuBox.X+dsMenuBox.W/2, dsMenuBox.Y+dsMenuBox.H/2)
+	h.tt.Frame()
+	h.click("deepseek-reasoner")
+	h.tt.Frame()
+	if h.a.activeAIConfig().Model != "deepseek-reasoner" {
+		t.Fatalf("切换模型失败: %+v", h.a.activeAIConfig())
+	}
+	reasonerBox, ok := h.tt.Find("DeepSeek · deepseek-reasoner")
+	if !ok || reasonerBox.W <= 150 {
+		t.Fatalf("切换后底部模型文字应完整显示 deepseek-reasoner: ok=%v box=%+v", ok, reasonerBox)
+	}
+
+	// 5. 在底部栏通过子菜单切换到另一提供商及模型，再切回 DeepSeek
+	h.click("DeepSeek · deepseek-reasoner")
+	h.tt.Frame()
+	oaiMenuBox, ok := h.tt.Find("OpenAI")
+	if !ok {
+		t.Fatalf("未找到 OpenAI 菜单项")
+	}
+	h.tt.Move(oaiMenuBox.X+oaiMenuBox.W/2, oaiMenuBox.Y+oaiMenuBox.H/2)
+	h.tt.Frame()
+	if _, ok := h.tt.Find("gpt-5.4"); !ok {
+		t.Fatalf("悬停 OpenAI 后未展开子菜单中的 gpt-5.4")
+	}
+	h.click("gpt-5.4")
+	h.tt.Frame()
+	if h.a.activeAIConfig().ID != "openai" || h.a.activeAIConfig().Model != "gpt-5.4" {
+		t.Fatalf("底部栏切换提供商与模型失败: %+v", h.a.activeAIConfig())
+	}
+	h.click("OpenAI · gpt-5.4")
+	h.tt.Frame()
+	dsMenuBox, _ = h.tt.Find("DeepSeek")
+	h.tt.Move(dsMenuBox.X+dsMenuBox.W/2, dsMenuBox.Y+dsMenuBox.H/2)
+	h.tt.Frame()
+	h.click("deepseek-reasoner")
+	h.tt.Frame()
 
 	// 测试 @ 引用上下文
 	h.click("@")
@@ -910,8 +1067,8 @@ func TestAIAgentComposerSlashMentionsAndProfiles(t *testing.T) {
 	h.pump("斜杠命令执行完成", func() bool {
 		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
 	})
-	if seenModel != "deepseek-chat" || !strings.Contains(seenUserPrompt, "[附加主机信息]") {
-		t.Fatalf("期望使用 deepseek-chat 且附带主机信息，实际 model=%q prompt=%q", seenModel, seenUserPrompt)
+	if seenModel != "deepseek-reasoner" || !strings.Contains(seenUserPrompt, "[附加主机信息]") {
+		t.Fatalf("期望使用切换后的 deepseek-reasoner 且附带主机信息，实际 model=%q prompt=%q", seenModel, seenUserPrompt)
 	}
 
 	// /clear 清空对话
@@ -920,5 +1077,28 @@ func TestAIAgentComposerSlashMentionsAndProfiles(t *testing.T) {
 	h.tt.Frame()
 	if len(h.a.ai.turns) != 0 {
 		t.Fatalf("/clear 后应清空对话轮次: %d", len(h.a.ai.turns))
+	}
+}
+
+// TestDedupAIProfiles 验证历史版本重复保存的同服务商配置会自动去重合并，保留激活项和密钥。
+func TestDedupAIProfiles(t *testing.T) {
+	raw := []aiProfile{
+		{ID: "ai-1", Name: "OpenAI", BaseURL: "https://api.openai.com/v1", Model: "gpt-4o-mini", APIKey: "sk-oai"},
+		{ID: "ai-2", Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat", APIKey: "sk-ds-old"},
+		{ID: "ai-3", Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat", APIKey: ""},
+		{ID: "ai-4", Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", APIKey: "sk-ds-new", Models: []string{"deepseek-chat", "deepseek-reasoner"}},
+	}
+	deduped, active := dedupAIProfiles(raw, "ai-4")
+	if active != "deepseek" {
+		t.Fatalf("active=%q, want deepseek", active)
+	}
+	if len(deduped) != 2 {
+		t.Fatalf("去重后应剩 2 个服务商，实际=%+v", deduped)
+	}
+	if deduped[0].ID != "openai" || deduped[0].APIKey != "sk-oai" {
+		t.Fatalf("OpenAI 记录异常: %+v", deduped[0])
+	}
+	if deduped[1].ID != "deepseek" || deduped[1].Model != "deepseek-reasoner" || deduped[1].APIKey != "sk-ds-new" || len(deduped[1].Models) != 2 {
+		t.Fatalf("DeepSeek 合并记录异常: %+v", deduped[1])
 	}
 }

@@ -148,6 +148,8 @@ type app struct {
 	tunnels       map[string]*liveTunnel
 	forwardErr    map[string]string
 	settingsPanel settingsPanel
+	aiFetchSeq    uint64
+	aiFetchTimer  *time.Timer
 	ai            aiPanel
 	updateURL     string
 	httpClient    *http.Client
@@ -2371,65 +2373,160 @@ func (a *app) getAIKey() string {
 }
 
 func (a *app) activeAIConfig() aiProfile {
-	if a.settings.ActiveAIProfile != "" {
-		for _, prof := range a.settings.AIProfiles {
-			if prof.ID == a.settings.ActiveAIProfile {
-				baseURL := strings.TrimSpace(prof.BaseURL)
-				if baseURL == "" {
-					baseURL = ai.DefaultBaseURL
-				}
-				model := strings.TrimSpace(prof.Model)
-				if model == "" {
-					model = ai.DefaultModel
-				}
-				name := strings.TrimSpace(prof.Name)
-				if name == "" {
-					name = inferAIProviderName(baseURL)
-				}
-				return aiProfile{
-					ID:      prof.ID,
-					Name:    name,
-					BaseURL: baseURL,
-					Model:   model,
-					APIKey:  prof.APIKey,
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	if len(profiles) > 0 {
+		if activeID != "" {
+			for _, prof := range profiles {
+				if prof.ID == activeID && isAIProfileActive(prof) {
+					norm := normalizeAIProfile(prof)
+					if norm.Model == "" && len(norm.Models) > 0 {
+						norm.Model = ai.ChoosePreferredModel(norm.Models)
+					}
+					return norm
 				}
 			}
 		}
+		for _, prof := range profiles {
+			if isAIProfileActive(prof) {
+				norm := normalizeAIProfile(prof)
+				if norm.Model == "" && len(norm.Models) > 0 {
+					norm.Model = ai.ChoosePreferredModel(norm.Models)
+				}
+				return norm
+			}
+		}
+		return aiProfile{}
 	}
 	baseURL := strings.TrimSpace(a.settings.AIBaseURL)
+	model := strings.TrimSpace(a.settings.AIModel)
+	key := strings.TrimSpace(a.settings.AIKey)
+	if baseURL == "" && model == "" && key == "" {
+		return aiProfile{}
+	}
 	if baseURL == "" {
 		baseURL = ai.DefaultBaseURL
 	}
-	model := strings.TrimSpace(a.settings.AIModel)
-	if model == "" {
-		model = ai.DefaultModel
-	}
+	name := inferAIProviderName(baseURL)
 	return aiProfile{
-		Name:    inferAIProviderName(baseURL),
+		ID:      providerIDFor(name, baseURL),
+		Name:    name,
 		BaseURL: baseURL,
 		Model:   model,
-		APIKey:  a.settings.AIKey,
+		APIKey:  key,
 	}
 }
 
 func (a *app) switchAIProfile(id string) error {
-	for _, prof := range a.settings.AIProfiles {
+	profiles, _ := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	if id == "" {
+		next := a.settings
+		next.AIProfiles = profiles
+		next.ActiveAIProfile = ""
+		next.AIBaseURL = ""
+		next.AIModel = ""
+		next.AIKey = ""
+		return a.saveSettings(next)
+	}
+	for i, prof := range profiles {
 		if prof.ID != id {
 			continue
 		}
+		norm := normalizeAIProfile(prof)
+		norm.Disabled = false
+		if norm.Model == "" && len(norm.Models) > 0 {
+			norm.Model = ai.ChoosePreferredModel(norm.Models)
+		}
+		profiles[i] = norm
 		next := a.settings
-		next.ActiveAIProfile = prof.ID
-		next.AIBaseURL = prof.BaseURL
-		next.AIModel = prof.Model
-		next.AIKey = prof.APIKey
+		next.AIProfiles = profiles
+		next.ActiveAIProfile = norm.ID
+		next.AIBaseURL = norm.BaseURL
+		next.AIModel = norm.Model
+		next.AIKey = norm.APIKey
 		return a.saveSettings(next)
 	}
 	return nil
 }
 
+func (a *app) switchAIProviderModel(providerID, modelName string) error {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return nil
+	}
+	profiles, _ := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	for i, prof := range profiles {
+		if prof.ID != providerID {
+			continue
+		}
+		norm := normalizeAIProfile(prof)
+		norm.Model = modelName
+		norm.Disabled = false
+		profiles[i] = norm
+		next := a.settings
+		next.AIProfiles = profiles
+		next.ActiveAIProfile = norm.ID
+		next.AIBaseURL = norm.BaseURL
+		next.AIModel = norm.Model
+		next.AIKey = norm.APIKey
+		if err := a.saveSettings(next); err != nil {
+			return err
+		}
+		if a.settingsPanel.open && a.settingsPanel.editingProfileID == norm.ID {
+			a.settingsPanel.aiModel = modelName
+		}
+		return nil
+	}
+	cfg := a.activeAIConfig()
+	if cfg.ID == providerID || providerID == "" {
+		next := a.settings
+		next.AIModel = modelName
+		if err := a.saveSettings(next); err != nil {
+			return err
+		}
+		if a.settingsPanel.open {
+			a.settingsPanel.aiModel = modelName
+		}
+	}
+	return nil
+}
+
+func (a *app) modelsForProfile(_ string, cachedModels []string, currentModel string) []string {
+	list := mergeModelLists(cachedModels)
+	if m := strings.TrimSpace(currentModel); m != "" && !slices.Contains(list, m) {
+		list = append([]string{m}, list...)
+	}
+	return list
+}
+
+func (a *app) configuredAIProfiles() []aiProfile {
+	profiles, _ := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	if len(profiles) > 0 {
+		var out []aiProfile
+		for _, prof := range profiles {
+			norm := normalizeAIProfile(prof)
+			if isAIProfileActive(norm) {
+				out = append(out, norm)
+			}
+		}
+		return out
+	}
+	if cfg := a.activeAIConfig(); cfg.BaseURL != "" || cfg.Model != "" || cfg.APIKey != "" {
+		return []aiProfile{cfg}
+	}
+	return nil
+}
+
+func (a *app) openAISettings() {
+	a.openSettings()
+	a.settingsPanel.tab = settingsTabAI
+	if a.settingsPanel.editingProfileID != "" && len(a.settingsPanel.aiModels) == 0 {
+		a.fetchAIModels(false)
+	}
+}
+
 func (a *app) setAIKey(k string) {
 	k = strings.TrimSpace(k)
-	if k == a.settings.AIKey {
+	if k == a.settings.AIKey && a.settings.ActiveAIProfile == "" {
 		return
 	}
 	if k != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
@@ -2438,6 +2535,16 @@ func (a *app) setAIKey(k string) {
 	}
 	next := a.settings
 	next.AIKey = k
+	if next.ActiveAIProfile != "" && len(next.AIProfiles) > 0 {
+		profiles := append([]aiProfile(nil), next.AIProfiles...)
+		for i := range profiles {
+			if profiles[i].ID == next.ActiveAIProfile {
+				profiles[i].APIKey = k
+				break
+			}
+		}
+		next.AIProfiles = profiles
+	}
 	if err := a.saveSettings(next); err != nil {
 		a.notice = "保存 AI 密钥失败：" + err.Error()
 		return
@@ -2544,9 +2651,31 @@ func friendlyAIError(err error) string {
 		return "连接 AI 服务超时，请检查网络或代理设置"
 	case errors.Is(err, ai.ErrEmptyResponse):
 		return "AI 服务返回了空内容，请换个描述再试"
-	default:
-		return "无法连接到 AI 服务，请检查网络和端点地址"
 	}
+	var apiErr *ai.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusNotFound:
+			if apiErr.Message != "" {
+				return "所选模型或接口路径不可用（" + apiErr.Message + "），请切换其他模型或检查 Base URL"
+			}
+			return "所选模型或接口路径不存在（HTTP 404），请切换其他模型或检查 Base URL"
+		case http.StatusBadRequest, http.StatusUnprocessableEntity:
+			if apiErr.Message != "" {
+				return "AI 服务拒绝了请求（" + apiErr.Message + "），请尝试切换其他模型"
+			}
+			return "AI 服务请求参数或模型不受支持（HTTP 400），请尝试切换其他模型"
+		default:
+			if apiErr.Message != "" {
+				return fmt.Sprintf("AI 服务返回错误（HTTP %d：%s）", apiErr.StatusCode, apiErr.Message)
+			}
+			return fmt.Sprintf("AI 服务返回异常状态（HTTP %d）", apiErr.StatusCode)
+		}
+	}
+	if err != nil && strings.HasPrefix(err.Error(), "AI 服务返回错误") {
+		return err.Error()
+	}
+	return "无法连接到 AI 服务，请检查网络和端点地址"
 }
 
 func friendlyTelnetError(err error) string {

@@ -5,6 +5,7 @@ package ai
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -37,14 +39,14 @@ var (
 // DefaultBaseURL 是默认的 OpenAI 兼容端点。
 const DefaultBaseURL = "https://api.openai.com/v1"
 
-// DefaultModel 是默认的快速低成本模型。
-const DefaultModel = "gpt-4o-mini"
+// DefaultModel 是默认的模型名称。
+const DefaultModel = "gpt-5.4"
 
 // Config 是 AI 客户端配置。
 type Config struct {
 	BaseURL string // 如 https://api.openai.com/v1 或本地 http://localhost:11434/v1
 	APIKey  string // API 访问密钥
-	Model   string // 模型名称，如 gpt-4o-mini, deepseek-chat, qwen-turbo
+	Model   string // 模型名称，如 gpt-5.4, deepseek-chat, qwen3-max
 	Timeout time.Duration
 }
 
@@ -111,7 +113,8 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func isLocalEndpoint(baseURL string) bool {
+// IsLocalEndpoint 判断 baseURL 是否指向本机回环地址（如本地 Ollama，无需强制 API Key）。
+func IsLocalEndpoint(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return false
@@ -120,16 +123,67 @@ func isLocalEndpoint(baseURL string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
-func mapHTTPError(status int) error {
+func isLocalEndpoint(baseURL string) bool {
+	return IsLocalEndpoint(baseURL)
+}
+
+// APIError 表示 AI 服务端返回的 HTTP 错误响应（保留状态码与脱敏后的服务端提示）。
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("HTTP %d", e.StatusCode)
+}
+
+// Unwrap 使已有哨兵错误判断（errors.Is(err, ErrUnauthorized) 等）保持兼容。
+func (e *APIError) Unwrap() error {
 	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden:
 		return ErrUnauthorized
-	case status == http.StatusTooManyRequests:
+	case e.StatusCode == http.StatusTooManyRequests:
 		return ErrRateLimited
-	case status >= 500:
+	case e.StatusCode >= 500:
 		return ErrBadGateway
 	default:
-		return fmt.Errorf("HTTP %d", status)
+		return nil
+	}
+}
+
+func mapHTTPError(status int) error {
+	return &APIError{StatusCode: status}
+}
+
+func parseAPIError(status int, body []byte, secret string) error {
+	var msg string
+	if len(body) > 0 {
+		var envelope struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &envelope) == nil {
+			if envelope.Error != nil && strings.TrimSpace(envelope.Error.Message) != "" {
+				msg = strings.TrimSpace(envelope.Error.Message)
+			} else if strings.TrimSpace(envelope.Message) != "" {
+				msg = strings.TrimSpace(envelope.Message)
+			}
+		}
+	}
+	if secret != "" && msg != "" {
+		msg = strings.ReplaceAll(msg, secret, "***")
+	}
+	if runes := []rune(msg); len(runes) > 180 {
+		msg = string(runes[:180]) + "…"
+	}
+	return &APIError{
+		StatusCode: status,
+		Message:    msg,
 	}
 }
 
@@ -182,6 +236,245 @@ func (c *Client) Probe(ctx context.Context) error {
 	return err
 }
 
+// ListModels 从 OpenAI 兼容接口的 GET /models（本地 Ollama 可回退到 /api/tags）获取可用对话模型列表。
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	if c.apiKey == "" && !isLocalEndpoint(c.baseURL) {
+		return nil, ErrNoAPIKey
+	}
+	u, err := url.Parse(c.baseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, ErrInvalidEndpoint
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/models", nil)
+	if err != nil {
+		return nil, ErrInvalidEndpoint
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, mapTransportError(err)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return nil, mapHTTPError(resp.StatusCode)
+	}
+
+	var models []string
+	if resp.StatusCode == http.StatusOK {
+		if readErr != nil {
+			return nil, mapTransportError(readErr)
+		}
+		models = parseModelsResponse(body)
+	}
+
+	if len(models) == 0 && isLocalEndpoint(c.baseURL) {
+		if tags, tagErr := c.listOllamaTags(ctx); tagErr == nil && len(tags) > 0 {
+			models = tags
+		}
+	}
+
+	if len(models) == 0 {
+		if resp.StatusCode != http.StatusOK {
+			return nil, mapHTTPError(resp.StatusCode)
+		}
+		return nil, ErrEmptyResponse
+	}
+
+	return models, nil
+}
+
+func (c *Client) listOllamaTags(ctx context.Context) ([]string, error) {
+	base := strings.TrimRight(c.baseURL, "/")
+	base = strings.TrimSuffix(base, "/v1")
+	req, err := http.NewRequestWithContext(ctx, "GET", base+"/api/tags", nil)
+	if err != nil {
+		return nil, ErrInvalidEndpoint
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, mapTransportError(err)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	resp.Body.Close()
+	if err != nil {
+		return nil, mapTransportError(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, mapHTTPError(resp.StatusCode)
+	}
+	var payload struct {
+		Models []struct {
+			Name  string `json:"name"`
+			Model string `json:"model"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	var raw []string
+	for _, m := range payload.Models {
+		id := strings.TrimSpace(m.Name)
+		if id == "" {
+			id = strings.TrimSpace(m.Model)
+		}
+		if id != "" {
+			raw = append(raw, id)
+		}
+	}
+	return filterChatModelIDs(raw), nil
+}
+
+func parseModelsResponse(body []byte) []string {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	var raw []string
+	for _, item := range payload.Data {
+		if strings.TrimSpace(item.ID) != "" {
+			raw = append(raw, item.ID)
+		}
+	}
+	for _, item := range payload.Models {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			id = strings.TrimSpace(item.Name)
+		}
+		if id != "" {
+			raw = append(raw, id)
+		}
+	}
+	return filterChatModelIDs(raw)
+}
+
+func filterChatModelIDs(raw []string) []string {
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		id := normalizeModelID(item)
+		if id == "" || !isChatModelID(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	slices.SortStableFunc(out, func(a, b string) int {
+		return cmp.Compare(modelPreferenceRank(a), modelPreferenceRank(b))
+	})
+	return out
+}
+
+var preferredModelRanks = map[string]int{
+	"gpt-5.4":           10,
+	"gpt-5.4-mini":      11,
+	"gpt-5":             12,
+	"gpt-5-mini":        13,
+	"gpt-4.1":           14,
+	"gpt-4.1-mini":      15,
+	"gpt-4o":            16,
+	"gpt-4o-mini":       17,
+	"o3":                18,
+	"o4-mini":           19,
+	"deepseek-chat":     20,
+	"deepseek-reasoner": 21,
+	"qwen3-max":         30,
+	"qwen-max":          31,
+	"qwen-plus":         32,
+	"kimi-k2":           40,
+	"moonshot-v1-auto":  41,
+	"glm-4.5":           50,
+	"glm-4-plus":        51,
+}
+
+func modelPreferenceRank(id string) int {
+	low := strings.ToLower(strings.TrimSpace(id))
+	if r, ok := preferredModelRanks[low]; ok {
+		return r
+	}
+	// 将实验版、预览版、内测后缀或带日期快照的模型放到标准模型之后，避免优先选中冷门/不兼容型号
+	suffixes := []string{
+		"-terra", "-preview", "-exp", "-alpha", "-beta", "-test", "-dev",
+		"-2023", "-2024", "-2025", "-2026", "-2027", "-2028",
+	}
+	for _, s := range suffixes {
+		if strings.Contains(low, s) {
+			return 300
+		}
+	}
+	return 100
+}
+
+// ChoosePreferredModel 从可用模型列表中挑选优先级最高的主流对话模型。
+func ChoosePreferredModel(models []string) string {
+	best := ""
+	bestRank := 1 << 30
+	for _, m := range models {
+		id := strings.TrimSpace(m)
+		if id == "" {
+			continue
+		}
+		rank := modelPreferenceRank(id)
+		if best == "" || rank < bestRank {
+			best = id
+			bestRank = rank
+		}
+	}
+	return best
+}
+
+func normalizeModelID(id string) string {
+	id = strings.TrimSpace(id)
+	id = strings.TrimPrefix(id, "models/")
+	return strings.TrimSpace(id)
+}
+
+func isChatModelID(id string) bool {
+	if id == "" {
+		return false
+	}
+	low := strings.ToLower(id)
+	excluded := []string{
+		"embedding",
+		"tts",
+		"whisper",
+		"dall-e",
+		"moderation",
+		"babbage",
+		"davinci",
+		"transcribe",
+		"realtime",
+		"audio",
+		"sora",
+		"omni-moderation",
+		"gpt-image",
+		"canary",
+		"search-preview",
+		"computer-use",
+		"codex-mini",
+	}
+	for _, kw := range excluded {
+		if strings.Contains(low, kw) {
+			return false
+		}
+	}
+	return true
+}
+
 // Chat 发送一条对话请求并返回响应文本。
 func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 	return c.chatWithOptions(ctx, messages, 0)
@@ -197,11 +490,11 @@ func (c *Client) chatWithOptions(ctx context.Context, messages []Message, maxTok
 	}
 
 	endpoint := c.baseURL + "/chat/completions"
+	// 不强行传入 temperature，避免 gpt-5*/o3/o4 等仅接受默认采样参数的模型返回 HTTP 400。
 	reqBody, err := json.Marshal(chatRequest{
-		Model:       c.model,
-		Messages:    messages,
-		Temperature: 0.2, // 保持命令生成和错误分析严谨稳定
-		MaxTokens:   maxTokens,
+		Model:     c.model,
+		Messages:  messages,
+		MaxTokens: maxTokens,
 	})
 	if err != nil {
 		return "", err
@@ -228,7 +521,15 @@ func (c *Client) chatWithOptions(ctx context.Context, messages []Message, maxTok
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", mapHTTPError(resp.StatusCode)
+		chatErr := parseAPIError(resp.StatusCode, body, c.apiKey)
+		if shouldFallbackToResponses(resp.StatusCode, chatErr) {
+			if rRes, rStatus, rErr := c.doResponses(ctx, messages, nil, false, nil); rErr == nil && strings.TrimSpace(rRes.Content) != "" {
+				return strings.TrimSpace(rRes.Content), nil
+			} else if rErr != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed || (rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed && rStatus != 0)) {
+				return "", rErr
+			}
+		}
+		return "", chatErr
 	}
 
 	var chatResp chatResponse

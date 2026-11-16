@@ -111,11 +111,13 @@ type settings struct {
 
 // aiProfile 保存单个 AI 服务商与模型配置，密钥随保险库加密存储。
 type aiProfile struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	BaseURL string `json:"baseURL"`
-	Model   string `json:"model"`
-	APIKey  string `json:"apiKey,omitempty"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	BaseURL  string   `json:"baseURL"`
+	Model    string   `json:"model"`
+	APIKey   string   `json:"apiKey,omitempty"`
+	Models   []string `json:"models,omitempty"`
+	Disabled bool     `json:"disabled,omitempty"`
 }
 
 // deviceSettings 是只属于当前这台设备的设置，保存在配置目录下的 device.json，
@@ -249,14 +251,18 @@ type settingsPanel struct {
 	showS3Secret     bool
 
 	// AI 助手页草稿
-	aiProfileName string
-	aiBaseURL     string
-	aiModel       string
-	aiKey         string
-	showAIKey     bool
-	aiTestBusy    bool
-	aiTestOK      bool
-	aiTestMsg     string
+	editingProfileID string
+	aiProfileName    string
+	aiBaseURL        string
+	aiModel          string
+	aiKey            string
+	showAIKey        bool
+	aiModels         []string
+	aiManualModel    bool
+	aiFetchBusy      bool
+	aiTestBusy       bool
+	aiTestOK         bool
+	aiTestMsg        string
 
 	// WebDAV 专用字段
 	webdavServer   string
@@ -337,11 +343,33 @@ func (a *app) openSettings() {
 			p.syncVendor = "自定义"
 		}
 	}
-	cfg := a.activeAIConfig()
-	p.aiProfileName = cfg.Name
-	p.aiBaseURL = cfg.BaseURL
-	p.aiModel = cfg.Model
-	p.aiKey = cfg.APIKey
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	if len(profiles) > 0 {
+		for _, prof := range profiles {
+			if prof.ID == activeID {
+				norm := normalizeAIProfile(prof)
+				if !isAIProfileConfigured(norm) || (len(norm.Models) == 0 && norm.Model == "") {
+					p.editingProfileID = norm.ID
+					p.aiProfileName = norm.Name
+					p.aiBaseURL = norm.BaseURL
+					p.aiModel = norm.Model
+					p.aiKey = norm.APIKey
+					p.aiModels = mergeModelLists(norm.Models)
+					p.aiManualModel = len(p.aiModels) == 0
+				}
+				break
+			}
+		}
+	} else if a.settings.AIBaseURL != "" || a.settings.AIModel != "" || a.settings.AIKey != "" {
+		cfg := a.activeAIConfig()
+		p.editingProfileID = cfg.ID
+		p.aiProfileName = cfg.Name
+		p.aiBaseURL = cfg.BaseURL
+		p.aiModel = cfg.Model
+		p.aiKey = cfg.APIKey
+		p.aiModels = mergeModelLists(cfg.Models)
+		p.aiManualModel = len(p.aiModels) == 0
+	}
 	a.settingsPanel = p
 }
 
@@ -565,6 +593,9 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 						a.commitSyncDraft()
 					}
 					p.tab = nextTab
+					if p.tab == settingsTabAI && p.editingProfileID != "" && len(p.aiModels) == 0 {
+						a.fetchAIModels(false)
+					}
 				})
 				if int(p.tab) != tabIdx {
 					nextTab := settingsTab(tabIdx)
@@ -575,6 +606,9 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 						a.commitSyncDraft()
 					}
 					p.tab = nextTab
+					if p.tab == settingsTabAI && p.editingProfileID != "" && len(p.aiModels) == 0 {
+						a.fetchAIModels(false)
+					}
 				}
 			})
 			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-165, 120)).Children(func() {
@@ -735,6 +769,10 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) closeSettings() {
 	p := &a.settingsPanel
+	if a.aiFetchTimer != nil {
+		a.aiFetchTimer.Stop()
+		a.aiFetchTimer = nil
+	}
 	a.commitAISettings()
 	a.commitSyncDraft()
 	if a.setup.open {
@@ -746,11 +784,13 @@ func (a *app) closeSettings() {
 				prevThen()
 			}
 			if a.settingsPanel.err == "" {
+				a.aiFetchSeq++
 				a.settingsPanel = settingsPanel{}
 			}
 		}
 		return
 	}
+	a.aiFetchSeq++
 	a.settingsPanel = settingsPanel{}
 }
 
@@ -1116,283 +1156,912 @@ func themeNote(name string) string {
 }
 
 type aiPreset struct {
+	ID      string
 	Name    string
+	Short   string
 	BaseURL string
-	Model   string
 }
 
 var aiPresets = []aiPreset{
-	{Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
-	{Name: "OpenAI", BaseURL: "https://api.openai.com/v1", Model: "gpt-4o-mini"},
-	{Name: "通义千问", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-plus"},
-	{Name: "Kimi", BaseURL: "https://api.moonshot.cn/v1", Model: "moonshot-v1-8k"},
-	{Name: "Ollama", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5:7b"},
+	{ID: "openai", Name: "OpenAI", Short: "OA", BaseURL: "https://api.openai.com/v1"},
+	{ID: "deepseek", Name: "DeepSeek", Short: "DS", BaseURL: "https://api.deepseek.com/v1"},
+	{ID: "qwen", Name: "通义千问", Short: "QW", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+	{ID: "kimi", Name: "Kimi", Short: "KM", BaseURL: "https://api.moonshot.cn/v1"},
+	{ID: "ollama", Name: "Ollama", Short: "OL", BaseURL: "http://localhost:11434/v1"},
+	{ID: "openrouter", Name: "OpenRouter", Short: "OR", BaseURL: "https://openrouter.ai/api/v1"},
+	{ID: "zhipu", Name: "智谱 GLM", Short: "ZP", BaseURL: "https://open.bigmodel.cn/api/paas/v4"},
+	{ID: "doubao", Name: "豆包", Short: "DB", BaseURL: "https://ark.cn-beijing.volces.com/api/v3"},
+	{ID: "mimo", Name: "小米 MiMo", Short: "MI", BaseURL: "https://api.xiaomimimo.com/v1"},
+	{ID: "custom", Name: "自定义", Short: "AI", BaseURL: ""},
+}
+
+func aiPresetByID(id string) (aiPreset, bool) {
+	for _, pr := range aiPresets {
+		if pr.ID == id {
+			return pr, true
+		}
+	}
+	return aiPreset{}, false
+}
+
+func providerIDFor(name, baseURL string) string {
+	lowURL := strings.ToLower(strings.TrimSpace(baseURL))
+	switch {
+	case strings.Contains(lowURL, "deepseek"):
+		return "deepseek"
+	case strings.Contains(lowURL, "dashscope") || strings.Contains(lowURL, "aliyuncs"):
+		return "qwen"
+	case strings.Contains(lowURL, "moonshot"):
+		return "kimi"
+	case strings.Contains(lowURL, ":11434") || strings.Contains(lowURL, "ollama"):
+		return "ollama"
+	case strings.Contains(lowURL, "openrouter"):
+		return "openrouter"
+	case strings.Contains(lowURL, "bigmodel"):
+		return "zhipu"
+	case strings.Contains(lowURL, "volces"):
+		return "doubao"
+	case strings.Contains(lowURL, "xiaomimimo"):
+		return "mimo"
+	case strings.Contains(lowURL, "openai"):
+		return "openai"
+	}
+	lowName := strings.ToLower(strings.TrimSpace(name))
+	switch lowName {
+	case "deepseek":
+		return "deepseek"
+	case "openai":
+		return "openai"
+	case "通义千问", "qwen":
+		return "qwen"
+	case "kimi", "moonshot":
+		return "kimi"
+	case "ollama":
+		return "ollama"
+	case "openrouter":
+		return "openrouter"
+	case "智谱 glm", "智谱", "zhipu":
+		return "zhipu"
+	case "豆包", "doubao":
+		return "doubao"
+	case "小米 mimo", "mimo":
+		return "mimo"
+	default:
+		return "custom"
+	}
 }
 
 func inferAIProviderName(baseURL string) string {
-	low := strings.ToLower(baseURL)
-	switch {
-	case strings.Contains(low, "deepseek"):
-		return "DeepSeek"
-	case strings.Contains(low, "dashscope") || strings.Contains(low, "aliyuncs"):
-		return "通义千问"
-	case strings.Contains(low, "moonshot"):
-		return "Kimi"
-	case strings.Contains(low, ":11434") || strings.Contains(low, "ollama"):
-		return "Ollama"
-	case strings.Contains(low, "openai"):
-		return "OpenAI"
-	default:
-		return "自定义"
+	if id := providerIDFor("", baseURL); id != "custom" {
+		if pr, ok := aiPresetByID(id); ok {
+			return pr.Name
+		}
+	}
+	return "自定义"
+}
+
+func providerShortLabel(prof aiProfile) string {
+	if pr, ok := aiPresetByID(prof.ID); ok && pr.Short != "" {
+		return pr.Short
+	}
+	pid := providerIDFor(prof.Name, prof.BaseURL)
+	if pr, ok := aiPresetByID(pid); ok && pr.Short != "" {
+		return pr.Short
+	}
+	return "AI"
+}
+
+func mergeModelLists(lists ...[]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, list := range lists {
+		for _, item := range list {
+			m := strings.TrimSpace(item)
+			if m == "" || seen[m] {
+				continue
+			}
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func normalizeAIProfile(prof aiProfile) aiProfile {
+	baseURL := strings.TrimSpace(prof.BaseURL)
+	if baseURL == "" {
+		if pr, ok := aiPresetByID(prof.ID); ok && pr.BaseURL != "" {
+			baseURL = pr.BaseURL
+		}
+	}
+	name := strings.TrimSpace(prof.Name)
+	if name == "" {
+		if pr, ok := aiPresetByID(prof.ID); ok && prof.ID != "custom" {
+			name = pr.Name
+		} else if baseURL != "" {
+			name = inferAIProviderName(baseURL)
+		} else {
+			name = "自定义"
+		}
+	}
+	id := strings.TrimSpace(prof.ID)
+	if id == "" {
+		id = providerIDFor(name, baseURL)
+	} else if !strings.HasPrefix(id, "custom-") {
+		if _, ok := aiPresetByID(id); !ok {
+			if inferred := providerIDFor(name, baseURL); inferred != "custom" {
+				id = inferred
+			}
+		}
+	}
+	return aiProfile{
+		ID:       id,
+		Name:     name,
+		BaseURL:  baseURL,
+		Model:    strings.TrimSpace(prof.Model),
+		APIKey:   strings.TrimSpace(prof.APIKey),
+		Models:   mergeModelLists(prof.Models),
+		Disabled: prof.Disabled,
+	}
+}
+
+func isAIProfileConfigured(prof aiProfile) bool {
+	if strings.TrimSpace(prof.APIKey) != "" {
+		return true
+	}
+	baseURL := strings.TrimSpace(prof.BaseURL)
+	return baseURL != "" && ai.IsLocalEndpoint(baseURL)
+}
+
+func isAIProfileActive(prof aiProfile) bool {
+	return !prof.Disabled && isAIProfileConfigured(prof)
+}
+
+func dedupAIProfiles(profiles []aiProfile, activeID string) ([]aiProfile, string) {
+	if len(profiles) == 0 {
+		return nil, ""
+	}
+	type slot struct {
+		profile aiProfile
+		active  bool
+	}
+	slots := make(map[string]*slot, len(profiles))
+	var order []string
+	var resolvedActive string
+
+	for _, raw := range profiles {
+		isActive := activeID != "" && raw.ID == activeID
+		pid := strings.TrimSpace(raw.ID)
+		if !strings.HasPrefix(pid, "custom-") {
+			if _, ok := aiPresetByID(pid); !ok {
+				if inferred := providerIDFor(raw.Name, raw.BaseURL); inferred != "custom" {
+					pid = inferred
+				} else if pid == "" {
+					pid = "custom"
+				}
+			}
+		}
+		if isActive {
+			resolvedActive = pid
+		}
+		cur, exists := slots[pid]
+		if !exists {
+			s := &slot{
+				profile: aiProfile{
+					ID:       pid,
+					Name:     strings.TrimSpace(raw.Name),
+					BaseURL:  strings.TrimSpace(raw.BaseURL),
+					Model:    strings.TrimSpace(raw.Model),
+					APIKey:   strings.TrimSpace(raw.APIKey),
+					Models:   mergeModelLists(raw.Models),
+					Disabled: raw.Disabled,
+				},
+				active: isActive,
+			}
+			if s.profile.Name == "" {
+				if pr, ok := aiPresetByID(pid); ok && pid != "custom" {
+					s.profile.Name = pr.Name
+				} else {
+					s.profile.Name = inferAIProviderName(s.profile.BaseURL)
+				}
+			}
+			slots[pid] = s
+			order = append(order, pid)
+			continue
+		}
+
+		mergedModels := mergeModelLists(cur.profile.Models, raw.Models)
+		newKey := strings.TrimSpace(raw.APIKey)
+		replace := false
+		switch {
+		case isActive:
+			replace = true
+		case !cur.active && (newKey != "" || cur.profile.APIKey == ""):
+			replace = true
+		}
+		if replace {
+			fallbackKey := cur.profile.APIKey
+			cur.profile = aiProfile{
+				ID:       pid,
+				Name:     strings.TrimSpace(raw.Name),
+				BaseURL:  strings.TrimSpace(raw.BaseURL),
+				Model:    strings.TrimSpace(raw.Model),
+				APIKey:   newKey,
+				Models:   mergedModels,
+				Disabled: raw.Disabled,
+			}
+			if cur.profile.APIKey == "" {
+				cur.profile.APIKey = fallbackKey
+			}
+			if cur.profile.Name == "" {
+				if pr, ok := aiPresetByID(pid); ok && pid != "custom" {
+					cur.profile.Name = pr.Name
+				} else {
+					cur.profile.Name = inferAIProviderName(cur.profile.BaseURL)
+				}
+			}
+			if isActive {
+				cur.active = true
+			}
+		} else {
+			cur.profile.Models = mergedModels
+			if cur.profile.APIKey == "" && newKey != "" {
+				cur.profile.APIKey = newKey
+			}
+		}
+	}
+
+	out := make([]aiProfile, 0, len(order))
+	for _, pid := range order {
+		out = append(out, slots[pid].profile)
+	}
+	if resolvedActive == "" && activeID != "" {
+		if _, ok := slots[activeID]; ok {
+			resolvedActive = activeID
+		}
+	}
+	return out, resolvedActive
+}
+
+func (a *app) startEditingAIProfile(prof aiProfile) {
+	p := &a.settingsPanel
+	norm := normalizeAIProfile(prof)
+	a.aiFetchSeq++
+	p.aiFetchBusy = false
+	p.editingProfileID = norm.ID
+	p.aiProfileName = norm.Name
+	p.aiBaseURL = norm.BaseURL
+	p.aiModel = norm.Model
+	p.aiKey = norm.APIKey
+	p.aiModels = mergeModelLists(norm.Models)
+	p.aiManualModel = len(p.aiModels) == 0
+	p.aiTestMsg = ""
+	if len(p.aiModels) == 0 && (norm.APIKey != "" || (norm.BaseURL != "" && ai.IsLocalEndpoint(norm.BaseURL))) {
+		a.fetchAIModels(false)
+	}
+}
+
+func (a *app) toggleEditAIProfile(id string) {
+	p := &a.settingsPanel
+	if p.editingProfileID == id {
+		a.commitAISettings()
+		p.editingProfileID = ""
+		p.aiTestMsg = ""
+		return
+	}
+	if p.editingProfileID != "" {
+		a.commitAISettings()
+		if p.err != "" {
+			return
+		}
+	}
+	profiles, _ := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	for _, prof := range profiles {
+		if prof.ID == id {
+			a.startEditingAIProfile(prof)
+			return
+		}
+	}
+}
+
+func (a *app) addOrEditAIProvider(preset aiPreset) {
+	p := &a.settingsPanel
+	if p.editingProfileID != "" && strings.TrimSpace(p.aiKey) != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
+		a.requireProtection(func() { a.addOrEditAIProvider(preset) })
+		return
+	}
+	if p.editingProfileID != "" {
+		a.commitAISettings()
+		if p.err != "" {
+			return
+		}
+	}
+
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	if preset.ID != "custom" {
+		for _, prof := range profiles {
+			if prof.ID == preset.ID {
+				a.startEditingAIProfile(prof)
+				return
+			}
+		}
+	}
+
+	id := preset.ID
+	if id == "custom" {
+		id = fmt.Sprintf("custom-%d", time.Now().UnixNano())
+	}
+	newProf := aiProfile{
+		ID:      id,
+		Name:    preset.Name,
+		BaseURL: preset.BaseURL,
+	}
+	profiles = append(profiles, newProf)
+
+	next := a.settings
+	next.AIProfiles = profiles
+	if activeID == "" && isAIProfileConfigured(newProf) {
+		activeID = newProf.ID
+		next.AIBaseURL = newProf.BaseURL
+		next.AIModel = newProf.Model
+		next.AIKey = newProf.APIKey
+	}
+	next.ActiveAIProfile = activeID
+	if err := a.saveSettings(next); err != nil {
+		p.err = err.Error()
+		return
+	}
+	a.startEditingAIProfile(newProf)
+}
+
+func (a *app) toggleAIProfileInSettings(id string, on bool) {
+	p := &a.settingsPanel
+	if p.editingProfileID == id {
+		a.commitAISettings()
+		if p.err != "" {
+			return
+		}
+	}
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	idx := slices.IndexFunc(profiles, func(prof aiProfile) bool { return prof.ID == id })
+	if idx < 0 {
+		return
+	}
+	if on && !isAIProfileConfigured(profiles[idx]) {
+		profiles[idx].Disabled = false
+		next := a.settings
+		next.AIProfiles = profiles
+		_ = a.saveSettings(next)
+		a.startEditingAIProfile(profiles[idx])
+		p.aiTestOK = false
+		p.aiTestMsg = "请先填写 API Key，保存后即可在 AI 面板中使用"
+		return
+	}
+
+	profiles[idx].Disabled = !on
+	if !on && activeID == id {
+		activeID = ""
+		for _, pr := range profiles {
+			if isAIProfileActive(pr) {
+				activeID = pr.ID
+				break
+			}
+		}
+	} else if on {
+		curActiveIdx := slices.IndexFunc(profiles, func(pr aiProfile) bool { return pr.ID == activeID })
+		if activeID == "" || curActiveIdx < 0 || !isAIProfileActive(profiles[curActiveIdx]) {
+			activeID = id
+		}
+	}
+
+	next := a.settings
+	next.AIProfiles = profiles
+	next.ActiveAIProfile = activeID
+	next.AIBaseURL = ""
+	next.AIModel = ""
+	next.AIKey = ""
+	for _, pr := range profiles {
+		if pr.ID == activeID {
+			norm := normalizeAIProfile(pr)
+			next.AIBaseURL = norm.BaseURL
+			next.AIModel = norm.Model
+			next.AIKey = norm.APIKey
+			break
+		}
+	}
+	if err := a.saveSettings(next); err != nil {
+		p.err = err.Error()
+	}
+}
+
+func (a *app) deleteAIProfileInSettings(id string) {
+	p := &a.settingsPanel
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	var kept []aiProfile
+	for _, prof := range profiles {
+		if prof.ID != id {
+			kept = append(kept, prof)
+		}
+	}
+
+	next := a.settings
+	next.AIProfiles = kept
+	if activeID == id {
+		next.ActiveAIProfile = ""
+		next.AIBaseURL = ""
+		next.AIModel = ""
+		next.AIKey = ""
+		for _, prof := range kept {
+			if isAIProfileActive(prof) {
+				norm := normalizeAIProfile(prof)
+				next.ActiveAIProfile = norm.ID
+				next.AIBaseURL = norm.BaseURL
+				next.AIModel = norm.Model
+				next.AIKey = norm.APIKey
+				break
+			}
+		}
+	}
+	if err := a.saveSettings(next); err != nil {
+		p.err = err.Error()
+		return
+	}
+
+	if p.editingProfileID == id || len(kept) == 0 {
+		if a.aiFetchTimer != nil {
+			a.aiFetchTimer.Stop()
+			a.aiFetchTimer = nil
+		}
+		a.aiFetchSeq++
+		p.aiFetchBusy = false
+		p.editingProfileID = ""
+		p.aiProfileName = ""
+		p.aiBaseURL = ""
+		p.aiModel = ""
+		p.aiKey = ""
+		p.aiModels = nil
+		p.aiManualModel = false
+		p.aiTestMsg = ""
 	}
 }
 
 func (a *app) commitAISettings() {
 	p := &a.settingsPanel
+	if !p.open && !p.active {
+		return
+	}
 	baseURL := strings.TrimSpace(p.aiBaseURL)
-	if baseURL == "" {
-		baseURL = ai.DefaultBaseURL
-	}
 	model := strings.TrimSpace(p.aiModel)
-	if model == "" {
-		model = ai.DefaultModel
-	}
 	key := strings.TrimSpace(p.aiKey)
 	name := strings.TrimSpace(p.aiProfileName)
 
-	// 若当前选中了某个已保存的多模型配置，优先同步更新该配置与兼容主字段
-	if a.settings.ActiveAIProfile != "" {
-		for i, prof := range a.settings.AIProfiles {
-			if prof.ID != a.settings.ActiveAIProfile {
-				continue
-			}
-			if name == "" {
-				name = prof.Name
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+
+	// 若未展开任何卡片，仅当测试或外部直接向草稿字段写入了值时才落盘。
+	if p.editingProfileID == "" {
+		if baseURL == "" && model == "" && key == "" && name == "" {
+			return
+		}
+		if len(profiles) > 0 && activeID != "" {
+			p.editingProfileID = activeID
+		} else {
+			if baseURL == "" {
+				baseURL = ai.DefaultBaseURL
 			}
 			if name == "" {
 				name = inferAIProviderName(baseURL)
 			}
-			if prof.BaseURL == baseURL && prof.Model == model && prof.APIKey == key && prof.Name == name {
-				return
-			}
-			if key != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
-				a.requireProtection(func() { a.commitAISettings() })
-				return
-			}
-			next := a.settings
-			next.AIProfiles = append([]aiProfile(nil), a.settings.AIProfiles...)
-			next.AIProfiles[i] = aiProfile{
-				ID:      prof.ID,
-				Name:    name,
-				BaseURL: baseURL,
-				Model:   model,
-				APIKey:  key,
-			}
-			next.AIBaseURL = baseURL
-			next.AIModel = model
-			next.AIKey = key
-			if err := a.saveSettings(next); err != nil {
-				p.err = err.Error()
-			}
-			return
+			p.editingProfileID = providerIDFor(name, baseURL)
+			p.aiProfileName = name
+			p.aiBaseURL = baseURL
 		}
 	}
 
-	curBaseURL := a.settings.AIBaseURL
-	if curBaseURL == "" {
-		curBaseURL = ai.DefaultBaseURL
-	}
-	curModel := a.settings.AIModel
-	if curModel == "" {
-		curModel = ai.DefaultModel
-	}
-
-	if baseURL != curBaseURL || model != curModel {
-		next := a.settings
-		next.AIBaseURL = baseURL
-		next.AIModel = model
-		if err := a.saveSettings(next); err != nil {
-			p.err = err.Error()
-		}
-	}
-	if key != a.getAIKey() {
-		a.setAIKey(key)
-	}
-}
-
-func (a *app) saveAsNewAIProfile() {
-	p := &a.settingsPanel
-	baseURL := strings.TrimSpace(p.aiBaseURL)
-	if baseURL == "" {
-		baseURL = ai.DefaultBaseURL
-	}
-	model := strings.TrimSpace(p.aiModel)
-	if model == "" {
-		model = ai.DefaultModel
-	}
-	key := strings.TrimSpace(p.aiKey)
-	name := strings.TrimSpace(p.aiProfileName)
-	if name == "" {
-		name = inferAIProviderName(baseURL)
-	}
-	if key != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
-		a.requireProtection(func() { a.saveAsNewAIProfile() })
+	idx := slices.IndexFunc(profiles, func(prof aiProfile) bool { return prof.ID == p.editingProfileID })
+	if idx < 0 && baseURL == "" && model == "" && key == "" {
 		return
 	}
-	id := fmt.Sprintf("ai-%d", time.Now().UnixNano())
+
+	if key != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
+		a.requireProtection(func() { a.commitAISettings() })
+		return
+	}
+
+	if idx >= 0 {
+		if baseURL == "" {
+			baseURL = profiles[idx].BaseURL
+		}
+		if name == "" {
+			name = profiles[idx].Name
+		}
+	}
+	if baseURL == "" {
+		if pr, ok := aiPresetByID(p.editingProfileID); ok && pr.BaseURL != "" {
+			baseURL = pr.BaseURL
+		} else {
+			baseURL = ai.DefaultBaseURL
+		}
+	}
+	if name == "" {
+		if pr, ok := aiPresetByID(p.editingProfileID); ok && p.editingProfileID != "custom" {
+			name = pr.Name
+		} else {
+			name = inferAIProviderName(baseURL)
+		}
+	}
+
+	disabled := false
+	if idx >= 0 {
+		disabled = profiles[idx].Disabled
+	}
+	updated := aiProfile{
+		ID:       p.editingProfileID,
+		Name:     name,
+		BaseURL:  baseURL,
+		Model:    model,
+		APIKey:   key,
+		Models:   mergeModelLists(p.aiModels),
+		Disabled: disabled,
+	}
+
+	wasActive := activeID == updated.ID
+	if activeID == "" && isAIProfileActive(updated) {
+		activeID = updated.ID
+		wasActive = true
+	}
+
+	if idx >= 0 {
+		old := profiles[idx]
+		if old.Name == updated.Name &&
+			old.BaseURL == updated.BaseURL &&
+			old.Model == updated.Model &&
+			old.APIKey == updated.APIKey &&
+			old.Disabled == updated.Disabled &&
+			slices.Equal(old.Models, updated.Models) &&
+			a.settings.ActiveAIProfile == activeID &&
+			len(profiles) == len(a.settings.AIProfiles) &&
+			(!wasActive || (a.settings.AIBaseURL == updated.BaseURL && a.settings.AIModel == updated.Model && a.settings.AIKey == updated.APIKey)) {
+			return
+		}
+		profiles[idx] = updated
+	} else {
+		profiles = append(profiles, updated)
+	}
+
 	next := a.settings
-	next.AIProfiles = append([]aiProfile(nil), a.settings.AIProfiles...)
-	next.AIProfiles = append(next.AIProfiles, aiProfile{
-		ID:      id,
-		Name:    name,
-		BaseURL: baseURL,
-		Model:   model,
-		APIKey:  key,
-	})
-	next.ActiveAIProfile = id
-	next.AIBaseURL = baseURL
-	next.AIModel = model
-	next.AIKey = key
+	next.AIProfiles = profiles
+	next.ActiveAIProfile = activeID
+	if wasActive {
+		next.AIBaseURL = updated.BaseURL
+		next.AIModel = updated.Model
+		next.AIKey = updated.APIKey
+	}
 	if err := a.saveSettings(next); err != nil {
 		p.err = err.Error()
-		return
-	}
-	p.aiProfileName = name
-	p.aiTestMsg = "已保存并切换到配置：" + name + " · " + model
-	p.aiTestOK = true
-}
-
-func (a *app) selectAIProfileInSettings(id string) {
-	for _, prof := range a.settings.AIProfiles {
-		if prof.ID != id {
-			continue
-		}
-		if err := a.switchAIProfile(id); err != nil {
-			a.settingsPanel.err = err.Error()
-			return
-		}
-		a.settingsPanel.aiProfileName = prof.Name
-		a.settingsPanel.aiBaseURL = prof.BaseURL
-		a.settingsPanel.aiModel = prof.Model
-		a.settingsPanel.aiKey = prof.APIKey
-		a.settingsPanel.aiTestMsg = ""
-		return
 	}
 }
 
-func (a *app) deleteAIProfileInSettings(id string) {
+func (a *app) scheduleAIKeyModelRefresh() {
+	if a.aiFetchTimer != nil {
+		a.aiFetchTimer.Stop()
+	}
+	a.aiFetchTimer = time.AfterFunc(450*time.Millisecond, func() {
+		a.post(func() {
+			p := &a.settingsPanel
+			if !p.open || p.editingProfileID == "" || strings.TrimSpace(p.aiKey) == "" {
+				return
+			}
+			a.commitAISettings()
+			a.fetchAIModels(false)
+		})
+	})
+}
+
+func (a *app) fetchAIModels(manual bool) {
+	p := &a.settingsPanel
+	baseURL := strings.TrimSpace(p.aiBaseURL)
+	if baseURL == "" && p.editingProfileID != "" {
+		if pr, ok := aiPresetByID(p.editingProfileID); ok {
+			baseURL = pr.BaseURL
+		}
+	}
+	if baseURL == "" {
+		if manual {
+			p.aiTestOK = false
+			p.aiTestMsg = "请先填写 Base URL"
+		}
+		return
+	}
+	key := strings.TrimSpace(p.aiKey)
+	if key == "" && !ai.IsLocalEndpoint(baseURL) {
+		if manual {
+			p.aiTestOK = false
+			p.aiTestMsg = "请先填写 API Key 后再获取模型列表"
+		}
+		return
+	}
+
+	a.aiFetchSeq++
+	seq := a.aiFetchSeq
+	targetID := p.editingProfileID
+	p.aiFetchBusy = true
+	if manual {
+		p.aiTestMsg = ""
+	}
+
+	client := ai.NewClient(ai.Config{
+		BaseURL: baseURL,
+		APIKey:  key,
+		Timeout: 8 * time.Second,
+	})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		models, err := client.ListModels(ctx)
+		cancel()
+		a.post(func() {
+			p := &a.settingsPanel
+			if !p.open || seq != a.aiFetchSeq {
+				return
+			}
+			p.aiFetchBusy = false
+			if err != nil {
+				if manual {
+					p.aiTestOK = false
+					p.aiTestMsg = "获取模型失败：" + friendlyAIError(err)
+				}
+				return
+			}
+			ordered := mergeModelLists(models)
+			p.aiModels = ordered
+			p.aiManualModel = false
+			curModel := strings.TrimSpace(p.aiModel)
+			if curModel == "" || !slices.Contains(ordered, curModel) {
+				p.aiModel = ai.ChoosePreferredModel(ordered)
+			}
+			if targetID != "" && p.editingProfileID == targetID {
+				a.commitAISettings()
+			} else if targetID != "" {
+				a.syncFetchedAIModels(targetID, ordered)
+			}
+			if manual {
+				p.aiTestOK = true
+				p.aiTestMsg = fmt.Sprintf("已从接口获取 %d 个可用模型", len(ordered))
+			}
+		})
+	}()
+}
+
+func (a *app) syncFetchedAIModels(providerID string, models []string) {
+	if a.vault == nil || a.vault.State() == vault.Locked {
+		return
+	}
+	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	idx := slices.IndexFunc(profiles, func(prof aiProfile) bool { return prof.ID == providerID })
+	if idx < 0 || slices.Equal(profiles[idx].Models, models) {
+		return
+	}
+	profiles[idx].Models = append([]string(nil), models...)
+	if (profiles[idx].Model == "" || !slices.Contains(models, profiles[idx].Model)) && len(models) > 0 {
+		profiles[idx].Model = ai.ChoosePreferredModel(models)
+	}
 	next := a.settings
-	var kept []aiProfile
-	for _, prof := range a.settings.AIProfiles {
-		if prof.ID != id {
-			kept = append(kept, prof)
+	next.AIProfiles = profiles
+	if activeID != "" {
+		next.ActiveAIProfile = activeID
+		if activeID == providerID {
+			next.AIModel = profiles[idx].Model
 		}
 	}
-	next.AIProfiles = kept
-	if next.ActiveAIProfile == id {
-		if len(kept) > 0 {
-			next.ActiveAIProfile = kept[0].ID
-			next.AIBaseURL = kept[0].BaseURL
-			next.AIModel = kept[0].Model
-			next.AIKey = kept[0].APIKey
-		} else {
-			next.ActiveAIProfile = ""
-		}
-	}
-	if err := a.saveSettings(next); err != nil {
-		a.settingsPanel.err = err.Error()
-		return
-	}
-	cfg := a.activeAIConfig()
-	a.settingsPanel.aiProfileName = cfg.Name
-	a.settingsPanel.aiBaseURL = cfg.BaseURL
-	a.settingsPanel.aiModel = cfg.Model
-	a.settingsPanel.aiKey = cfg.APIKey
+	_ = a.saveSettings(next)
 }
 
 func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
 	t := c.Theme()
 
-	// 服务商快速预设
-	ui.Field(c, "服务商预设", func() {
-		ui.Row(c).Gap(6).Wrap().Children(func() {
-			for _, pr := range aiPresets {
-				preset := pr
-				selected := strings.EqualFold(strings.TrimRight(strings.TrimSpace(p.aiBaseURL), "/"), preset.BaseURL)
-				b := ui.Button(c, preset.Name).Key("aiPreset:"+preset.Name).Height(26).Padding(0, 10)
-				if selected {
-					b.Background(t.Accent.Alpha(0.14)).TextColor(t.Accent)
-				}
-				b.OnClick(func() {
-					p.aiProfileName = preset.Name
-					p.aiBaseURL = preset.BaseURL
-					p.aiModel = preset.Model
-					p.aiTestMsg = ""
-				})
-			}
-		})
-	}).Description("点击服务商自动填充端点与推荐模型；再填入 API Key 即可使用。")
-
-	if len(a.settings.AIProfiles) > 0 {
-		ui.Field(c, "已保存配置", func() {
-			ui.Column(c).Gap(6).Children(func() {
-				for _, prof := range a.settings.AIProfiles {
-					item := prof
-					active := a.settings.ActiveAIProfile == item.ID
-					row := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8).Radius(design.RadiusRow).Background(colors.Hover)
-					if active {
-						row.Background(t.Accent.Alpha(0.12)).Border(1, t.Accent.Alpha(0.35))
-					}
-					row.Children(func() {
-						label := item.Name + " · " + item.Model
-						ui.ButtonBase(c).Key("aiProfileUse:" + item.ID).Grow(1).MinWidth(0).Children(func() {
-							ui.Text(c, label).FontSize(design.TextBody).SingleLine().Ellipsis("…")
-						}).OnClick(func() {
-							a.selectAIProfileInSettings(item.ID)
-						})
-						if active {
-							ui.Text(c, "当前").FontSize(design.TextSmall).TextColor(t.Accent).Shrink(0)
-						}
-						ui.ButtonBase(c).Key("aiProfileDel:"+item.ID).Label("删除配置 "+label).Size(22, 22).Center().Radius(6).Children(func() {
-							ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
-						}).OnClick(func() {
-							a.deleteAIProfileInSettings(item.ID)
-						})
-					})
-				}
-			})
-		}).Description("可在 AI Agent 面板底部栏一键切换这些已保存的模型配置。")
+	profiles, _ := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
+	if len(profiles) == 0 && (a.settings.AIBaseURL != "" || a.settings.AIModel != "" || a.settings.AIKey != "") {
+		cfg := a.activeAIConfig()
+		if cfg.BaseURL != "" || cfg.Model != "" || cfg.APIKey != "" {
+			profiles = []aiProfile{cfg}
+		}
 	}
 
-	ui.Field(c, "配置名称", func() {
+	// 顶栏：左“提供商”，右“+ 添加提供商”下拉菜单
+	ui.Row(c).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "提供商").FontSize(design.TextBody).FontWeight(600).Grow(1)
+		c.Key("aiAddProviderBtn")
+		ui.PopoverMenuButton(c, "+ 添加提供商", func(m *ui.Menu) {
+			for _, pr := range aiPresets {
+				preset := pr
+				if m.Item(preset.Name).ID("addProvider:" + preset.ID).Chosen() {
+					a.addOrEditAIProvider(preset)
+				}
+			}
+		}).Height(28).Padding(0, 12)
+	})
+
+	draftOnly := len(profiles) == 0 && (p.editingProfileID != "" || strings.TrimSpace(p.aiBaseURL) != "" || strings.TrimSpace(p.aiModel) != "" || strings.TrimSpace(p.aiKey) != "")
+	if len(profiles) == 0 && !draftOnly {
+		ui.Column(c).Padding(18, 14).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
+			ui.Text(c, "尚未添加 AI 提供商").FontWeight(600)
+			ui.Text(c, "点击右上角「+ 添加提供商」选择 OpenAI、DeepSeek、通义千问、Kimi、Ollama 或自定义兼容接口，填入 API Key 后即可自动获取模型列表。").
+				FontSize(design.TextSmall).TextColor(t.TextMuted)
+		})
+		return
+	}
+
+	if draftOnly {
+		ui.Column(c).Padding(12).Gap(10).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
+			a.renderAIProfileEditor(c, colors)
+		})
+		return
+	}
+
+	ui.Column(c).Gap(10).Children(func() {
+		for _, prof := range profiles {
+			item := normalizeAIProfile(prof)
+			isEditing := p.editingProfileID == item.ID
+			if isEditing {
+				if strings.TrimSpace(p.aiProfileName) != "" {
+					item.Name = strings.TrimSpace(p.aiProfileName)
+				}
+				item.BaseURL = strings.TrimSpace(p.aiBaseURL)
+				item.Model = strings.TrimSpace(p.aiModel)
+				item.APIKey = strings.TrimSpace(p.aiKey)
+				if len(p.aiModels) > 0 {
+					item.Models = mergeModelLists(p.aiModels)
+				}
+			}
+			isActive := isAIProfileActive(item)
+
+			cardBg := colors.Hover
+			borderCol := colors.CardBorder
+			if isActive {
+				cardBg = t.Accent.Alpha(0.08)
+				borderCol = t.Accent.Alpha(0.35)
+			}
+
+			ui.Column(c).Key("aiCard:"+item.ID).Padding(12, 14).Gap(12).Radius(design.RadiusRow).Background(cardBg).Border(1, borderCol).Children(func() {
+				// 卡片头：左侧图标与状态摘要，右侧编辑、删除、启用开关
+				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+					badgeBg := colors.Chip
+					badgeFg := t.TextMuted
+					if isActive {
+						badgeBg = t.Accent.Alpha(0.18)
+						badgeFg = t.Accent
+					}
+					ui.Box(c).Size(34, 34).Radius(8).Background(badgeBg).Center().Shrink(0).Children(func() {
+						ui.Text(c, providerShortLabel(item)).FontSize(design.TextSmall).FontWeight(700).TextColor(badgeFg)
+					})
+
+					ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, item.Name).FontSize(design.TextBody).FontWeight(600).SingleLine().Ellipsis("…")
+							if isActive {
+								chip(c, "活跃", t.Accent, t.Accent.Alpha(0.15))
+							}
+						})
+
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+							switch {
+							case item.APIKey != "":
+								ui.Text(c, "API Key 已配置").FontSize(design.TextSmall).TextColor(colors.Live).Shrink(0)
+							case item.BaseURL != "" && ai.IsLocalEndpoint(item.BaseURL):
+								ui.Text(c, "本地服务").FontSize(design.TextSmall).TextColor(colors.Live).Shrink(0)
+							default:
+								ui.Text(c, "未设置 API Key").FontSize(design.TextSmall).TextColor(t.TextMuted).Shrink(0)
+							}
+							switch {
+							case len(item.Models) > 0:
+								ui.Text(c, fmt.Sprintf("|  已获取 %d 个模型", len(item.Models))).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							case item.Model != "":
+								ui.Text(c, "|  "+item.Model).FontSize(design.TextSmall).Font(design.FontTerminal).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							case isAIProfileConfigured(item):
+								ui.Text(c, "|  待获取模型列表").FontSize(design.TextSmall).TextColor(colors.TextFaint).Shrink(0)
+							}
+						})
+					})
+
+					iconButton(c, colors, "pencil", "编辑 "+item.Name, func() {
+						a.toggleEditAIProfile(item.ID)
+					}).Key("aiEdit:" + item.ID)
+
+					iconButton(c, colors, "trash-2", "删除 "+item.Name, func() {
+						a.deleteAIProfileInSettings(item.ID)
+					}).Key("aiProfileDel:" + item.ID)
+
+					sw := isActive
+					c.Key("aiSwitch:" + item.ID)
+					if ui.Switch(c, &sw).Label("启用 " + item.Name).Changed() {
+						a.toggleAIProfileInSettings(item.ID, sw)
+					}
+				})
+
+				if isEditing {
+					ui.Divider(c)
+					a.renderAIProfileEditor(c, colors)
+				}
+			})
+		}
+	})
+}
+
+func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
+	p := &a.settingsPanel
+	t := c.Theme()
+
+	ui.Field(c, "显示名称", func() {
 		c.Key("setAIProfileName")
-		ui.TextInput(c, &p.aiProfileName).Placeholder("例如：DeepSeek 生产、OpenAI 主力").OnSubmit(func() {
+		ui.TextInput(c, &p.aiProfileName).Placeholder("例如：OpenAI、DeepSeek").OnSubmit(func() {
 			a.commitAISettings()
 		})
 	})
 
-	ui.Field(c, "API 端点 (Base URL)", func() {
+	keyPlaceholder := "输入 API Key"
+	if p.editingProfileID == "ollama" || (p.aiBaseURL != "" && ai.IsLocalEndpoint(p.aiBaseURL)) {
+		keyPlaceholder = "本地服务可留空"
+	}
+	ui.Field(c, "API Key", func() {
+		in := passwordInput(c, colors, "setAIKey", "API Key", &p.aiKey, &p.showAIKey, func(el ui.Element) {
+			el.Placeholder(keyPlaceholder).OnSubmit(func() {
+				a.commitAISettings()
+				a.fetchAIModels(false)
+			})
+		})
+		if in.Changed() {
+			a.scheduleAIKeyModelRefresh()
+		}
+	}).Description("密钥会加密保存进保险库（随同步），填入后将自动通过接口获取模型列表。")
+
+	ui.Field(c, "Base URL", func() {
 		c.Key("setAIBaseURL")
 		ui.TextInput(c, &p.aiBaseURL).Placeholder(ai.DefaultBaseURL).OnSubmit(func() {
 			a.commitAISettings()
 		})
-	}).Description("兼容 OpenAI 标准端点，如 DeepSeek、Kimi、通义千问或本地 Ollama (http://localhost:11434/v1)")
+	})
 
-	ui.Field(c, "模型名称 (Model)", func() {
-		c.Key("setAIModel")
-		ui.TextInput(c, &p.aiModel).Placeholder(ai.DefaultModel).OnSubmit(func() {
-			a.commitAISettings()
-		})
-	}).Description("例如：deepseek-chat, gpt-4o-mini, qwen-plus 等")
+	hasFetchedModels := len(p.aiModels) > 0
+	fetchLabel := "获取模型"
+	if hasFetchedModels {
+		fetchLabel = "刷新模型"
+	}
+	if p.aiFetchBusy {
+		fetchLabel = "获取中…"
+	}
 
-	ui.Field(c, "API Key (访问密钥)", func() {
-		passwordInput(c, colors, "setAIKey", "API Key", &p.aiKey, &p.showAIKey, func(el ui.Element) {
-			el.Placeholder("sk-...").OnSubmit(func() {
-				a.commitAISettings()
+	if hasFetchedModels && !p.aiManualModel {
+		ui.Field(c, "可用模型", func() {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, fmt.Sprintf("已自动获取 %d 个可用模型，可在 AI 面板底部菜单直接选择", len(p.aiModels))).
+					FontSize(design.TextSmall).TextColor(colors.Live).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+				ui.Button(c, fetchLabel).Key("aiFetchModelsBtn").Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
+					a.fetchAIModels(true)
+				})
+				ui.Button(c, "手动输入").Key("aiToggleManualModel").Shrink(0).OnClick(func() {
+					p.aiManualModel = true
+				})
 			})
 		})
-	}).Description("密钥会加密保存进保险库（随同步），修改后在关闭设置或回车时自动保存。")
+	} else {
+		modelDesc := "填入 API Key 后自动拉取模型列表；仅在接口不支持自动获取时手动输入。"
+		ui.Field(c, "模型名称（可选）", func() {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				c.Key("setAIModel")
+				ui.TextInput(c, &p.aiModel).Placeholder("自动获取失败或不支持列表时可手动填写模型名").Grow(1).MinWidth(0).OnSubmit(func() {
+					a.commitAISettings()
+				})
+				ui.Button(c, fetchLabel).Key("aiFetchModelsBtn").Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
+					a.fetchAIModels(true)
+				})
+				if hasFetchedModels {
+					ui.Button(c, "使用自动列表").Key("aiToggleManualModel").Shrink(0).OnClick(func() {
+						p.aiManualModel = false
+					})
+				}
+			})
+		}).Description(modelDesc)
+	}
 
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		label := "测试连接"
@@ -1403,27 +2072,110 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 			a.commitAISettings()
 			p.aiTestBusy = true
 			p.aiTestMsg = ""
-			client := ai.NewClient(ai.Config{
-				BaseURL: p.aiBaseURL,
-				Model:   p.aiModel,
-				APIKey:  p.aiKey,
-				Timeout: 10 * time.Second,
-			})
+			targetID := p.editingProfileID
+			baseURL := p.aiBaseURL
+			model := p.aiModel
+			key := p.aiKey
+			manualModel := p.aiManualModel
+			cachedModels := append([]string(nil), p.aiModels...)
 			go func() {
-				err := client.Probe(context.Background())
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				probeClient := ai.NewClient(ai.Config{
+					BaseURL: baseURL,
+					Model:   model,
+					APIKey:  key,
+					Timeout: 10 * time.Second,
+				})
+				var fetchedModels []string
+				models, listErr := probeClient.ListModels(ctx)
+				if listErr == nil && len(models) > 0 {
+					fetchedModels = models
+				}
+				candidates := fetchedModels
+				if len(candidates) == 0 {
+					candidates = cachedModels
+				}
+
+				testModel := strings.TrimSpace(model)
+				if !manualModel && len(candidates) > 0 {
+					if testModel == "" || !slices.Contains(candidates, testModel) {
+						testModel = ai.ChoosePreferredModel(candidates)
+					}
+				}
+
+				var err error
+				if testModel != "" {
+					chatClient := ai.NewClient(ai.Config{
+						BaseURL: baseURL,
+						Model:   testModel,
+						APIKey:  key,
+						Timeout: 12 * time.Second,
+					})
+					_, err = chatClient.Chat(ctx, []ai.Message{{Role: "user", Content: "hi"}})
+					if err != nil && !manualModel && len(candidates) > 1 {
+						var apiErr *ai.APIError
+						if errors.As(err, &apiErr) && (apiErr.StatusCode == 400 || apiErr.StatusCode == 404 || apiErr.StatusCode == 422) {
+							tries := 0
+							for _, alt := range candidates {
+								if alt == "" || alt == testModel {
+									continue
+								}
+								tries++
+								altClient := ai.NewClient(ai.Config{
+									BaseURL: baseURL,
+									Model:   alt,
+									APIKey:  key,
+									Timeout: 10 * time.Second,
+								})
+								if _, altErr := altClient.Chat(ctx, []ai.Message{{Role: "user", Content: "hi"}}); altErr == nil {
+									testModel = alt
+									err = nil
+									break
+								}
+								if tries >= 2 {
+									break
+								}
+							}
+						}
+					}
+				} else {
+					err = probeClient.Probe(ctx)
+				}
+
 				a.post(func() {
+					p := &a.settingsPanel
 					p.aiTestBusy = false
+					if len(fetchedModels) > 0 && p.open && p.editingProfileID == targetID {
+						p.aiModels = mergeModelLists(fetchedModels)
+					}
+					if testModel != "" && p.open && p.editingProfileID == targetID && !p.aiManualModel {
+						p.aiModel = testModel
+						a.commitAISettings()
+					} else if len(fetchedModels) > 0 && targetID != "" {
+						a.syncFetchedAIModels(targetID, mergeModelLists(fetchedModels))
+					}
 					if err != nil {
 						p.aiTestOK = false
 						p.aiTestMsg = "连接测试失败：" + friendlyAIError(err)
 					} else {
 						p.aiTestOK = true
-						p.aiTestMsg = "连接测试成功，AI 服务响应正常。"
+						if testModel != "" {
+							p.aiTestMsg = fmt.Sprintf("连接测试成功，模型 %s 响应正常。", testModel)
+						} else {
+							p.aiTestMsg = "连接测试成功，AI 服务响应正常。"
+						}
 					}
 				})
 			}()
 		})
-		ui.Button(c, "存为新配置").Key("aiSaveProfileBtn").OnClick(a.saveAsNewAIProfile)
+		if p.editingProfileID != "" {
+			ui.Button(c, "收起").Key("aiCollapseEditBtn").OnClick(func() {
+				a.commitAISettings()
+				p.editingProfileID = ""
+				p.aiTestMsg = ""
+			})
+		}
 	})
 
 	if p.aiTestMsg != "" {

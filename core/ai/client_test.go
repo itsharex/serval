@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -215,5 +216,119 @@ func TestDangerousCommandLexical(t *testing.T) {
 		if IsDangerousCommand(cmd) {
 			t.Errorf("unexpected dangerous false positive: %q", cmd)
 		}
+	}
+}
+
+func TestListModels(t *testing.T) {
+	// 1. OpenAI 标准 /models 响应解析与非对话模型过滤
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-valid" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{
+				{"id": "gpt-5.4"},
+				{"id": "models/gpt-5.4-mini"},
+				{"id": "gpt-5.4"},
+				{"id": "text-embedding-3-small"},
+				{"id": "whisper-1"},
+				{"id": "tts-1"},
+				{"id": "dall-e-3"},
+				{"id": "omni-moderation-latest"},
+				{"id": "gpt-4o-realtime-preview"},
+				{"id": "o4-mini"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-valid"})
+	models, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	want := []string{"gpt-5.4", "gpt-5.4-mini", "o4-mini"}
+	if !slices.Equal(models, want) {
+		t.Fatalf("ListModels got %v, want %v", models, want)
+	}
+
+	// 2. 未授权返回 ErrUnauthorized
+	cBad := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-wrong"})
+	if _, err := cBad.ListModels(context.Background()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+
+	// 3. 远程端点缺少 API Key 返回 ErrNoAPIKey
+	cNoKey := NewClient(Config{BaseURL: "https://api.openai.com/v1"})
+	if _, err := cNoKey.ListModels(context.Background()); !errors.Is(err, ErrNoAPIKey) {
+		t.Fatalf("expected ErrNoAPIKey, got %v", err)
+	}
+
+	// 4. 本地端点（127.0.0.1）无需 API Key，且 /models 404 时可回退到 /api/tags
+	tsOllama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			http.NotFound(w, r)
+		case "/api/tags":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"models": []map[string]string{
+					{"name": "qwen3:8b"},
+					{"name": "deepseek-r1:14b"},
+					{"name": "nomic-embed-text-embedding"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tsOllama.Close()
+
+	cLocal := NewClient(Config{BaseURL: tsOllama.URL + "/v1"})
+	localModels, err := cLocal.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("local ListModels fallback failed: %v", err)
+	}
+	wantLocal := []string{"qwen3:8b", "deepseek-r1:14b"}
+	if !slices.Equal(localModels, wantLocal) {
+		t.Fatalf("local ListModels got %v, want %v", localModels, wantLocal)
+	}
+}
+
+func TestModelPrioritySortingAndSelection(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{
+				{"id": "gpt-6.1-terra"},
+				{"id": "gpt-5.4-2026-03-05"},
+				{"id": "gpt-4.1"},
+				{"id": "gpt-5.4"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-test"})
+	models, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	want := []string{"gpt-5.4", "gpt-4.1", "gpt-6.1-terra", "gpt-5.4-2026-03-05"}
+	if !slices.Equal(models, want) {
+		t.Fatalf("ListModels order = %v, want %v", models, want)
+	}
+	if best := ChoosePreferredModel([]string{"gpt-6.1-terra", "gpt-5.4-2026-03-05", "gpt-4o", "gpt-5.4"}); best != "gpt-5.4" {
+		t.Fatalf("ChoosePreferredModel = %q, want gpt-5.4", best)
 	}
 }

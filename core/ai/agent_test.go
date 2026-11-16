@@ -163,3 +163,98 @@ func TestStreamChatFallbackWithoutStreamOptionsAndJSONResponse(t *testing.T) {
 		t.Fatalf("unexpected fallback result: %+v", res)
 	}
 }
+
+func TestStreamChatAndChatFallbackToResponsesAndOmitTemperature(t *testing.T) {
+	var round atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, hasTemp := req["temperature"]; hasTemp {
+			http.Error(w, `{"error":{"message":"temperature is not supported"}}`, http.StatusBadRequest)
+			return
+		}
+		switch r.URL.Path {
+		case "/chat/completions":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"This model is only supported in v1/responses"}}`))
+		case "/responses":
+			n := round.Add(1)
+			if n == 1 {
+				// 第一步：流式推理 + tool_call
+				w.Header().Set("Content-Type", "text/event-stream")
+				events := []string{
+					"event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"先查系统\"}\n\n",
+					"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_r1\",\"name\":\"host_info\",\"arguments\":\"\"}}\n\n",
+					"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{}\"} \n\n",
+					"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":10,\"total_tokens\":60}}}\n\n",
+				}
+				for _, ev := range events {
+					fmt.Fprint(w, ev)
+				}
+				return
+			}
+			// 第二步（RunAgent 工具结果回传）需要带 function_call_output；第三步（Chat）直接返回文本
+			if n == 2 {
+				inputs, _ := req["input"].([]any)
+				sawOutput := false
+				for _, it := range inputs {
+					m, _ := it.(map[string]any)
+					if m["type"] == "function_call_output" && m["call_id"] == "call_r1" {
+						sawOutput = true
+					}
+				}
+				if !sawOutput {
+					http.Error(w, `{"error":{"message":"missing function_call_output"}}`, http.StatusBadRequest)
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"output": []map[string]any{
+					{
+						"type": "message",
+						"role": "assistant",
+						"content": []map[string]string{
+							{"type": "output_text", "text": "主机运行正常。"},
+						},
+					},
+				},
+				"usage": map[string]int{"input_tokens": 80, "output_tokens": 12, "total_tokens": 92},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	client := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-resp", Model: "gpt-5.4"})
+	res, err := RunAgent(context.Background(), AgentRunConfig{
+		Client:   client,
+		Messages: []Message{{Role: "user", Content: "检查主机"}},
+		Tools: []ToolDefinition{{
+			Type:     "function",
+			Function: ToolFunction{Name: "host_info", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		ExecuteTool: func(_ context.Context, call ToolCall) (string, bool) {
+			return `{"os":"Linux"}`, false
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent Responses fallback failed: %v", err)
+	}
+	if res.FinalText != "主机运行正常。" || res.StepCount != 2 || res.Usage.TotalTokens != 152 {
+		t.Fatalf("unexpected Responses fallback result: %+v", res)
+	}
+
+	// 验证非流式 Chat 也能回退到 /responses
+	chatOut, err := client.Chat(context.Background(), []Message{{Role: "user", Content: "ping"}})
+	if err != nil {
+		t.Fatalf("Chat Responses fallback failed: %v", err)
+	}
+	if chatOut != "主机运行正常。" {
+		t.Fatalf("unexpected Chat Responses output: %q", chatOut)
+	}
+}

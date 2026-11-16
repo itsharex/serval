@@ -165,7 +165,7 @@ func (c *Client) streamHTTPClient() *http.Client {
 }
 
 // StreamChat 发起支持流式 SSE、推理思考与工具调用的 Chat Completions 请求。
-// 若兼容性端点返回非流式 JSON，也能平滑兼容解析。
+// 若兼容性端点返回非流式 JSON 或仅支持 OpenAI Responses API，会自动平滑回退。
 func (c *Client) StreamChat(ctx context.Context, messages []Message, tools []ToolDefinition, onProgress func(StreamProgress)) (*StreamResult, error) {
 	if c.apiKey == "" && !isLocalEndpoint(c.baseURL) {
 		return nil, ErrNoAPIKey
@@ -178,18 +178,26 @@ func (c *Client) StreamChat(ctx context.Context, messages []Message, tools []Too
 	res, status, err := c.doStreamChat(ctx, messages, tools, true, onProgress)
 	if err != nil && status == http.StatusBadRequest {
 		// 部分旧版 OpenAI 兼容网关不支持 stream_options，收到 400 时回退重试一次。
-		res, _, err = c.doStreamChat(ctx, messages, tools, false, onProgress)
+		res, status, err = c.doStreamChat(ctx, messages, tools, false, onProgress)
+	}
+	if err != nil && shouldFallbackToResponses(status, err) {
+		if rRes, rStatus, rErr := c.doResponses(ctx, messages, tools, true, onProgress); rErr == nil {
+			return rRes, nil
+		} else if status == http.StatusNotFound || status == http.StatusMethodNotAllowed ||
+			(rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed && rStatus != 0) {
+			return nil, rErr
+		}
 	}
 	return res, err
 }
 
 func (c *Client) doStreamChat(ctx context.Context, messages []Message, tools []ToolDefinition, includeUsage bool, onProgress func(StreamProgress)) (*StreamResult, int, error) {
+	// 不强行传入 temperature，避免 gpt-5*/o3/o4 等仅接受默认采样参数的模型返回 HTTP 400。
 	reqPayload := streamChatRequest{
-		Model:       c.model,
-		Messages:    messages,
-		Tools:       tools,
-		Temperature: 0.2,
-		Stream:      true,
+		Model:    c.model,
+		Messages: messages,
+		Tools:    tools,
+		Stream:   true,
 	}
 	if includeUsage {
 		reqPayload.StreamOptions = &streamOptions{IncludeUsage: true}
@@ -217,7 +225,8 @@ func (c *Client) doStreamChat(ctx context.Context, messages []Message, tools []T
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, mapHTTPError(resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return nil, resp.StatusCode, parseAPIError(resp.StatusCode, body, c.apiKey)
 	}
 
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -627,5 +636,487 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 		FinalText:  finalText,
 		StepCount:  maxSteps,
 		ReachedMax: true,
+	}, nil
+}
+
+func shouldFallbackToResponses(status int, err error) bool {
+	if status == http.StatusBadRequest || status == http.StatusNotFound ||
+		status == http.StatusMethodNotAllowed || status == http.StatusUnprocessableEntity {
+		return true
+	}
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "responses")
+}
+
+type responsesRequest struct {
+	Model        string           `json:"model"`
+	Instructions string           `json:"instructions,omitempty"`
+	Input        []any            `json:"input"`
+	Tools        []map[string]any `json:"tools,omitempty"`
+	Stream       bool             `json:"stream,omitempty"`
+}
+
+type responsesUsageWire struct {
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
+	TotalTokens        int `json:"total_tokens"`
+	InputTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+	OutputTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+func (w *responsesUsageWire) toUsage() Usage {
+	if w == nil {
+		return Usage{}
+	}
+	u := Usage{
+		PromptTokens:     w.InputTokens,
+		CompletionTokens: w.OutputTokens,
+		TotalTokens:      w.TotalTokens,
+	}
+	if w.InputTokensDetails != nil {
+		u.CachedTokens = w.InputTokensDetails.CachedTokens
+	}
+	if w.OutputTokensDetails != nil {
+		u.ReasoningTokens = w.OutputTokensDetails.ReasoningTokens
+	}
+	if u.TotalTokens == 0 && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
+}
+
+type responsesOutputItem struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Role      string `json:"role"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	Summary []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"summary"`
+}
+
+type responsesObject struct {
+	OutputText string                `json:"output_text"`
+	Output     []responsesOutputItem `json:"output"`
+	Usage      *responsesUsageWire   `json:"usage"`
+	Error      *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (c *Client) doResponses(ctx context.Context, messages []Message, tools []ToolDefinition, stream bool, onProgress func(StreamProgress)) (*StreamResult, int, error) {
+	var instParts []string
+	var inputItems []any
+	for _, m := range messages {
+		switch m.Role {
+		case "system":
+			if s := strings.TrimSpace(m.Content); s != "" {
+				instParts = append(instParts, s)
+			}
+		case "user":
+			inputItems = append(inputItems, map[string]any{
+				"type":    "message",
+				"role":    "user",
+				"content": m.Content,
+			})
+		case "assistant":
+			if strings.TrimSpace(m.Content) != "" {
+				inputItems = append(inputItems, map[string]any{
+					"type":    "message",
+					"role":    "assistant",
+					"content": m.Content,
+				})
+			}
+			for _, tc := range m.ToolCalls {
+				inputItems = append(inputItems, map[string]any{
+					"type":      "function_call",
+					"call_id":   tc.ID,
+					"name":      tc.Function.Name,
+					"arguments": tc.Function.Arguments,
+				})
+			}
+		case "tool":
+			inputItems = append(inputItems, map[string]any{
+				"type":    "function_call_output",
+				"call_id": m.ToolCallID,
+				"output":  m.Content,
+			})
+		}
+	}
+
+	var respTools []map[string]any
+	for _, t := range tools {
+		respTools = append(respTools, map[string]any{
+			"type":        "function",
+			"name":        t.Function.Name,
+			"description": t.Function.Description,
+			"parameters":  t.Function.Parameters,
+		})
+	}
+
+	reqBody, err := json.Marshal(responsesRequest{
+		Model:        c.model,
+		Instructions: strings.Join(instParts, "\n\n"),
+		Input:        inputItems,
+		Tools:        respTools,
+		Stream:       stream,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	endpoint := c.baseURL + "/responses"
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, 0, ErrInvalidEndpoint
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream, application/json")
+	} else {
+		req.Header.Set("Accept", "application/json, text/event-stream")
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	hc := c.httpClient
+	if stream {
+		hc = c.streamHTTPClient()
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, 0, mapTransportError(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return nil, resp.StatusCode, parseAPIError(resp.StatusCode, body, c.apiKey)
+	}
+
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/event-stream") {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		if readErr != nil {
+			return nil, resp.StatusCode, mapTransportError(readErr)
+		}
+		res, parseErr := parseNonStreamResponses(body)
+		if parseErr != nil {
+			return nil, resp.StatusCode, parseErr
+		}
+		if onProgress != nil {
+			onProgress(StreamProgress{
+				Thinking:        res.Thinking,
+				ThinkingSeconds: res.ThinkingSeconds,
+				Content:         res.Content,
+				ToolCalls:       res.ToolCalls,
+				Usage:           res.Usage,
+			})
+		}
+		return res, resp.StatusCode, nil
+	}
+
+	res, parseErr := parseResponsesSSEStream(resp.Body, onProgress)
+	if parseErr != nil {
+		return nil, resp.StatusCode, mapTransportError(parseErr)
+	}
+	return res, resp.StatusCode, nil
+}
+
+func extractResponsesResult(obj *responsesObject) (thinking string, content string, toolCalls []ToolCall) {
+	if obj == nil {
+		return "", "", nil
+	}
+	var thinkBuf, textBuf strings.Builder
+	for i, item := range obj.Output {
+		switch item.Type {
+		case "reasoning":
+			for _, sm := range item.Summary {
+				if sm.Text != "" {
+					if thinkBuf.Len() > 0 {
+						thinkBuf.WriteByte('\n')
+					}
+					thinkBuf.WriteString(sm.Text)
+				}
+			}
+		case "message":
+			for _, part := range item.Content {
+				if part.Text != "" {
+					textBuf.WriteString(part.Text)
+				}
+			}
+		case "function_call":
+			callID := item.CallID
+			if callID == "" {
+				callID = item.ID
+			}
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", i+1)
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      item.Name,
+					Arguments: item.Arguments,
+				},
+			})
+		}
+	}
+	content = textBuf.String()
+	if content == "" && obj.OutputText != "" {
+		content = obj.OutputText
+	}
+	return strings.TrimSpace(thinkBuf.String()), content, toolCalls
+}
+
+func parseNonStreamResponses(body []byte) (*StreamResult, error) {
+	var obj responsesObject
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+	if obj.Error != nil && obj.Error.Message != "" {
+		return nil, fmt.Errorf("AI 服务返回错误: %s", obj.Error.Message)
+	}
+	thinking, content, toolCalls := extractResponsesResult(&obj)
+	if thinking == "" {
+		thinking, content = splitThinkTags(content)
+	}
+	if thinking == "" && strings.TrimSpace(content) == "" && len(toolCalls) == 0 {
+		return nil, ErrEmptyResponse
+	}
+	return &StreamResult{
+		Thinking:  thinking,
+		Content:   content,
+		ToolCalls: toolCalls,
+		Usage:     obj.Usage.toUsage(),
+	}, nil
+}
+
+func parseResponsesSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
+
+	var thinkingBuf, contentBuf strings.Builder
+	var thinkStart, thinkEnd time.Time
+	var toolOrder []int
+	toolMap := map[int]*ToolCall{}
+	itemToIndex := map[string]int{}
+	var usage Usage
+	var sawAny bool
+	var currentEvent string
+
+	ensureSlot := func(idx int, itemID string) *ToolCall {
+		if slot, ok := toolMap[idx]; ok {
+			if itemID != "" {
+				itemToIndex[itemID] = idx
+			}
+			return slot
+		}
+		if itemID != "" {
+			if existingIdx, ok := itemToIndex[itemID]; ok {
+				return toolMap[existingIdx]
+			}
+			itemToIndex[itemID] = idx
+		}
+		slot := &ToolCall{Type: "function"}
+		toolMap[idx] = slot
+		toolOrder = append(toolOrder, idx)
+		return slot
+	}
+
+	emit := func() {
+		if onProgress == nil {
+			return
+		}
+		sec := calcThinkingSeconds(thinkStart, thinkEnd, thinkingBuf.Len() > 0)
+		th, ct := splitThinkTagsIfNeeded(thinkingBuf.String(), contentBuf.String())
+		onProgress(StreamProgress{
+			Thinking:        th,
+			ThinkingSeconds: sec,
+			Content:         ct,
+			ToolCalls:       collectToolCalls(toolOrder, toolMap),
+			Usage:           usage,
+		})
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var ev struct {
+			Type        string               `json:"type"`
+			Delta       string               `json:"delta"`
+			Text        string               `json:"text"`
+			Arguments   string               `json:"arguments"`
+			OutputIndex int                  `json:"output_index"`
+			ItemID      string               `json:"item_id"`
+			Item        *responsesOutputItem `json:"item"`
+			Response    *responsesObject     `json:"response"`
+			Error       *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+		evType := ev.Type
+		if evType == "" {
+			evType = currentEvent
+		}
+		currentEvent = ""
+		sawAny = true
+
+		if ev.Error != nil && ev.Error.Message != "" {
+			return nil, fmt.Errorf("AI 服务返回错误: %s", ev.Error.Message)
+		}
+		if ev.Response != nil && ev.Response.Error != nil && ev.Response.Error.Message != "" {
+			return nil, fmt.Errorf("AI 服务返回错误: %s", ev.Response.Error.Message)
+		}
+
+		switch evType {
+		case "response.output_text.delta":
+			if ev.Delta != "" {
+				if !thinkStart.IsZero() && thinkEnd.IsZero() {
+					thinkEnd = time.Now()
+				}
+				contentBuf.WriteString(ev.Delta)
+				emit()
+			}
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning.delta":
+			if ev.Delta != "" {
+				if thinkStart.IsZero() {
+					thinkStart = time.Now()
+				}
+				thinkingBuf.WriteString(ev.Delta)
+				thinkEnd = time.Now()
+				emit()
+			}
+		case "response.output_item.added":
+			if ev.Item != nil && ev.Item.Type == "function_call" {
+				slot := ensureSlot(ev.OutputIndex, ev.Item.ID)
+				if ev.Item.CallID != "" {
+					slot.ID = ev.Item.CallID
+				} else if ev.Item.ID != "" && slot.ID == "" {
+					slot.ID = ev.Item.ID
+				}
+				if ev.Item.Name != "" {
+					slot.Function.Name = ev.Item.Name
+				}
+				if ev.Item.Arguments != "" && slot.Function.Arguments == "" {
+					slot.Function.Arguments = ev.Item.Arguments
+				}
+				emit()
+			}
+		case "response.function_call_arguments.delta":
+			idx := ev.OutputIndex
+			if ev.ItemID != "" {
+				if mapped, ok := itemToIndex[ev.ItemID]; ok {
+					idx = mapped
+				}
+			}
+			slot := ensureSlot(idx, ev.ItemID)
+			slot.Function.Arguments += ev.Delta
+			emit()
+		case "response.function_call_arguments.done":
+			idx := ev.OutputIndex
+			if ev.ItemID != "" {
+				if mapped, ok := itemToIndex[ev.ItemID]; ok {
+					idx = mapped
+				}
+			}
+			slot := ensureSlot(idx, ev.ItemID)
+			if ev.Arguments != "" {
+				slot.Function.Arguments = ev.Arguments
+			}
+			emit()
+		case "response.output_item.done":
+			if ev.Item != nil && ev.Item.Type == "function_call" {
+				slot := ensureSlot(ev.OutputIndex, ev.Item.ID)
+				if ev.Item.CallID != "" {
+					slot.ID = ev.Item.CallID
+				}
+				if ev.Item.Name != "" {
+					slot.Function.Name = ev.Item.Name
+				}
+				if ev.Item.Arguments != "" {
+					slot.Function.Arguments = ev.Item.Arguments
+				}
+				emit()
+			} else if ev.Item != nil && ev.Item.Type == "message" && contentBuf.Len() == 0 {
+				for _, part := range ev.Item.Content {
+					if part.Text != "" {
+						contentBuf.WriteString(part.Text)
+					}
+				}
+				if contentBuf.Len() > 0 {
+					emit()
+				}
+			}
+		case "response.completed", "response.done":
+			if ev.Response != nil {
+				if ev.Response.Usage != nil {
+					usage = ev.Response.Usage.toUsage()
+				}
+				fThink, fContent, fTools := extractResponsesResult(ev.Response)
+				if thinkingBuf.Len() == 0 && fThink != "" {
+					thinkingBuf.WriteString(fThink)
+				}
+				if contentBuf.Len() == 0 && fContent != "" {
+					contentBuf.WriteString(fContent)
+				}
+				if len(toolOrder) == 0 && len(fTools) > 0 {
+					for i, tc := range fTools {
+						cp := tc
+						toolMap[i] = &cp
+						toolOrder = append(toolOrder, i)
+					}
+				}
+				emit()
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if !sawAny {
+		return nil, ErrEmptyResponse
+	}
+
+	th, ct := splitThinkTagsIfNeeded(thinkingBuf.String(), contentBuf.String())
+	tcs := collectToolCalls(toolOrder, toolMap)
+	if th == "" && strings.TrimSpace(ct) == "" && len(tcs) == 0 {
+		return nil, ErrEmptyResponse
+	}
+	return &StreamResult{
+		Thinking:        th,
+		ThinkingSeconds: calcThinkingSeconds(thinkStart, thinkEnd, th != ""),
+		Content:         ct,
+		ToolCalls:       tcs,
+		Usage:           usage,
 	}, nil
 }

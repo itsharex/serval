@@ -668,7 +668,7 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 		return
 	}
 	if a.aiWidth <= 0 {
-		a.aiWidth = 430
+		a.aiWidth = 460
 	}
 	if width <= 0 {
 		width = a.aiWidth
@@ -683,7 +683,7 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 	dx, _, held := grip.Dragged()
 	switch {
 	case grip.DoubleClicked():
-		a.aiWidth = 430
+		a.aiWidth = 460
 	case held && dx != 0:
 		a.aiWidth = min(max(width-dx, 340), maxW)
 	}
@@ -1157,7 +1157,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 	showSlash := p.showSlash || strings.HasPrefix(p.query, "/")
 	showMentions := p.showMentions || strings.HasSuffix(p.query, "@")
 
-	ui.Column(c).Padding(8, 10, 10, 10).Gap(6).BorderColor(colors.Hairline).BorderWidth(1, 0, 0, 0).Shrink(0).Children(func() {
+	ui.Column(c).Padding(6, 8, 8, 8).Gap(6).BorderColor(colors.Hairline).BorderWidth(1, 0, 0, 0).Shrink(0).Children(func() {
 		if showSlash {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 				for _, sc := range aiSlashCommands {
@@ -1226,7 +1226,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 		}
 
 		// 输入卡片：文本框 + 底部工具行
-		ui.Column(c).Padding(8, 10).Gap(8).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
+		ui.Column(c).Padding(7, 8).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 			c.Key("aiQueryInput")
 			placeholder := "向 AI Agent 发送消息，@ 引用上下文，/ 快捷命令"
 			if p.contextError != "" && len(p.turns) == 0 {
@@ -1239,7 +1239,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 			}
 			in.OnSubmit(a.submitAIInput)
 
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
 				ui.Button(c, "@").Key("aiMentionBtn").Label("引用上下文").Tooltip("@ 引用终端或主机上下文").
 					Height(24).Padding(0, 7).OnClick(func() {
 					p.showMentions = !p.showMentions
@@ -1252,25 +1252,82 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 				})
 
 				cfg := a.activeAIConfig()
-				modelLabel := cfg.Name + " · " + cfg.Model
+				configured := a.configuredAIProfiles()
+				modelLabel := "选择 AI 模型"
+				if len(configured) == 0 && len(a.settings.AIProfiles) > 0 {
+					modelLabel = "未启用 AI 模型"
+				} else if cfg.Name != "" && cfg.Model != "" {
+					modelLabel = cfg.Name + " · " + cfg.Model
+				} else if cfg.Name != "" {
+					modelLabel = cfg.Name + " · 未选模型"
+				} else if cfg.Model != "" {
+					modelLabel = cfg.Model
+				}
+				c.Key("aiModelSwitchBtn")
 				ui.PopoverMenuButton(c, modelLabel, func(m *ui.Menu) {
-					if len(a.settings.AIProfiles) > 0 {
-						for _, prof := range a.settings.AIProfiles {
-							item := prof
-							if m.Item(item.Name + " · " + item.Model).Radio(a.settings.ActiveAIProfile == item.ID).Chosen() {
-								_ = a.switchAIProfile(item.ID)
+					hasItems := false
+					switch len(configured) {
+					case 0:
+						// 未启用任何提供商时仅显示配置入口
+					case 1:
+						prof := configured[0]
+						models := a.modelsForProfile(prof.ID, prof.Models, prof.Model)
+						isCur := cfg.ID == prof.ID
+						if len(models) == 0 {
+							hasItems = true
+							if m.Item(prof.Name + "（前往获取模型）").ID("provider:" + prof.ID).Chosen() {
+								a.openAISettings()
 							}
 						}
+						for _, modelName := range models {
+							mv := modelName
+							hasItems = true
+							if m.Item(prof.Name + " · " + mv).ID("model:" + prof.ID + ":" + mv).Radio(isCur && cfg.Model == mv).Chosen() {
+								_ = a.switchAIProviderModel(prof.ID, mv)
+							}
+						}
+					default:
+						for _, prof := range configured {
+							item := prof
+							isCur := cfg.ID == item.ID
+							models := a.modelsForProfile(item.ID, item.Models, item.Model)
+							hasItems = true
+							switch {
+							case len(models) > 1:
+								sub := m.Submenu(item.Name, func(sm *ui.Menu) {
+									for _, modelName := range models {
+										mv := modelName
+										if sm.Item(mv).ID("model:" + item.ID + ":" + mv).Radio(isCur && cfg.Model == mv).Chosen() {
+											_ = a.switchAIProviderModel(item.ID, mv)
+										}
+									}
+								}).ID("provider:" + item.ID)
+								if isCur {
+									sub.Trailing("当前")
+								}
+							case len(models) == 1:
+								mv := models[0]
+								if m.Item(item.Name + " · " + mv).ID("provider:" + item.ID).Radio(isCur).Chosen() {
+									_ = a.switchAIProviderModel(item.ID, mv)
+								}
+							default:
+								if m.Item(item.Name).ID("provider:" + item.ID).Radio(isCur).Chosen() {
+									_ = a.switchAIProfile(item.ID)
+								}
+							}
+						}
+					}
+					if hasItems {
 						m.Separator()
 					}
-					if m.Item("配置模型与密钥…").Chosen() {
-						a.openSettings()
-						a.settingsPanel.tab = settingsTabAI
+					if m.Item("配置模型与密钥…").ID("openAISettings").Chosen() {
+						a.openAISettings()
 					}
-				}).Key("aiModelSwitchBtn").Height(24).Padding(0, 8).MaxWidth(150).Shrink(1)
+				}).Height(24).Padding(0, 8).Shrink(1).MinWidth(0).Tooltip(modelLabel)
 
 				ui.Box(c).Grow(1)
 
+				c.Key("aiModeSwitchBtn")
 				ui.PopoverMenuButton(c, p.mode.label(), func(m *ui.Menu) {
 					for _, md := range []aiPermissionMode{aiModeObserver, aiModeConfirm, aiModeAuto} {
 						modeVal := md
@@ -1278,7 +1335,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 							p.mode = modeVal
 						}
 					}
-				}).Key("aiModeSwitchBtn").Height(24).Padding(0, 8).Shrink(0)
+				}).Height(24).Padding(0, 8).Shrink(0)
 
 				if p.loading {
 					ui.Button(c, locales.AiStop()).Key("aiStopBtn").Height(26).Padding(0, 10).OnClick(a.stopAIRequest)
