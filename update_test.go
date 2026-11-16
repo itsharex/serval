@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -281,5 +282,56 @@ func TestPaletteCheckUpdate(t *testing.T) {
 
 	if h.a.update.state != updateLatest {
 		t.Fatalf("命令面板触发检查更新状态不正确: got %v", h.a.update.state)
+	}
+}
+
+func TestUpdateDialogRendersMarkdownNotes(t *testing.T) {
+	body := `## Downloads · 下载
+
+| Platform · 平台 | Desktop App · 桌面应用 |
+|---|---|
+| macOS 13+ | ` + "`serval-0.4.0.dmg`" + ` |
+| Windows 10 / 11 | Installer · 安装版<br>` + "`serval-setup-0.4.0-amd64.exe`" + ` |
+
+> **macOS:** ad-hoc signed, use Homebrew.
+
+<!-- Release notes generated using configuration in .github/release.yml -->
+
+- 修复更新日志 Markdown 表格渲染`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(githubReleaseResponse{
+			TagName:     "v0.4.0",
+			Name:        "Serval v0.4.0",
+			Body:        body,
+			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.4.0",
+			PublishedAt: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC),
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.updateURL = ts.URL
+	h.a.httpClient = ts.Client()
+	h.a.checkForUpdates(true)
+	h.pump("弹出带 Markdown 更新日志的新版本浮层", func() bool { return h.a.update.sheetOpen })
+	h.tt.Frame()
+
+	texts := h.tt.Texts()
+	for _, rawMarker := range []string{"## ", "|---|", "<br>", "<!--", "**macOS:**"} {
+		for _, txt := range texts {
+			if strings.Contains(txt, rawMarker) {
+				t.Fatalf("更新日志仍显示未渲染的原始标记 %q: %q", rawMarker, txt)
+			}
+		}
+	}
+	if !h.tt.HasText("Downloads · 下载") {
+		t.Fatalf("未渲染 Markdown 标题: texts=%q", texts)
+	}
+	if !h.tt.HasText("Platform · 平台") || !h.tt.HasText("serval-0.4.0.dmg") {
+		t.Fatalf("未渲染 Markdown 表格单元: texts=%q", texts)
+	}
+	if !h.tt.HasText("• 修复更新日志 Markdown 表格渲染") {
+		t.Fatalf("未渲染 Markdown 列表项: texts=%q", texts)
 	}
 }

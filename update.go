@@ -250,7 +250,7 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 	}
 	t := c.Theme()
 	info := a.update.latest
-	sheet(c, colors, &a.update.sheetOpen, &a.update.sheetFresh, 460, 22, func() {
+	sheet(c, colors, &a.update.sheetOpen, &a.update.sheetFresh, 540, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, design.Icon("sparkles")).FontSize(20).TextColor(t.Accent)
@@ -261,11 +261,17 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 				}
 			})
 
-			if strings.TrimSpace(info.Notes) != "" {
+			if notes := stripHTMLComments(info.Notes); notes != "" {
 				ui.Column(c).Padding(10).Radius(design.RadiusRow).Background(colors.Chip).Gap(6).Children(func() {
 					ui.Text(c, "更新日志").FontSize(design.TextSmall).TextColor(t.TextMuted).FontWeight(600)
-					ui.Scroll(c).Key("updateNotesScroll").MaxHeight(140).Children(func() {
-						ui.Text(c, strings.TrimSpace(info.Notes)).FontSize(design.TextSmall).TextColor(t.Text).Wrap()
+					ui.Scroll(c).Key("updateNotesScroll").MaxHeight(220).Children(func() {
+						renderMarkdownBlocks(c, colors, notes, markdownRenderOptions{
+							bodyFontSize:    design.TextSmall,
+							smallFontSize:   design.TextSmall,
+							headingFontSize: design.TextBody + 1,
+							blockGap:        6,
+							firstColWidth:   132,
+						})
 					})
 				})
 			}
@@ -360,4 +366,21 @@ func (a *app) aboutAndUpdatesSection(c *ui.Context, colors design.Colors) {
 			ui.Text(c, fmt.Sprintf("检查更新失败：%s", a.update.err)).FontSize(design.TextSmall).TextColor(colors.Danger)
 		}
 	})
+}
+
+// stripHTMLComments 移除 GitHub Release 说明中的 HTML 注释（例如自动生成标记）。
+func stripHTMLComments(s string) string {
+	for {
+		start := strings.Index(s, "<!--")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start+4:], "-->")
+		if end < 0 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[start+4+end+3:]
+	}
+	return strings.TrimSpace(s)
 }

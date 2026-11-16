@@ -961,29 +961,81 @@ func (a *app) renderToolCard(c *ui.Context, colors design.Colors, turnIdx, sIdx,
 	})
 }
 
+type markdownRenderOptions struct {
+	bodyFontSize    float32
+	smallFontSize   float32
+	headingFontSize float32
+	blockGap        float32
+	firstColWidth   float32
+	renderCode      func(blk ai.MarkdownBlock)
+}
+
 func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx int, content string) {
+	codeIdx := 0
+	renderMarkdownBlocks(c, colors, content, markdownRenderOptions{
+		bodyFontSize:    design.TextBody,
+		smallFontSize:   design.TextSmall,
+		headingFontSize: design.TextHeading,
+		blockGap:        8,
+		firstColWidth:   84,
+		renderCode: func(blk ai.MarkdownBlock) {
+			cmdVal := blk.Code
+			isMultiline := strings.ContainsAny(cmdVal, "\r\n")
+			curCodeIdx := codeIdx
+			codeIdx++
+			t := c.Theme()
+			ui.Column(c).Gap(6).Children(func() {
+				ui.Box(c).Padding(8, 10).Radius(6).Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
+					ui.Text(c, cmdVal).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
+				})
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					copyKey := fmt.Sprintf("aiCopyBtn:%d:%d:%d", turnIdx, sIdx, curCodeIdx)
+					if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
+						copyKey = "aiCopyBtn"
+					}
+					ui.Button(c, "复制命令").Key(copyKey).Height(26).Padding(0, 10).OnClick(func() {
+						c.WriteClipboard(cmdVal)
+						a.toast(ui.Toast{Title: "命令已复制到剪贴板"})
+					})
+					if isMultiline {
+						ui.Text(c, "多行脚本请复制后核对执行").FontSize(design.TextSmall).TextColor(t.TextMuted)
+					} else {
+						insertKey := fmt.Sprintf("aiInsertBtn:%d:%d:%d", turnIdx, sIdx, curCodeIdx)
+						if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
+							insertKey = "aiInsertBtn"
+						}
+						ui.PrimaryButton(c, "填入终端（需确认）").Key(insertKey).Height(26).Padding(0, 10).OnClick(func() {
+							a.insertCommandToTerminal(cmdVal)
+						})
+					}
+				})
+			})
+		},
+	})
+}
+
+func renderMarkdownBlocks(c *ui.Context, colors design.Colors, content string, opts markdownRenderOptions) {
 	t := c.Theme()
 	blocks := ai.ParseMarkdown(content)
 	if len(blocks) == 0 {
-		ui.Text(c, content).FontSize(design.TextBody).Selectable()
+		ui.Text(c, replaceHTMLBreaks(content)).FontSize(opts.bodyFontSize).Selectable()
 		return
 	}
-	codeIdx := 0
-	ui.Column(c).Gap(8).Children(func() {
+	ui.Column(c).Gap(opts.blockGap).Children(func() {
 		for _, blk := range blocks {
 			switch blk.Kind {
 			case ai.BlockHeading:
-				fs := design.TextBody + 1
+				fs := opts.bodyFontSize + 1
 				if blk.Level == 1 {
-					fs = design.TextHeading
+					fs = opts.headingFontSize
 				}
 				ui.Text(c, cleanInlineMarkdown(blk.Text)).FontSize(fs).FontWeight(600).Selectable()
 			case ai.BlockParagraph:
-				ui.Text(c, cleanInlineMarkdown(blk.Text)).FontSize(design.TextBody).Selectable()
+				ui.Text(c, cleanInlineMarkdown(blk.Text)).FontSize(opts.bodyFontSize).Selectable()
 			case ai.BlockQuote:
 				ui.Row(c).Gap(8).Children(func() {
 					ui.Box(c).Width(3).Background(t.Accent.Alpha(0.5)).Radius(2)
-					ui.Text(c, cleanInlineMarkdown(blk.Text)).FontSize(design.TextSmall).TextColor(t.TextMuted).Grow(1).MinWidth(0).Selectable()
+					ui.Text(c, cleanInlineMarkdown(blk.Text)).FontSize(opts.smallFontSize).TextColor(t.TextMuted).Grow(1).MinWidth(0).Selectable()
 				})
 			case ai.BlockList:
 				ui.Column(c).Gap(4).Padding(0, 0, 0, 4).Children(func() {
@@ -992,52 +1044,32 @@ func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx 
 						if blk.Ordered {
 							prefix = fmt.Sprintf("%d. ", idx+1)
 						}
-						ui.Text(c, prefix+cleanInlineMarkdown(item)).FontSize(design.TextBody).Selectable()
+						ui.Text(c, prefix+cleanInlineMarkdown(item)).FontSize(opts.bodyFontSize).Selectable()
 					}
 				})
 			case ai.BlockDivider:
 				ui.Box(c).Height(1).Background(colors.Hairline)
 			case ai.BlockTable:
-				renderMarkdownTable(c, colors, blk.Headers, blk.Rows)
+				renderMarkdownTable(c, colors, blk.Headers, blk.Rows, opts.firstColWidth)
 			case ai.BlockCode:
-				cmdVal := blk.Code
-				isMultiline := strings.ContainsAny(cmdVal, "\r\n")
-				curCodeIdx := codeIdx
-				codeIdx++
-				ui.Column(c).Gap(6).Children(func() {
+				if opts.renderCode != nil {
+					opts.renderCode(blk)
+				} else {
 					ui.Box(c).Padding(8, 10).Radius(6).Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
-						ui.Text(c, cmdVal).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
+						ui.Text(c, blk.Code).FontSize(opts.smallFontSize).Font(design.FontTerminal).Selectable()
 					})
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						copyKey := fmt.Sprintf("aiCopyBtn:%d:%d:%d", turnIdx, sIdx, curCodeIdx)
-						if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
-							copyKey = "aiCopyBtn"
-						}
-						ui.Button(c, "复制命令").Key(copyKey).Height(26).Padding(0, 10).OnClick(func() {
-							c.WriteClipboard(cmdVal)
-							a.toast(ui.Toast{Title: "命令已复制到剪贴板"})
-						})
-						if isMultiline {
-							ui.Text(c, "多行脚本请复制后核对执行").FontSize(design.TextSmall).TextColor(t.TextMuted)
-						} else {
-							insertKey := fmt.Sprintf("aiInsertBtn:%d:%d:%d", turnIdx, sIdx, curCodeIdx)
-							if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
-								insertKey = "aiInsertBtn"
-							}
-							ui.PrimaryButton(c, "填入终端（需确认）").Key(insertKey).Height(26).Padding(0, 10).OnClick(func() {
-								a.insertCommandToTerminal(cmdVal)
-							})
-						}
-					})
-				})
+				}
 			}
 		}
 	})
 }
 
-func renderMarkdownTable(c *ui.Context, colors design.Colors, headers []string, rows [][]string) {
+func renderMarkdownTable(c *ui.Context, colors design.Colors, headers []string, rows [][]string, firstColWidth float32) {
 	if len(headers) == 0 {
 		return
+	}
+	if firstColWidth <= 0 {
+		firstColWidth = 84
 	}
 	colWeight := func(colIdx int) float32 {
 		if len(headers) == 2 && colIdx == 0 {
@@ -1048,7 +1080,7 @@ func renderMarkdownTable(c *ui.Context, colors design.Colors, headers []string, 
 	cellContainer := func(colIdx int, header bool, txt string) {
 		cell := ui.Box(c).Padding(6, 8).MinWidth(0)
 		if colWeight(colIdx) == 0 {
-			cell.Width(84).Shrink(0)
+			cell.Width(firstColWidth).Shrink(0)
 		} else {
 			cell.Grow(1)
 		}
@@ -1088,6 +1120,7 @@ func renderMarkdownTable(c *ui.Context, colors design.Colors, headers []string, 
 }
 
 func cleanInlineMarkdown(s string) string {
+	s = replaceHTMLBreaks(s)
 	spans := ai.ParseInlineMarkdown(s)
 	if len(spans) == 0 {
 		return s
@@ -1097,6 +1130,20 @@ func cleanInlineMarkdown(s string) string {
 		b.WriteString(sp.Text)
 	}
 	return b.String()
+}
+
+// replaceHTMLBreaks 将 GFM 表格与段落中的 <br> 换行标记转为真实换行，并折叠连续空行标签。
+func replaceHTMLBreaks(s string) string {
+	if !strings.Contains(s, "<") {
+		return s
+	}
+	for _, tag := range []string{"<br />", "<br/>", "<br>", "<BR />", "<BR/>", "<BR>"} {
+		s = strings.ReplaceAll(s, tag, "\n")
+	}
+	for strings.Contains(s, "\n\n") {
+		s = strings.ReplaceAll(s, "\n\n", "\n")
+	}
+	return strings.TrimSpace(s)
 }
 
 func (a *app) aiApprovalCard(c *ui.Context, colors design.Colors, ap *aiApproval) {
