@@ -2,6 +2,23 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-16
+
+### Added
+
+- **Multi-Provider AI Management & Model Auto-Fetching (`settings.go`, `aipanel.go`, `core/ai`)**: Replaced fixed provider presets with full multi-provider management (`+ 添加提供商`) supporting OpenAI, DeepSeek, Qwen, Kimi, Ollama, and custom OpenAI-compatible endpoints, isolated per-provider keychain API keys, edit/delete actions, and automatic `/models` endpoint fetching with a model picker.
+- **Multi-Tab Opening on Double-Click (`hostactions.go`)**: Double-clicking an already-connected host in the sidebar now launches an additional tab (`name (2)`, `name (3)`) instead of only focusing the existing tab.
+- **Updated Documentation & Screenshots (`README.md`, `README.zh-CN.md`, `docs/screenshots/`)**: Refreshed hero workspace screenshot and added Welcome/Host Sidebar and Split Terminal/AI Agent previews.
+
+### Changed
+
+- **Host Connectivity & Active-Session Indicators (`core/sshconn/probe.go`, `design/coat.go`, `hostactions.go`, `view.go`)**: Upgraded SSH probing to validate the RFC 4253 `SSH-` banner and tunnel through SOCKS5/HTTP proxies (eliminating Surge/TUN local TCP false positives), separated connectivity state onto host icons (subtle breathing when reachable, muted gray when unreachable) from the right-side green dot reserved strictly for open sessions, and cleared stale probe results when editing a host.
+
+### Fixed
+
+- **macOS Keychain Prompt Caching (`app.go`, `settings.go`, `sync.go`)**: Cached OS keychain reads in memory per session (`isRememberedOnDevice`, `syncPassword`) and persisted `aiKeyMigrated` in `device.json` to prevent repeated macOS Keychain prompts during startup and vault operations.
+- **Pane Header Button Shift on Disconnect (`library.go`)**: Fixed the transient `cols × rows` badge disappearance causing `"重新连接"` / `"取消"` action buttons to shift mid-click.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
