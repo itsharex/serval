@@ -35,7 +35,7 @@ func Probe(ctx context.Context, opts ProbeOptions) (time.Duration, error) {
 	defer conn.Close()
 
 	if !opts.ExpectSSH {
-		return time.Since(start), nil
+		return probeElapsed(start), nil
 	}
 
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -51,7 +51,7 @@ func Probe(ctx context.Context, opts ProbeOptions) (time.Duration, error) {
 	for range 16 {
 		line, readErr := br.ReadString('\n')
 		if strings.HasPrefix(line, "SSH-") {
-			return time.Since(start), nil
+			return probeElapsed(start), nil
 		}
 		if readErr != nil {
 			if ctx.Err() != nil {
@@ -68,4 +68,13 @@ func Probe(ctx context.Context, opts ProbeOptions) (time.Duration, error) {
 		}
 	}
 	return 0, errors.New("未收到有效的 SSH 服务响应")
+}
+
+// probeElapsed 确保探测成功时至少返回 1µs，避免在时钟粒度较粗的系统（如 Windows）上
+// 本机回环探测在单次滴答内完成导致 RTT 为 0。
+func probeElapsed(start time.Time) time.Duration {
+	if d := time.Since(start); d > 0 {
+		return d
+	}
+	return time.Microsecond
 }

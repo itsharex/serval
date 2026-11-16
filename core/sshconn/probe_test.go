@@ -50,12 +50,14 @@ func TestProbeSSHRequiresBanner(t *testing.T) {
 	}
 
 	// 非 SSH（如 Telnet）只要求 TCP 建连时仍应成功。
-	if _, err := Probe(context.Background(), ProbeOptions{
+	if rtt, err := Probe(context.Background(), ProbeOptions{
 		Addr:      silentLn.Addr().String(),
 		Timeout:   time.Second,
 		ExpectSSH: false,
 	}); err != nil {
 		t.Fatalf("ExpectSSH=false 应只校验 TCP 连通: %v", err)
+	} else if rtt <= 0 {
+		t.Fatalf("ExpectSSH=false 成功时 RTT 也应大于 0，实际 %v", rtt)
 	}
 
 	// 非 SSH 协议响应（例如 HTTP）也应被识别为不可达。

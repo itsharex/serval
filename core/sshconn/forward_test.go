@@ -133,7 +133,16 @@ func TestDynamicForwardRoundTrip(t *testing.T) {
 	if string(buf) != "ping" {
 		t.Fatalf("SOCKS 往返得到 %q", buf)
 	}
-	in, out := tun.Bytes()
+	// relay 在底层 socket Write 返回后才原子累加计数，等短暂窗口避免客户端读完即断言的竞争。
+	var in, out int64
+	deadline := time.Now().Add(time.Second)
+	for {
+		in, out = tun.Bytes()
+		if in >= 4 && out >= 4 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if in < 4 || out < 4 {
 		t.Fatalf("流量统计 in=%d out=%d", in, out)
 	}
