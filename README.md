@@ -19,7 +19,7 @@ Connect via SSH, Telnet, Serial, or Local Shell with multi-tab and split-pane te
 
 </div>
 
-![Serval Workspace](docs/screenshots/welcome.png)
+![Serval Workspace](docs/screenshots/workspace.png)
 
 ## Why Serval
 
@@ -34,15 +34,21 @@ Connect via SSH, Telnet, Serial, or Local Shell with multi-tab and split-pane te
 | Area | Capabilities |
 |---|---|
 | **Encrypted Vault & Sync** | Per-record XChaCha20-Poly1305 encryption with Argon2id key derivation; guided master-password setup on first secret save; dedicated **Security** settings tab for idle auto-lock, OS keychain remember toggle, master-password rotation, and Known Hosts; global password/secret reveal toggles (auto-cleared on close or lock); multi-device sync via **WebDAV**, **S3-compatible storage**, or **local sync folder** with ETag optimistic locking, draft auto-save, and one-click **Sync Now**. |
-| **Hosts, Groups & Palette** | Resizable host sidebar (persisted locally); add, edit, duplicate, delete, and reorder hosts via drag-and-drop across persistent empty or populated custom groups; multi-tag (`#tag`) horizontal filter pills and instant search clear; paste `user@host[:port]` auto-split and collapsible advanced form sections; async RTT latency probing and OS/distro detection badges; **Production** host red borders and broadcast guards; `⌘K` Command Palette for quick connect and actions. |
+| **Hosts, Groups & Palette** | Resizable host sidebar (persisted locally); add, edit, duplicate, delete, and reorder hosts via drag-and-drop across persistent empty or populated custom groups; multi-tag (`#tag`) horizontal filter pills and instant search clear; paste `user@host[:port]` auto-split and collapsible advanced form sections; async SSH-banner & proxy-tunneled connectivity probing reflected directly on host icons (subtle breathing when reachable, muted gray when unreachable) while reserving the green dot strictly for open sessions; double-click an open host to launch additional tabs; **Production** host red borders and broadcast guards; `⌘K` Command Palette for quick connect and actions. |
 | **Authentication, MFA & Keys** | Auto (private key → `ssh-agent` → password), Password-only, or Key-only modes; built-in Key Manager to import or generate **Ed25519** / **RSA 4096** keys, import keys directly inside the host form, and idempotently deploy public keys (`ssh-copy-id`) to `~/.ssh/authorized_keys`; `keyboard-interactive` (PAM / OTP) + **RFC 6238 TOTP** (`otpauth://` or Base32); optional `ssh-agent` forwarding and automatic logon scripts. |
 | **Jump Hosts & Proxies** | Chain up to **8 jump hosts** with address summaries, route previews, and automatic cycle detection, plus per-hop fingerprint and secret prompts; manage **SOCKS5** and **HTTP** proxies (with encrypted proxy passwords) reusable across hosts. |
 | **Port Forwarding** | Unified management of **Local**, **Remote**, and **Dynamic (SOCKS5)** port forwards; compact list actions (toggle/delete), host selector dropdown for automatic start/stop with sessions, or manual toggle with live listener status and byte counters. |
-| **Multi-Tab & Split Terminals** | Mix **SSH**, **Telnet**, **Serial**, and **Local Shell** tabs with horizontally scrollable tabs, quick `+` Local Shell button, non-occluding connection pills, and drag/keyboard tab reordering; arbitrary horizontal/vertical splits; in-terminal search (`⌘F`); lightweight SSH server monitor bar; exponential-backoff auto-reconnect; layout restore on launch; curated terminal themes and scrollback control. |
+| **Multi-Tab & Split Terminals** | Mix **SSH**, **Telnet**, **Serial**, and **Local Shell** tabs with horizontally scrollable tabs, quick `+` Local Shell button, multiple tabs per host via double-click, non-occluding connection pills, and drag/keyboard tab reordering; arbitrary horizontal/vertical splits; in-terminal search (`⌘F`); lightweight SSH server monitor bar; exponential-backoff auto-reconnect; layout restore on launch; curated terminal themes and scrollback control. |
 | **Broadcast Input & Snippets** | **Broadcast Input** reveals a workspace bar (`#1..N` pane chips + select all) to mirror keystrokes across chosen panes (with mandatory confirmation for Production panes); **Snippets** have a dedicated sidebar entry, one-click row execution, a More menu, `{{variable}}` template prompts, and multi-line confirmation. |
 | **Dual-Pane SFTP Drawer** | Toggle with `⌘J` (auto-swaps with AI drawer on narrow windows): side-by-side Local and Remote panes with click-to-edit path bars, saved remote directory bookmarks, draggable drawer width and split divider, recursive folder drag-and-drop, local pane context actions (mkdir, rename, upload, remove empty dir), queue retry/remove/clear-completed controls, and conflict-checked **remote UTF-8 text editing**. |
 | **ZMODEM (`rz` / `sz`) & Logs** | Clean-room pure-Go ZMODEM stack: run `rz` or `sz` directly inside any remote shell to open native file/folder pickers with live progress, speed, and cancellation; optional plain-text remote session logging. |
-| **AI Agent** | Toggle docked right-hand AI Agent (`⌘I`) with multi-profile switching (DeepSeek, OpenAI, Qwen, Kimi, Ollama, or any OpenAI-compatible API) and one-click pane error analysis (`⌘E`); SSE streaming, collapsible thinking & tool cards, multi-turn `ssh_exec` / SFTP / terminal inspection, 3 permission levels (Auto with dangerous-command guard / Confirm / Observer), native Markdown tables, `@` mentions, and `/` slash commands. |
+| **AI Agent** | Toggle docked right-hand AI Agent (`⌘I`) with multi-provider management (`+ Add Provider` for OpenAI, DeepSeek, Qwen, Kimi, Ollama, or custom OpenAI-compatible endpoints with automatic model list fetching) and one-click pane error analysis (`⌘E`); SSE streaming, collapsible thinking & tool cards, multi-turn `ssh_exec` / SFTP / terminal inspection, 3 permission levels (Auto with dangerous-command guard / Confirm / Observer), native Markdown tables, `@` mentions, and `/` slash commands. |
+
+## Screenshots
+
+| Welcome & Host Sidebar | Split Terminal & AI Agent |
+|---|---|
+| ![Welcome and Host Sidebar](docs/screenshots/welcome.png) | ![AI Agent Drawer](docs/screenshots/ai-agent.png) |
 
 ## Installation
 
