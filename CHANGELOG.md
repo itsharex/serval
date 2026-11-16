@@ -2,6 +2,23 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-17
+
+### Added
+
+- **Google Gemini & MiniMax AI Providers (`settings.go`, `core/ai/client.go`)**: Added official Google Gemini (OpenAI-compatible endpoint with `imagen`/`veo`/`lyria` filtering) and MiniMax (`MiniMax-M2.7` / `MiniMax-M2.5` presets) providers, plus priority-ranked `/models` discovery and structured API error messages.
+- **Per-Terminal AI Conversation History (`aipanel.go`, `design/icons/history.svg`)**: Each terminal tab now maintains its own independent AI conversation history list (`历史会话`), one-click `新开会话` (`/new`), conversation switching, and per-conversation deletion without cross-tab leakage.
+
+### Changed
+
+- **Per-Tab AI & SFTP Drawer Isolation (`app.go`, `aipanel.go`, `aiagent.go`, `files.go`)**: Isolated AI Agent drawer visibility (`open`), active streaming turns, and SFTP file drawer state strictly per terminal tab so opening, closing, or switching tabs never mutates other tabs or inherits old drawers onto newly opened terminals.
+- **Unified Workspace Chrome & Entry Points (`view.go`)**: Consolidated duplicate AI and split-pane controls into clean architectural layers—sidebar footer strictly for global vault resources and settings, top tab toolbar strictly for tab tools (`查找 ⌘F`, `文件 ⌘J`, and the single `AI Agent ⌘I` drawer toggle), and per-pane headers/`••• 窗格操作` menus for pane splitting and connection controls.
+
+### Fixed
+
+- **Intentional AI Triggering (`hostactions.go`, `aipanel.go`)**: Opening the AI drawer from the UI or switching tabs never automatically dispatches terminal error analysis; one-click error analysis remains explicitly triggered via `⌘E` / Command Palette.
+- **Update Dialog Changelog & Windows Test Stability (`update.go`, `core/sshconn`)**: Enabled full Markdown rendering for GitHub Release notes in the update dialog and resolved Windows loopback probe/port-forward test races.
+
 ## [0.3.0] - 2026-11-16
 
 ### Added
