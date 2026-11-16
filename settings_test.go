@@ -860,6 +860,10 @@ func TestPasswordRevealToggleAndReset(t *testing.T) {
 	// 2. AI 设置页 API Key 显隐开关，关闭设置后清空
 	h.click("AI")
 	h.tt.Frame()
+	h.click("+ 添加提供商")
+	h.tt.Frame()
+	h.click("OpenAI")
+	h.tt.Frame()
 	if box, ok := h.tt.Find("API 端点 (Base URL)"); ok {
 		h.tt.Scroll(box.X+50, box.Y+50, 0, 260)
 		h.tt.Frame()
@@ -924,5 +928,83 @@ func TestPasswordRevealToggleAndReset(t *testing.T) {
 	h.tt.Frame()
 	if h.a.unlock.showPassword {
 		t.Fatal("点击隐藏主密码后应恢复解锁页密文状态")
+	}
+}
+
+type countingDevice struct {
+	inner deviceStore
+	gets  map[string]int
+}
+
+func (c *countingDevice) Get(name string) ([]byte, error) {
+	if c.gets == nil {
+		c.gets = map[string]int{}
+	}
+	c.gets[name]++
+	return c.inner.Get(name)
+}
+
+func (c *countingDevice) Set(name string, secret []byte) error {
+	return c.inner.Set(name, secret)
+}
+
+func (c *countingDevice) Delete(name string) error {
+	return c.inner.Delete(name)
+}
+
+func TestDeviceSecretsCachedAcrossSession(t *testing.T) {
+	h := newHarness(t)
+	h.a.rememberOnDevice(true)
+	if err := h.device.Set(syncSecretName, []byte("sync-pass-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	cd := &countingDevice{inner: h.device}
+	h.a.device = cd
+	h.a.probeDeviceSecrets()
+
+	// 1. 记住状态与同步密码各自最多读取一次安全存储，后续重复打开设置、锁定或多次同步不重复读取。
+	if !h.a.isRememberedOnDevice() {
+		t.Fatal("应读取到已记住状态")
+	}
+	if !h.a.isRememberedOnDevice() {
+		t.Fatal("缓存后应仍返回已记住")
+	}
+	h.click("设置")
+	h.tt.Frame()
+	h.click("完成")
+	h.tt.Frame()
+
+	if got := h.a.syncPassword(); got != "sync-pass-1" {
+		t.Fatalf("同步密码 = %q，期望 sync-pass-1", got)
+	}
+	if got := h.a.syncPassword(); got != "sync-pass-1" {
+		t.Fatalf("缓存后同步密码 = %q", got)
+	}
+	if got := cd.gets[rememberedKeyName(h.a.vault.ID())]; got != 1 {
+		t.Fatalf("记住状态读取安全存储次数 = %d，期望 1", got)
+	}
+	if got := cd.gets[syncSecretName]; got != 1 {
+		t.Fatalf("同步密码读取安全存储次数 = %d，期望 1", got)
+	}
+
+	// 2. AI Key 迁移检查在记录 AIKeyMigrated 后，后续 loadLocal / migrateAIKey 不再读取安全存储。
+	h.a.local.AIKeyMigrated = false
+	h.a.loadLocal()
+	before := cd.gets["ai-api-key"]
+	h.a.loadLocal()
+	h.a.migrateAIKey()
+	if after := cd.gets["ai-api-key"]; after != before {
+		t.Fatalf("标记已迁移后不应再读取 ai-api-key: before=%d after=%d", before, after)
+	}
+
+	// 3. 锁定保险库时仍保留记住状态缓存，同时清空内存中的同步密码缓存。
+	h.a.lockVault()
+	h.tt.Frame()
+	if got := cd.gets[rememberedKeyName(h.a.vault.ID())]; got != 1 {
+		t.Fatalf("锁定保险库不应额外读取记住状态: gets=%d", got)
+	}
+	if h.a.syncPassCached || h.a.syncPassValue != "" {
+		t.Fatal("锁定保险库后应清空内存中的同步密码缓存")
 	}
 }

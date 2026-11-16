@@ -176,13 +176,30 @@ func DistroIconName(distro string) string {
 	}
 }
 
+// Muted 返回置灰后的斑纹，用于表示连通性探测不可达的离线状态。
+// 使用极低饱和度的冷灰，保持冷调视觉风格，同时保留斑点轮廓。
+func (coat Coat) Muted() Coat {
+	coat.From = ui.Oklch(0.58, 0.01, 250)
+	coat.To = ui.Oklch(0.48, 0.01, 250)
+	coat.Ink = ui.RGBA(255, 255, 255, 0.65)
+	return coat
+}
+
 // DistroCoatView 返回带发行版徽标或原生斑纹的主机标识。
 func DistroCoatView(c *ui.Context, seed, distro string, production bool, size float32) ui.Element {
+	return distroCoatBox(c, NewCoat(seed, production), distro, size, 0.92)
+}
+
+// DistroCoatViewMuted 返回置灰版本的主机标识（用于静默连通性探测不可达等离线状态）。
+func DistroCoatViewMuted(c *ui.Context, seed, distro string, production bool, size float32) ui.Element {
+	return distroCoatBox(c, NewCoat(seed, production).Muted(), distro, size, 0.68)
+}
+
+func distroCoatBox(c *ui.Context, coat Coat, distro string, size, iconAlpha float32) ui.Element {
 	iconName := DistroIconName(distro)
 	if iconName == "" {
-		return CoatView(c, seed, production, size)
+		return coatBox(c, coat, size)
 	}
-	coat := NewCoat(seed, production)
 	radius := size * 0.28
 	iconSize := size * 0.62
 	box := ui.Box(c).Size(size, size).Radius(radius).Shrink(0).AccessHidden(true).
@@ -195,7 +212,7 @@ func DistroCoatView(c *ui.Context, seed, distro string, production bool, size fl
 			}, radius)
 		})
 	box.Children(func() {
-		ui.Icon(c, Icon(iconName)).FontSize(iconSize).TextColor(ui.RGBA(255, 255, 255, 0.92))
+		ui.Icon(c, Icon(iconName)).FontSize(iconSize).TextColor(ui.RGBA(255, 255, 255, iconAlpha))
 	})
 	return box
 }

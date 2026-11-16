@@ -258,6 +258,13 @@ func (a *app) deviceAvailable() bool {
 
 // probeDeviceSecrets 探测系统安全存储是否受当前桌面环境支持。
 func (a *app) probeDeviceSecrets() {
+	a.rememberedKnown = false
+	a.rememberedValue = false
+	a.rememberedVaultID = ""
+	a.rememberedDev = nil
+	a.syncPassCached = false
+	a.syncPassValue = ""
+	a.syncPassDev = nil
 	if a.device == nil {
 		a.deviceSupported = false
 		return
@@ -322,7 +329,12 @@ func (a *app) rememberOnDevice(remember bool) {
 	if !remember {
 		if err := a.device.Delete(name); errors.Is(err, errors.ErrUnsupported) {
 			a.deviceSupported = false
+			return
 		}
+		a.rememberedKnown = true
+		a.rememberedValue = false
+		a.rememberedVaultID = a.vault.ID()
+		a.rememberedDev = a.device
 		return
 	}
 	if err := a.device.Set(name, a.vault.Key()); err != nil {
@@ -331,20 +343,35 @@ func (a *app) rememberOnDevice(remember bool) {
 			return
 		}
 		a.toast(ui.Toast{Title: locales.LibRememberMasterFailed(), Description: err.Error(), Type: "error"})
+		return
 	}
+	a.rememberedKnown = true
+	a.rememberedValue = true
+	a.rememberedVaultID = a.vault.ID()
+	a.rememberedDev = a.device
 }
 
 // isRememberedOnDevice 检查这台设备的安全存储里是否记住了保险库密钥。
+// 读取一次后在当前会话内缓存，避免每次打开设置或锁定保险库都重复触发系统钥匙串弹窗。
 func (a *app) isRememberedOnDevice() bool {
 	if !a.deviceAvailable() || a.vault == nil {
 		return false
 	}
-	key, err := a.device.Get(rememberedKeyName(a.vault.ID()))
+	vid := a.vault.ID()
+	if a.rememberedKnown && a.rememberedVaultID == vid && a.rememberedDev == a.device {
+		return a.rememberedValue
+	}
+	key, err := a.device.Get(rememberedKeyName(vid))
 	if errors.Is(err, errors.ErrUnsupported) {
 		a.deviceSupported = false
 		return false
 	}
-	return err == nil && len(key) > 0
+	ok := err == nil && len(key) > 0
+	a.rememberedKnown = true
+	a.rememberedValue = ok
+	a.rememberedVaultID = vid
+	a.rememberedDev = a.device
+	return ok
 }
 
 // unlockWithRemembered 启动时用本机记住的密钥自动解锁。没有记住或者密钥失效时返回 false，
@@ -353,19 +380,26 @@ func (a *app) unlockWithRemembered() bool {
 	if a.vault.State() != vault.Locked || !a.deviceAvailable() {
 		return false
 	}
-	key, err := a.device.Get(rememberedKeyName(a.vault.ID()))
+	vid := a.vault.ID()
+	key, err := a.device.Get(rememberedKeyName(vid))
 	if errors.Is(err, errors.ErrUnsupported) {
 		a.deviceSupported = false
 		return false
 	}
+	a.rememberedKnown = true
+	a.rememberedVaultID = vid
+	a.rememberedDev = a.device
 	if err != nil || len(key) == 0 {
+		a.rememberedValue = false
 		return false
 	}
 	if err := a.vault.UnlockWithKey(key); err != nil {
 		// 主密码在另一台设备上改过不会导致这里失败（VK 不变）；失败说明存储的内容坏了，删掉重来。
-		a.device.Delete(rememberedKeyName(a.vault.ID()))
+		a.device.Delete(rememberedKeyName(vid))
+		a.rememberedValue = false
 		return false
 	}
+	a.rememberedValue = true
 	a.reload()
 	return true
 }

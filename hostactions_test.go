@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"serval/core/hosts"
 	"serval/core/keys"
@@ -135,10 +136,28 @@ func TestHostHealthProbeAndCancel(t *testing.T) {
 			if err != nil {
 				return
 			}
+			_, _ = c.Write([]byte("SSH-2.0-OpenSSH_test\r\n"))
 			_ = c.Close()
 		}
 	}()
 	reachPort := reachLn.Addr().(*net.TCPAddr).Port
+
+	// 模拟 Surge / 透明代理接管：TCP 握手能通，但目标端口未返回 SSH 横幅，应判定为不可达。
+	fakeTCPLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fakeTCPLn.Close()
+	go func() {
+		for {
+			c, err := fakeTCPLn.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	fakeTCPPort := fakeTCPLn.Addr().(*net.TCPAddr).Port
 
 	deadLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -149,6 +168,7 @@ func TestHostHealthProbeAndCancel(t *testing.T) {
 
 	h := newHarness(t,
 		hosts.Host{ID: "ok-host", Name: "ok-host", Address: "127.0.0.1", Port: reachPort, User: "ops"},
+		hosts.Host{ID: "surge-fake-host", Name: "surge-fake-host", Address: "127.0.0.1", Port: fakeTCPPort, User: "ops"},
 		hosts.Host{ID: "dead-host", Name: "dead-host", Address: "127.0.0.1", Port: deadPort, User: "ops"},
 	)
 	h.tt.Frame()
@@ -156,8 +176,9 @@ func TestHostHealthProbeAndCancel(t *testing.T) {
 	h.click("检测连通性")
 	h.pump("完成连通性批量探测", func() bool {
 		okSt := h.a.health["ok-host"].state
+		fakeSt := h.a.health["surge-fake-host"].state
 		deadSt := h.a.health["dead-host"].state
-		return okSt == probeOK && deadSt == probeFail
+		return okSt == probeOK && fakeSt == probeFail && deadSt == probeFail
 	})
 
 	if tip := hostTooltip(h.host("ok-host"), h.a.health["ok-host"]); !strings.Contains(tip, "可达") {
@@ -165,6 +186,39 @@ func TestHostHealthProbeAndCancel(t *testing.T) {
 	}
 	if tip := hostTooltip(h.host("dead-host"), h.a.health["dead-host"]); !strings.Contains(tip, "不可达") {
 		t.Fatalf("不可达主机提示信息异常: %q", tip)
+	}
+
+	// 连通性探测结果不在右侧圆点复用：未连接任何主机时，界面上不应出现“已连接”状态点。
+	h.tt.Frame()
+	if _, found := h.tt.Find(locales.ViewConnected()); found {
+		t.Fatal("未打开 SSH 会话时不应显示“已连接”圆点")
+	}
+
+	// 验证可达主机图标存在轻微呼吸（推进半个周期后像素透明度发生变化），而不可达主机图标呈置灰（低饱和度）。
+	okRow, ok := h.tt.Find("ok-host")
+	if !ok {
+		t.Fatal("找不到 ok-host 行")
+	}
+	deadRow, ok := h.tt.Find("dead-host")
+	if !ok {
+		t.Fatal("找不到 dead-host 行")
+	}
+	img0 := h.tt.Image()
+	// 取不可达主机图标区域（行左侧 padding=10, 图标 26x26 中心大约在 X+23, Y+H/2）检查饱和度。
+	deadIconX := int(deadRow.X) + 23
+	deadIconY := int(deadRow.Y + deadRow.H/2)
+	deadPix := img0.RGBAAt(deadIconX, deadIconY)
+	if spread := max(deadPix.R, deadPix.G, deadPix.B) - min(deadPix.R, deadPix.G, deadPix.B); spread > 18 {
+		t.Fatalf("不可达主机图标未置灰: rgba=%+v spread=%d", deadPix, spread)
+	}
+
+	h.tt.Advance(1300 * time.Millisecond)
+	h.tt.Frame()
+	img1 := h.tt.Image()
+	okIconX := int(okRow.X) + 23
+	okIconY := int(okRow.Y + okRow.H/2)
+	if img0.RGBAAt(okIconX, okIconY) == img1.RGBAAt(okIconX, okIconY) {
+		t.Fatalf("可达主机图标在半个呼吸周期后像素未变化，未见呼吸效果: %+v", img0.RGBAAt(okIconX, okIconY))
 	}
 
 	// closeAll 应安全取消并清理探测状态

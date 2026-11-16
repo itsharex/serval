@@ -407,6 +407,8 @@ func (a *app) saveForm() {
 		f.err = err.Error()
 		return
 	}
+	// 主机地址/端口/代理等配置修改后，清除旧的连通性缓存，避免沿用修改前的状态。
+	delete(a.health, h.ID)
 	if f.tempHostID != "" {
 		for _, tab := range a.tabs {
 			if tab.host.ID == f.tempHostID {

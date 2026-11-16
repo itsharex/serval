@@ -49,9 +49,16 @@ type app struct {
 	local      deviceSettings
 	devicePath string
 	// device 是系统安全存储，只用来“在这台设备上记住”保险库密钥。
-	device          deviceStore
-	deviceSupported bool
-	knownHosts      []string
+	device            deviceStore
+	deviceSupported   bool
+	rememberedKnown   bool
+	rememberedValue   bool
+	rememberedVaultID string
+	rememberedDev     deviceStore
+	syncPassCached    bool
+	syncPassValue     string
+	syncPassDev       deviceStore
+	knownHosts        []string
 	// localUser 是本机用户名。主机和跳板机没写用户名时用它，和 OpenSSH 一致。
 	localUser string
 
@@ -114,13 +121,18 @@ type app struct {
 	// arrived 记录刚出现的窗格，它们的卡片下一帧从起始姿态弹入（见 design.Arrival）。
 	arrived map[int]bool
 
-	// connecting 记录正在连接的主机和取消函数，同一台主机不重复发起连接。
-	connecting        map[string]context.CancelFunc
-	connectingPhase   map[string]string
-	connectingHost    map[string]hosts.Host
-	lastScrolledTabID int
-	customGroups      []string
-	groupSheet        groupDialogState
+	// connecting 记录正在进行的连接和取消函数（键为连接标识，同一台主机已有会话后可并行发起多个新标签）。
+	connecting          map[string]context.CancelFunc
+	connectingPhase     map[string]string
+	connectingHost      map[string]hosts.Host
+	nextConnSeq         int
+	clickOpenedHostID   string
+	clickOpenedAt       time.Time
+	skipNextClickHostID string
+	skipNextClickAt     time.Time
+	lastScrolledTabID   int
+	customGroups        []string
+	groupSheet          groupDialogState
 	// notice 显示最近一次连接失败的原因。
 	notice string
 
@@ -396,6 +408,9 @@ func (a *app) askLockVault() {
 // 包括还没提交的密码询问（a.auth 里可能有用户刚输入的密码）、表单、待确认的操作。
 func (a *app) lockVault() {
 	remembered := a.isRememberedOnDevice()
+	a.syncPassCached = false
+	a.syncPassValue = ""
+	a.syncPassDev = nil
 	a.stopSyncLoop()
 	a.stopSyncDir()
 	a.syncErr = ""
@@ -446,6 +461,10 @@ func (a *app) lockVault() {
 	a.customGroups = nil
 	a.connectingPhase = nil
 	a.connectingHost = nil
+	a.clickOpenedHostID = ""
+	a.clickOpenedAt = time.Time{}
+	a.skipNextClickHostID = ""
+	a.skipNextClickAt = time.Time{}
 	a.lastScrolledTabID = 0
 	a.clearBroadcast()
 	a.unlock = unlockState{remember: remembered}
@@ -495,8 +514,58 @@ func (a *app) isSavedHost(id string) bool {
 	return ok
 }
 
+func (a *app) hasTabForHost(hostID string) bool {
+	return slices.ContainsFunc(a.tabs, func(t *tab) bool { return t.host.ID == hostID })
+}
+
+func (a *app) isHostConnecting(hostID string) bool {
+	for id, ch := range a.connectingHost {
+		if ch.ID == hostID {
+			if _, ok := a.connecting[id]; ok {
+				return true
+			}
+		}
+	}
+	_, ok := a.connecting[hostID]
+	return ok
+}
+
+func (a *app) beginConnect(h hosts.Host, ctx context.Context, cancel context.CancelFunc, phase string) string {
+	connKey := h.ID
+	if _, exists := a.connecting[connKey]; exists || connKey == "" {
+		a.nextConnSeq++
+		connKey = fmt.Sprintf("%s#%d", h.ID, a.nextConnSeq)
+	}
+	if a.connecting == nil {
+		a.connecting = make(map[string]context.CancelFunc)
+	}
+	if a.connectingPhase == nil {
+		a.connectingPhase = make(map[string]string)
+	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connecting[connKey] = cancel
+	a.connectingHost[connKey] = h
+	a.connectingPhase[connKey] = phase
+	return connKey
+}
+
+func (a *app) endConnect(connKey string) {
+	delete(a.connecting, connKey)
+	delete(a.connectingPhase, connKey)
+	delete(a.connectingHost, connKey)
+}
+
 // open 打开主机：已有会话时切换过去，否则新建连接。
 func (a *app) open(h hosts.Host) {
+	if a.active >= 0 && a.active < len(a.tabs) && a.tabs[a.active].host.ID == h.ID {
+		if _, ok := a.hostByID(h.ID); ok {
+			a.recordRecentHost(h.ID)
+		}
+		a.saveSessionLayout()
+		return
+	}
 	for i, t := range a.tabs {
 		if t.host.ID == h.ID {
 			a.active = i
@@ -510,6 +579,37 @@ func (a *app) open(h hosts.Host) {
 	a.connect(h, nil)
 }
 
+// clickHost 处理侧栏主机行的单击：未打开时发起连接，已打开时切换到对应标签；
+// 并配合 doubleClickHost，避免首次双击的第一下与第二下重复打开两个标签。
+func (a *app) clickHost(h hosts.Host) {
+	if a.skipNextClickHostID == h.ID && time.Since(a.skipNextClickAt) < 500*time.Millisecond {
+		a.skipNextClickHostID = ""
+		return
+	}
+	a.skipNextClickHostID = ""
+	hadTabOrConnecting := a.hasTabForHost(h.ID) || a.isHostConnecting(h.ID)
+	a.open(h)
+	if !hadTabOrConnecting && a.isHostConnecting(h.ID) {
+		a.clickOpenedHostID = h.ID
+		a.clickOpenedAt = time.Now()
+	} else {
+		a.clickOpenedHostID = ""
+	}
+}
+
+// doubleClickHost 处理侧栏主机行的双击：若主机已打开（或正在后续连接），每次双击都新建一个标签。
+func (a *app) doubleClickHost(h hosts.Host) {
+	a.skipNextClickHostID = h.ID
+	a.skipNextClickAt = time.Now()
+	if a.clickOpenedHostID == h.ID && time.Since(a.clickOpenedAt) < 600*time.Millisecond {
+		// 首次双击的第一下点击刚刚发起了首个连接，第二下不重复打开第二个标签。
+		a.clickOpenedHostID = ""
+		return
+	}
+	a.clickOpenedHostID = ""
+	a.connect(h, nil)
+}
+
 // connect 在后台建立连接，有跳板机时逐跳连接。creds 是用户刚输入的密码或口令，
 // 按链路位置（见 authSheet.hop）索引，只用于这一次连接尝试；没输入的部分用保险库里保存的。
 func (a *app) connect(h hosts.Host, creds map[int]credential) {
@@ -519,7 +619,7 @@ func (a *app) connect(h hosts.Host, creds map[int]credential) {
 // connectWithLayout 在后台建立连接，并按 layout 恢复窗格结构（为 nil 时打开单个窗格）。
 // slot 是恢复会话时这个标签在上次会话里的位置（从 1 开始），普通连接为 0。
 func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *savedPane, slot int) {
-	if _, busy := a.connecting[h.ID]; busy {
+	if !a.hasTabForHost(h.ID) && a.isHostConnecting(h.ID) {
 		return
 	}
 	switch h.EffectiveProtocol() {
@@ -539,15 +639,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 		a.notice = err.Error()
 		return
 	}
-	a.connecting[h.ID] = cancel
-	if a.connectingPhase == nil {
-		a.connectingPhase = make(map[string]string)
-	}
-	if a.connectingHost == nil {
-		a.connectingHost = make(map[string]hosts.Host)
-	}
-	a.connectingHost[h.ID] = h
-	a.connectingPhase[h.ID] = "正在建立连接与验证身份…"
+	connKey := a.beginConnect(h, ctx, cancel, "正在建立连接与验证身份…")
 
 	leafCount := 1
 	if layout != nil {
@@ -564,8 +656,8 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 		var shells []*sshconn.Shell
 		if err == nil {
 			a.post(func() {
-				if _, ok := a.connecting[h.ID]; ok {
-					a.connectingPhase[h.ID] = "正在打开远程终端…"
+				if _, ok := a.connecting[connKey]; ok {
+					a.connectingPhase[connKey] = "正在打开远程终端…"
 				}
 			})
 			shells = make([]*sshconn.Shell, leafCount)
@@ -583,9 +675,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 		}
 		a.post(func() {
 			defer cancel()
-			delete(a.connecting, h.ID)
-			delete(a.connectingPhase, h.ID)
-			delete(a.connectingHost, h.ID)
+			a.endConnect(connKey)
 			if err != nil {
 				a.connectFailed(ctx, h, route, used, err)
 				return
@@ -794,7 +884,11 @@ func choose(keep bool, value string) string {
 }
 
 func (a *app) cancelConnect(id string) {
-	if a.openFilesOnHostID == id {
+	hostID := id
+	if ch, ok := a.connectingHost[id]; ok && ch.ID != "" {
+		hostID = ch.ID
+	}
+	if a.openFilesOnHostID == hostID {
 		a.openFilesOnHostID = ""
 	}
 	if cancel, ok := a.connecting[id]; ok {
@@ -955,20 +1049,12 @@ func (a *app) addTabWithConn(h hosts.Host, conn shellConn, closer io.Closer) {
 }
 
 func (a *app) connectTelnet(h hosts.Host) {
-	if _, busy := a.connecting[h.ID]; busy {
+	if !a.hasTabForHost(h.ID) && a.isHostConnecting(h.ID) {
 		return
 	}
 	a.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
-	a.connecting[h.ID] = cancel
-	if a.connectingPhase == nil {
-		a.connectingPhase = make(map[string]string)
-	}
-	if a.connectingHost == nil {
-		a.connectingHost = make(map[string]hosts.Host)
-	}
-	a.connectingHost[h.ID] = h
-	a.connectingPhase[h.ID] = "正在连接 Telnet…"
+	connKey := a.beginConnect(h, ctx, cancel, "正在连接 Telnet…")
 
 	port := h.Port
 	if port <= 0 {
@@ -980,9 +1066,7 @@ func (a *app) connectTelnet(h hosts.Host) {
 		tConn, err := telnet.DialContext(ctx, addr)
 		a.post(func() {
 			defer cancel()
-			delete(a.connecting, h.ID)
-			delete(a.connectingPhase, h.ID)
-			delete(a.connectingHost, h.ID)
+			a.endConnect(connKey)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -1000,20 +1084,12 @@ func (a *app) connectTelnet(h hosts.Host) {
 }
 
 func (a *app) connectSerial(h hosts.Host) {
-	if _, busy := a.connecting[h.ID]; busy {
+	if a.isHostConnecting(h.ID) {
 		return
 	}
 	a.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
-	a.connecting[h.ID] = cancel
-	if a.connectingPhase == nil {
-		a.connectingPhase = make(map[string]string)
-	}
-	if a.connectingHost == nil {
-		a.connectingHost = make(map[string]hosts.Host)
-	}
-	a.connectingHost[h.ID] = h
-	a.connectingPhase[h.ID] = "正在打开串口…"
+	connKey := a.beginConnect(h, ctx, cancel, "正在打开串口…")
 
 	stopBits := serial.StopBits1
 	if h.EffectiveStopBits() == 2 {
@@ -1031,9 +1107,7 @@ func (a *app) connectSerial(h hosts.Host) {
 		port, err := serial.Open(cfg)
 		a.post(func() {
 			defer cancel()
-			delete(a.connecting, h.ID)
-			delete(a.connectingPhase, h.ID)
-			delete(a.connectingHost, h.ID)
+			a.endConnect(connKey)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -2556,32 +2630,30 @@ func (a *app) setAIKey(k string) {
 
 // migrateAIKey 将旧版本明文保存在 device.json 或系统安全存储里的 AI Key 迁移到加密保险库并清理旧副本。
 func (a *app) migrateAIKey() {
-	if a.vault == nil || a.vault.State() != vault.Unlocked {
+	if a.vault == nil || a.vault.State() != vault.Unlocked || a.local.AIKeyMigrated {
 		return
 	}
 	legacy := strings.TrimSpace(a.local.LegacyAIKey)
-	if legacy == "" && a.device != nil {
+	if legacy == "" && a.settings.AIKey == "" && a.device != nil {
 		if b, err := a.device.Get("ai-api-key"); err == nil && len(b) > 0 {
 			legacy = strings.TrimSpace(string(b))
 		}
 	}
-	if legacy == "" {
-		return
-	}
-	if a.settings.AIKey == "" {
+	if legacy != "" && a.settings.AIKey == "" {
 		next := a.settings
 		next.AIKey = legacy
 		if err := a.saveSettings(next); err != nil {
 			return
 		}
 	}
-	if a.local.LegacyAIKey != "" {
+	if a.device != nil && (legacy != "" || a.settings.AIKey != "") {
+		_ = a.device.Delete("ai-api-key")
+	}
+	if a.local.LegacyAIKey != "" || !a.local.AIKeyMigrated {
 		d := a.local
 		d.LegacyAIKey = ""
+		d.AIKeyMigrated = true
 		_ = a.saveLocal(d)
-	}
-	if a.device != nil {
-		_ = a.device.Delete("ai-api-key")
 	}
 }
 

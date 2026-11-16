@@ -36,49 +36,59 @@ type hostHealth struct {
 	at      time.Time
 }
 
-// probeTarget 返回主机在本地应探测的 TCP 地址（若主机通过跳板机或代理，探测链路的第一跳/代理入口）。
-func (a *app) probeTarget(h hosts.Host) (addr string, ok bool) {
+type probeSpec struct {
+	addr      string
+	proxy     *sshconn.Proxy
+	expectSSH bool
+}
+
+// probeTarget 返回主机应探测的目标地址、可选代理及协议校验方式。
+// 配有跳板机时探测链路第一跳；配有代理时会实际经由该代理隧道探测目标端口。
+func (a *app) probeTarget(h hosts.Host) (probeSpec, bool) {
 	switch h.EffectiveProtocol() {
 	case hosts.ProtocolSerial:
-		return "", false
+		return probeSpec{}, false
 	case hosts.ProtocolTelnet:
 		if strings.TrimSpace(h.Address) == "" {
-			return "", false
+			return probeSpec{}, false
 		}
 		port := h.Port
 		if port <= 0 {
 			port = 23
 		}
-		return net.JoinHostPort(h.Address, strconv.Itoa(port)), true
+		return probeSpec{addr: net.JoinHostPort(h.Address, strconv.Itoa(port))}, true
 	default:
 		entry := h
-		if route, err := hosts.ResolveRoute(h, a.hosts, a.localUser); err == nil && len(route) > 0 {
-			entry = route[0]
+		var route []hosts.Host
+		if resolved, err := hosts.ResolveRoute(h, a.hosts, a.localUser); err == nil && len(resolved) > 0 {
+			route = resolved
+			entry = resolved[0]
 		}
-		if hasProxy(entry) {
-			if p, err := a.dialProxy(entry); err == nil && p != nil && p.Addr != "" {
-				return p.Addr, true
-			}
-			return "", false
+		proxyOwner := h
+		if !hasProxy(h) && len(route) > 0 {
+			proxyOwner = route[0]
 		}
-		if hasProxy(h) {
-			if p, err := a.dialProxy(h); err == nil && p != nil && p.Addr != "" {
-				return p.Addr, true
-			}
-			return "", false
+		proxy, err := a.dialProxy(proxyOwner)
+		if err != nil {
+			return probeSpec{}, false
 		}
 		if strings.TrimSpace(entry.Address) == "" {
-			return "", false
+			return probeSpec{}, false
 		}
 		port := entry.Port
 		if port <= 0 {
 			port = 22
 		}
-		return net.JoinHostPort(entry.Address, strconv.Itoa(port)), true
+		return probeSpec{
+			addr:      net.JoinHostPort(entry.Address, strconv.Itoa(port)),
+			proxy:     proxy,
+			expectSSH: true,
+		}, true
 	}
 }
 
-// probeAllHosts 在后台并发探测侧栏主机的 TCP 连通性与往返延迟（不阻断主线程，跳过串口主机）。
+// probeAllHosts 在后台并发探测侧栏主机的连通性与往返延迟（不阻断主线程，跳过串口主机）。
+// SSH 主机会校验服务端 "SSH-" 版本横幅，避免透明代理/Surge 仅完成本地 TCP 握手造成假阳性。
 func (a *app) probeAllHosts(force bool) {
 	if a.vault == nil || a.post == nil || len(a.hosts) == 0 {
 		return
@@ -95,7 +105,7 @@ func (a *app) probeAllHosts(force bool) {
 
 	type job struct {
 		id   string
-		addr string
+		spec probeSpec
 	}
 	var jobs []job
 	for _, h := range a.hosts {
@@ -112,7 +122,7 @@ func (a *app) probeAllHosts(force bool) {
 			}
 			continue
 		}
-		addr, ok := a.probeTarget(h)
+		spec, ok := a.probeTarget(h)
 		if !ok {
 			continue
 		}
@@ -122,7 +132,7 @@ func (a *app) probeAllHosts(force bool) {
 			}
 		}
 		a.health[h.ID] = hostHealth{state: probeChecking, at: time.Now()}
-		jobs = append(jobs, job{id: h.ID, addr: addr})
+		jobs = append(jobs, job{id: h.ID, spec: spec})
 	}
 	if len(jobs) == 0 {
 		return
@@ -130,7 +140,7 @@ func (a *app) probeAllHosts(force bool) {
 
 	sem := make(chan struct{}, 6)
 	for _, j := range jobs {
-		go func(id, addr string) {
+		go func(id string, spec probeSpec) {
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -138,13 +148,12 @@ func (a *app) probeAllHosts(force bool) {
 			}
 			defer func() { <-sem }()
 
-			start := time.Now()
-			dialer := net.Dialer{Timeout: 1500 * time.Millisecond}
-			conn, err := dialer.DialContext(ctx, "tcp", addr)
-			rtt := time.Since(start)
-			if conn != nil {
-				_ = conn.Close()
-			}
+			rtt, err := sshconn.Probe(ctx, sshconn.ProbeOptions{
+				Addr:      spec.addr,
+				Proxy:     spec.proxy,
+				Timeout:   2500 * time.Millisecond,
+				ExpectSSH: spec.expectSSH,
+			})
 			a.post(func() {
 				if ctx.Err() != nil {
 					return
@@ -158,7 +167,7 @@ func (a *app) probeAllHosts(force bool) {
 				}
 				a.health[id] = hostHealth{state: probeOK, latency: rtt, at: time.Now()}
 			})
-		}(j.id, j.addr)
+		}(j.id, j.spec)
 	}
 }
 
@@ -178,21 +187,21 @@ func (a *app) probeOneHost(h hosts.Host) {
 		}
 		return
 	}
-	addr, ok := a.probeTarget(h)
+	spec, ok := a.probeTarget(h)
 	if !ok {
 		a.toast(ui.Toast{Title: fmt.Sprintf("无法检测 %s", h.Name), Description: "主机地址或代理配置不完整。", Type: "error"})
 		return
 	}
 	a.health[h.ID] = hostHealth{state: probeChecking, at: time.Now()}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		start := time.Now()
-		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", addr)
-		rtt := time.Since(start)
-		if conn != nil {
-			_ = conn.Close()
-		}
+		rtt, err := sshconn.Probe(ctx, sshconn.ProbeOptions{
+			Addr:      spec.addr,
+			Proxy:     spec.proxy,
+			Timeout:   3 * time.Second,
+			ExpectSSH: spec.expectSSH,
+		})
 		if a.post == nil {
 			return
 		}

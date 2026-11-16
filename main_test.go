@@ -330,6 +330,49 @@ func TestConnectFlowAndPasswordIsNotKept(t *testing.T) {
 	}
 }
 
+func TestDoubleClickHostOpensMultipleTabs(t *testing.T) {
+	h := newHarness(t)
+	// 先正常连接一次（记住密码 + 信任主机密钥），后续双击不再弹窗。
+	h.connectDev()
+	if len(h.a.tabs) != 1 {
+		t.Fatalf("初始应有 1 个标签，实际 %d", len(h.a.tabs))
+	}
+	// 已有标签时，“已连接”圆点应出现在侧栏行中。
+	if _, found := h.tt.Find(locales.ViewConnected()); !found {
+		t.Fatal("已连接主机应在侧栏显示“已连接”圆点")
+	}
+
+	// 1) 关闭现有标签后，首次对未打开主机双击：只应打开 1 个标签，不应因为双击两下而打开 2 个。
+	h.a.closeTab(h.a.tabs[0])
+	h.tt.Frame()
+	h.tt.Advance(time.Second)
+	h.click("dev")
+	h.click("dev")
+	h.pump("首次双击打开第一个标签", func() bool {
+		return len(h.a.tabs) == 1 && len(h.a.connecting) == 0
+	})
+
+	// 2) 已有标签后，再次双击主机应打开第 2 个标签。
+	h.tt.Advance(time.Second)
+	h.click("dev")
+	h.click("dev")
+	h.pump("第二次双击打开第二个标签", func() bool {
+		return len(h.a.tabs) == 2 && len(h.a.connecting) == 0
+	})
+
+	// 3) 第三次双击应继续打开第 3 个标签。
+	h.tt.Advance(time.Second)
+	h.click("dev")
+	h.click("dev")
+	h.pump("第三次双击打开第三个标签", func() bool {
+		return len(h.a.tabs) == 3 && len(h.a.connecting) == 0
+	})
+
+	if !h.tt.HasText("dev (2)") || !h.tt.HasText("dev (3)") {
+		t.Fatalf("多个同名标签应显示递增序号，实际界面文字: %q", h.tt.Texts())
+	}
+}
+
 func TestWrongPasswordAsksAgain(t *testing.T) {
 	h := newHarness(t)
 	h.enterPassword("wrong")

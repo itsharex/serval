@@ -1,6 +1,10 @@
 package design
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/egoist/mygo/ui"
+)
 
 func TestDistroIconNameAndEmbed(t *testing.T) {
 	distros := []string{
@@ -42,5 +46,20 @@ func TestDistroIconNameAndEmbed(t *testing.T) {
 	}
 	if DistroIconName("unknown-xyz") != "" {
 		t.Error("Unknown distro should return empty icon name")
+	}
+}
+
+func TestCoatMutedIsCoolGray(t *testing.T) {
+	for _, prod := range []bool{false, true} {
+		muted := NewCoat("prod-web-01", prod).Muted()
+		for _, c := range []ui.Color{muted.From, muted.To} {
+			if c.A == 0 {
+				t.Fatalf("置灰颜色不应透明: %+v", c)
+			}
+			spread := max(c.R, c.G, c.B) - min(c.R, c.G, c.B)
+			if spread > 10 {
+				t.Fatalf("prod=%v 置灰颜色饱和度过高（应呈冷灰）: %+v spread=%d", prod, c, spread)
+			}
+		}
 	}
 }

@@ -622,8 +622,8 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	t := c.Theme()
 	current := a.current()
 	selected := current != nil && current.host.ID == h.ID
-	connected := slices.ContainsFunc(a.tabs, func(tb *tab) bool { return tb.host.ID == h.ID })
-	_, busy := a.connecting[h.ID]
+	connected := a.hasTabForHost(h.ID)
+	busy := a.isHostConnecting(h.ID)
 	health := a.health[h.ID]
 	menu := a.hostMenu(c, h)
 	filtering := strings.TrimSpace(a.hostFilter) != "" || a.activeTag != ""
@@ -665,10 +665,19 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 			row.Description(locales.ViewConnecting())
 		}
 		row.Children(func() {
-			coat := design.DistroCoatView(c, h.ID, h.Distro, h.Production, 26)
+			unreachable := !busy && !connected && health.state == probeFail
+			var coat ui.Element
+			if unreachable {
+				coat = design.DistroCoatViewMuted(c, h.ID, h.Distro, h.Production, 26).Opacity(0.75)
+			} else {
+				coat = design.DistroCoatView(c, h.ID, h.Distro, h.Production, 26)
+			}
 			if busy {
-				// 连接中斑纹轻轻呼吸，代替转圈图标：状态就落在这台主机自己的标识上。
+				// 连接中斑纹明显呼吸，代替转圈图标：状态就落在这台主机自己的标识上。
 				coat.Opacity(coat.Keyframes("breathe", design.Breathe, design.BreatheOptions))
+			} else if !connected && health.state == probeOK {
+				// 静默连通性探测可达且尚未打开会话时，图标轻微呼吸提示在线可连。
+				coat.Opacity(coat.Keyframes("reachable", design.ReachableBreathe, design.ReachableBreatheOptions))
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 				ui.Text(c, h.Name).FontWeight(500).SingleLine()
@@ -679,35 +688,20 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 				}
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
+			// 右侧绿点仅表示当前主机已打开会话，不与连通性探测结果复用，避免误判“已连接”。
 			if connected {
 				tip := locales.ViewConnected()
-				if cur := slices.IndexFunc(a.tabs, func(tb *tab) bool { return tb.host.ID == h.ID }); cur >= 0 && a.tabs[cur].latency > 0 {
+				if current != nil && current.host.ID == h.ID && current.latency > 0 {
+					tip += " · " + formatLatency(current.latency)
+				} else if cur := slices.IndexFunc(a.tabs, func(tb *tab) bool { return tb.host.ID == h.ID && tb.latency > 0 }); cur >= 0 {
 					tip += " · " + formatLatency(a.tabs[cur].latency)
 				}
 				ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0).Label(locales.ViewConnected()).Tooltip(tip)
-			} else if health.state != probeUnknown {
-				switch health.state {
-				case probeChecking:
-					ui.Box(c).Size(6, 6).Radius(3).Background(colors.TextFaint).Shrink(0).Label("正在检测").Tooltip("正在检测连通性")
-				case probeOK:
-					dotColor := colors.Live
-					if health.latency >= 150*time.Millisecond {
-						dotColor = t.Accent
-					}
-					tip := "可达"
-					if health.latency > 0 {
-						tip = "可达 · " + formatLatency(health.latency)
-					}
-					ui.Box(c).Size(6, 6).Radius(3).Background(dotColor).Shrink(0).Label("可达").Tooltip(tip)
-				case probeFail:
-					tip := "不可达"
-					if health.err != "" {
-						tip = "不可达：" + health.err
-					}
-					ui.Box(c).Size(6, 6).Radius(3).Border(1.5, colors.TextFaint).Shrink(0).Label("不可达").Tooltip(tip)
-				}
 			}
-		}).OnClick(func() { a.open(h) })
+		}).OnClick(func() { a.clickHost(h) })
+		if row.DoubleClicked() {
+			a.doubleClickHost(h)
+		}
 		row.PopoverMenu(menu)
 
 		// “更多”按钮只在悬停或选中时出现，打开和右键相同的菜单：
@@ -934,7 +928,7 @@ func (a *app) drawerBudget(c *ui.Context, hasFiles, hasAI bool) (filesW, filesMa
 		a.filesWidth = 560
 	}
 	if a.aiWidth <= 0 {
-		a.aiWidth = 430
+		a.aiWidth = 460
 	}
 	windowW, _ := c.Size()
 	var sideW float32
@@ -1292,7 +1286,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				}
 			})
 		}
-		if !compact && !p.sizeChangedAt.IsZero() && time.Since(p.sizeChangedAt) < 1500*time.Millisecond {
+		if !compact && !p.ended && !t.reconnecting && !p.sizeChangedAt.IsZero() && time.Since(p.sizeChangedAt) < 1500*time.Millisecond {
 			ui.Textf(c, "%d × %d", cols, rows).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 		}
 		if t.monitorOpen && !t.local && t.client != nil && !p.ended && !tiny {

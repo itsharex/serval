@@ -162,6 +162,8 @@ type deviceSettings struct {
 	DisableAutoCheckUpdate bool `json:"disableAutoCheckUpdate,omitempty"`
 	// LegacyAIKey 仅用于将旧版本明文保存在 device.json 的密钥迁移进加密保险库，迁移后即清空。
 	LegacyAIKey string `json:"aiKey,omitempty"`
+	// AIKeyMigrated 标记已完成一次性旧版 AI Key 迁移检查，避免每次启动都读取系统钥匙串。
+	AIKeyMigrated bool `json:"aiKeyMigrated,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。

@@ -143,6 +143,9 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 			}
 			return errors.New("没能把同步密码放进系统安全存储")
 		}
+		a.syncPassCached = true
+		a.syncPassValue = password
+		a.syncPassDev = a.device
 	}
 	next := a.local
 	next.SyncURL = fileURL
@@ -509,11 +512,18 @@ func (a *app) syncPassword() string {
 	if a.device == nil {
 		return ""
 	}
+	if a.syncPassCached && a.syncPassDev == a.device {
+		return a.syncPassValue
+	}
 	b, err := a.device.Get(syncSecretName)
+	a.syncPassCached = true
+	a.syncPassDev = a.device
 	if err != nil {
+		a.syncPassValue = ""
 		return ""
 	}
-	return string(b)
+	a.syncPassValue = string(b)
+	return a.syncPassValue
 }
 
 // onVaultReady 在保险库解锁并且本机设置已经加载后调用：开了同步就先对齐一次，之后每几分钟再对齐。
