@@ -142,10 +142,10 @@ func TestAppCheckForUpdatesManualLatest(t *testing.T) {
 func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(githubReleaseResponse{
-			TagName:     "v0.5.0",
-			Name:        "Serval 0.5.0 新版本",
+			TagName:     "v0.6.0",
+			Name:        "Serval 0.6.0 新版本",
 			Body:        "## 更新日志\n- 支持检查更新与 Homebrew 升级引导",
-			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.5.0",
+			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.6.0",
 			PublishedAt: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC),
 		})
 	}))
@@ -170,7 +170,7 @@ func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	h.pump("发现新版本并弹出更新面板", func() bool { return h.a.update.sheetOpen })
 	h.tt.Frame()
 
-	if !h.tt.HasText("发现新版本 v0.5.0") {
+	if !h.tt.HasText("发现新版本 v0.6.0") {
 		t.Fatalf("更新浮层未显示版本号: texts=%q", h.tt.Texts())
 	}
 	if !h.tt.HasText("更新日志") {
@@ -190,7 +190,7 @@ func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	if h.a.update.sheetOpen {
 		t.Fatal("点击下载后浮层应关闭")
 	}
-	if len(h.openedURLs) != 1 || h.openedURLs[0] != "https://github.com/jhzhang09/serval/releases/tag/v0.5.0" {
+	if len(h.openedURLs) != 1 || h.openedURLs[0] != "https://github.com/jhzhang09/serval/releases/tag/v0.6.0" {
 		t.Fatalf("打开的下载链接不匹配: got %v", h.openedURLs)
 	}
 }
@@ -290,8 +290,8 @@ func TestUpdateDialogRendersMarkdownNotes(t *testing.T) {
 
 | Platform · 平台 | Desktop App · 桌面应用 |
 |---|---|
-| macOS 13+ | ` + "`serval-0.5.0.dmg`" + ` |
-| Windows 10 / 11 | Installer · 安装版<br>` + "`serval-setup-0.5.0-amd64.exe`" + ` |
+| macOS 13+ | ` + "`serval-0.6.0.dmg`" + ` |
+| Windows 10 / 11 | Installer · 安装版<br>` + "`serval-setup-0.6.0-amd64.exe`" + ` |
 
 > **macOS:** ad-hoc signed, use Homebrew.
 
@@ -301,10 +301,10 @@ func TestUpdateDialogRendersMarkdownNotes(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(githubReleaseResponse{
-			TagName:     "v0.5.0",
-			Name:        "Serval v0.5.0",
+			TagName:     "v0.6.0",
+			Name:        "Serval v0.6.0",
 			Body:        body,
-			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.5.0",
+			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.6.0",
 			PublishedAt: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC),
 		})
 	}))
@@ -328,7 +328,7 @@ func TestUpdateDialogRendersMarkdownNotes(t *testing.T) {
 	if !h.tt.HasText("Downloads · 下载") {
 		t.Fatalf("未渲染 Markdown 标题: texts=%q", texts)
 	}
-	if !h.tt.HasText("Platform · 平台") || !h.tt.HasText("serval-0.5.0.dmg") {
+	if !h.tt.HasText("Platform · 平台") || !h.tt.HasText("serval-0.6.0.dmg") {
 		t.Fatalf("未渲染 Markdown 表格单元: texts=%q", texts)
 	}
 	if !h.tt.HasText("• 修复更新日志 Markdown 表格渲染") {

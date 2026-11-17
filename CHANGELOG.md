@@ -2,6 +2,18 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-17
+
+### Added
+
+- **Enter-to-Reconnect on Ended Terminals (`app.go`, `locales/`)**: Pressing `Enter` inside a focused disconnected terminal pane immediately triggers reconnection cleanly without interfering with find bars, dialogs, or active auto-reconnects, and canceling auto-reconnect restores terminal focus.
+- **Guided Sync & Restore Onboarding (`sync.go`, `settings.go`, `design/icons/external-link.svg`)**: Upgraded both Settings → Sync and the empty-device **Restore Vault** dialog with WebDAV/S3 vendor presets, beginner-friendly step-by-step guides, vendor-native credential terminology hints (`SecretId`/`SecretKey`, `AK`/`SK`), automatic `Region` inference from Endpoints, one-click console links, and automatic subdirectory fallback (`serval/vault.json` ↔ root `vault.json`).
+
+### Changed
+
+- **Cloud S3 Protocol Compatibility (`core/syncer/s3.go`)**: Automatically selects Virtual-Hosted-Style for AWS S3 (with regional `s3.<region>.amazonaws.com` endpoints), Aliyun OSS, Tencent COS, and Huawei OBS while keeping Path-Style for Cloudflare R2 and MinIO, and classifies S3 XML errors (`NoSuchBucket`, `SignatureDoesNotMatch`, `AccessDenied`, `PermanentRedirect`) for accurate troubleshooting.
+- **Dependency Updates**: Upgraded `github.com/egoist/mygo` to `0.9.0`, `golang.org/x/crypto` to `0.59.0`, `github.com/klauspost/compress` to `1.18.7`, and `github.com/cloudflare/circl` to `1.6.3`.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added
