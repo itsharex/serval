@@ -10,6 +10,8 @@ import (
 
 	"serval/core/sshconn"
 	"serval/internal/devsshd"
+
+	"github.com/egoist/mygo/ui"
 )
 
 // 只有网络类错误值得自动重试；认证和主机密钥类错误重试只会重复失败。
@@ -124,4 +126,50 @@ func TestStaleShellExitIsIgnored(t *testing.T) {
 	if !p.ended {
 		t.Fatal("当前 shell 退出时窗格应标记为已结束")
 	}
+}
+
+// 在已经断连的终端窗格里按 Enter 应触发重新连接，替换出新的可用会话；
+// 处于自动重连中或焦点在查找框等输入控件时，Enter 不应误触发重连。
+func TestEnterReconnectsEndedTerminal(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	tb.focus.term.Send([]byte("exit\n"))
+	h.pump("终端进入已断开状态", func() bool {
+		return tb.focus.ended && h.tt.HasText("按 Enter 重连")
+	})
+
+	// 正在自动重连时按 Enter 不应重复替换标签页
+	tb.reconnecting = true
+	h.tt.Frame()
+	h.tt.Key(0, ui.KeyEnter)
+	h.tt.Frame()
+	if h.a.current() != tb {
+		t.Fatal("自动重连期间按 Enter 不应替换标签页")
+	}
+	tb.reconnecting = false
+	h.tt.Frame()
+
+	// 查找栏打开并聚焦时按 Enter 应留在查找栏，不应误触发重连
+	h.a.openSearch(tb)
+	h.tt.Frame()
+	h.tt.Key(0, ui.KeyEnter)
+	h.tt.Frame()
+	if h.a.current() != tb {
+		t.Fatal("焦点在查找栏时按 Enter 不应触发终端重连")
+	}
+	tb.focus.searchOpen = false
+	tb.focus.focusTerm = true
+	h.tt.Frame()
+
+	// 焦点回到已断连的终端后按 Enter 应触发重连并恢复为新的可用会话
+	h.tt.Key(0, ui.KeyEnter)
+	h.pump("按 Enter 重新连接完成", func() bool {
+		cur := h.a.current()
+		return cur != nil && cur != tb && !cur.focus.ended && cur.client != nil
+	})
+	cur := h.a.current()
+	cur.focus.term.Send([]byte("echo enter-reconnected-$((3+4))\n"))
+	h.pump("重连后的终端可用", func() bool {
+		return strings.Contains(cur.focus.term.Text(), "enter-reconnected-7")
+	})
 }

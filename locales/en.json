@@ -440,7 +440,7 @@
   "hostMoveToGroup": "Move to group",
   "hostFilterSortHint": "Clear filter to drag and reorder",
   "emptyRecentHosts": "Recent connections",
-  "paneDisconnected": "Disconnected",
+  "paneDisconnected": "Disconnected · Press Enter to reconnect",
   "paneCloseTab": "Close tab",
   "paneMoreActions": "Pane actions",
   "portForward": "Port forwarding"

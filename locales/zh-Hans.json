@@ -440,7 +440,7 @@
   "hostMoveToGroup": "移到分组",
   "hostFilterSortHint": "清空过滤后可以拖动排序",
   "emptyRecentHosts": "最近连接",
-  "paneDisconnected": "连接已断开",
+  "paneDisconnected": "连接已断开 · 按 Enter 重连",
   "paneCloseTab": "关闭标签",
   "paneMoreActions": "窗格操作",
   "portForward": "端口转发"

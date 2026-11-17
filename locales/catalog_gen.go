@@ -4496,11 +4496,11 @@ func (msgs Messages) EmptyRecentHosts() string {
 	return Catalog.Format(msgs.locale, "emptyRecentHosts", nil)
 }
 
-// PaneDisconnected says "连接已断开"
+// PaneDisconnected says "连接已断开 · 按 Enter 重连"
 // in the language the app shows.
 func PaneDisconnected() string { return In(i18n.Locale()).PaneDisconnected() }
 
-// PaneDisconnected says "连接已断开"
+// PaneDisconnected says "连接已断开 · 按 Enter 重连"
 // in the language of msgs.
 func (msgs Messages) PaneDisconnected() string {
 	return Catalog.Format(msgs.locale, "paneDisconnected", nil)

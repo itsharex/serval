@@ -1344,6 +1344,21 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 			a.post(func() { p.searchStatus = s })
 		},
 	}
+	opts.OnKey = func(mods ui.Modifiers, key ui.Key) bool {
+		// 会话已结束且不在自动重连中时，在终端按 Enter 直接触发重连。
+		if mods == 0 && key == ui.KeyEnter && p.ended && !t.reconnecting && slices.Contains(a.tabs, t) {
+			a.reconnect(t)
+			return true
+		}
+		// 远程字符流会经 Conn 的 onInput 镜像，只有本地终端需要在这里捕获键盘按键。
+		if conn != nil || a.broadcastSource.Load() != int64(p.id) {
+			return false
+		}
+		if b := localBroadcastBytes(mods, key); len(b) > 0 {
+			a.mirrorBroadcast(p.id, b)
+		}
+		return false
+	}
 	// 避免 typed nil (*sshconn.Shell)(nil) 赋给 interface 导致 conn != nil 误判
 	if s, ok := conn.(*sshconn.Shell); ok && s == nil {
 		conn = nil
@@ -1405,17 +1420,6 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 		}
 		opts.Conn = z
 		p.zconn = z
-	} else {
-		// 本地终端的按键不经过 Conn。返回 false，本机 shell 仍收到这个键。
-		opts.OnKey = func(mods ui.Modifiers, key ui.Key) bool {
-			if a.broadcastSource.Load() != int64(p.id) {
-				return false
-			}
-			if b := localBroadcastBytes(mods, key); len(b) > 0 {
-				a.mirrorBroadcast(p.id, b)
-			}
-			return false
-		}
 	}
 	return terminal.New(opts)
 }
@@ -1857,6 +1861,9 @@ func (a *app) cancelReconnect(t *tab) {
 	t.root.each(func(p *pane) {
 		p.ended = true
 	})
+	if t.focus != nil {
+		t.focus.focusTerm = true
+	}
 }
 
 func (a *app) startAutoReconnect(t *tab) {
