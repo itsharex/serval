@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"serval/core/hosts"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -279,5 +280,54 @@ func TestPaneMoreMenuSplitReconnectAndClose(t *testing.T) {
 	h.tt.Frame()
 	if tb.root.leaves() != 1 {
 		t.Fatalf("关闭窗格后应恢复单窗格，实际 %d", tb.root.leaves())
+	}
+}
+
+// 回归：Windows / Linux 隐藏标题栏下右上角存在原生控制按钮区（bar.Right），
+// 标签栏右侧的文件 / AI / 查找按钮必须为其让出安全间距，且侧栏搜索栏快捷键按钮不能换行溢出。
+func TestWindowsTitleBarCaptionButtonsDoNotOverlapTabActions(t *testing.T) {
+	h := newHarness(t)
+	h.a.testTitleBar = &ui.TitleBar{Height: 32, Right: 138, Bottom: 32}
+	h.tt.Frame()
+	h.connectDev()
+	h.tt.Frame()
+
+	safeRight := float32(1180 - 138)
+	for _, label := range []string{
+		locales.ViewFindShortcut(shortcutText("F")),
+		locales.ViewFilesShortcut(shortcutText("J")),
+		"AI Agent（" + shortcutText("I") + "）",
+	} {
+		box, ok := h.tt.Find(label)
+		if !ok {
+			t.Fatalf("找不到顶栏按钮 %q", label)
+		}
+		if box.X+box.W > safeRight {
+			t.Fatalf("按钮 %q 与 Windows 右上角标题栏控制按钮重叠: box=%+v safeRight=%.0f", label, box, safeRight)
+		}
+	}
+
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
+	h.tt.Frame()
+	if !h.a.filesOpen {
+		t.Fatal("避让右上角控制区后应能正常点击打开 SFTP 文件抽屉")
+	}
+
+	h.click("AI Agent（" + shortcutText("I") + "）")
+	h.tt.Frame()
+	if !h.a.ai.open {
+		t.Fatal("避让右上角控制区后应能正常点击打开 AI Agent 抽屉")
+	}
+
+	cmdBox, ok := h.tt.Find(locales.ViewSearchHostsAndActions())
+	if !ok {
+		t.Fatal("找不到侧栏命令面板触发按钮")
+	}
+	addBox, ok := h.tt.Find("新建")
+	if !ok {
+		t.Fatal("找不到侧栏新建按钮")
+	}
+	if cmdBox.H > 24 || cmdBox.X+cmdBox.W > addBox.X {
+		t.Fatalf("侧栏搜索栏快捷键按钮异常换行或溢出到新建按钮: cmd=%+v add=%+v", cmdBox, addBox)
 	}
 }

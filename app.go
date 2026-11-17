@@ -203,6 +203,8 @@ type app struct {
 	chooseLogDir func() (string, error)
 	// openURL 打开外部链接。正式运行时由 installSystemDialogs 设置为 mygo.Shell.OpenExternal，测试里替换掉。
 	openURL func(url string) error
+	// testTitleBar 仅用于测试覆盖窗口标题栏安全区（例如模拟 Windows 右上角原生控制按钮宽度）。
+	testTitleBar *ui.TitleBar
 	// sessionLogNoted 避免每个输出包都弹出同一次写入失败。
 	sessionLogNoted bool
 	// sessionLogPicking 表示文件夹选择框还开着，忽略重复点击。

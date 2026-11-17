@@ -248,10 +248,17 @@ func (a *app) groupDialog(c *ui.Context, colors design.Colors) {
 	}
 }
 
+func (a *app) titleBar(c *ui.Context) ui.TitleBar {
+	if a.testTitleBar != nil {
+		return *a.testTitleBar
+	}
+	return c.TitleBar()
+}
+
 // sidebar 是主机列表。它透出窗口的渐变和系统的毛玻璃，不画自己的底色。
 func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
-	bar := c.TitleBar()
+	bar := a.titleBar(c)
 	// 侧栏的宽度一步到位（不让终端逐帧改尺寸），内容从左侧滑入、淡入。
 	ui.Column(c).Key("sidebar").Width(a.effectiveSidebarWidth()).Shrink(0).DragWindow().Transition(design.SlideIn(-14)).Children(func() {
 		ui.Box(c).Height(max(bar.Height, 12)).Shrink(0)
@@ -275,13 +282,18 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 							ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 						}).OnClick(func() { a.hostFilter = "" })
 					}
-					cmd := ui.ButtonBase(c).Key("openPalette").Label(locales.ViewSearchHostsAndActions()).Size(22, 22).Radius(6).Shrink(0).
+					cmd := ui.ButtonBase(c).Key("openPalette").Label(locales.ViewSearchHostsAndActions()).
+						Height(22).MinWidth(22).Padding(0, 5).Center().Radius(6).Shrink(0).
 						Tooltip("命令面板（" + shortcutText("K") + "）")
 					if cmd.Hovered() {
 						cmd.Background(colors.Hover)
 					}
 					cmd.Children(func() {
-						ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint)
+						if runtime.GOOS == "darwin" {
+							ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint).NoWrap()
+						} else {
+							ui.Icon(c, design.Icon("command")).FontSize(13).TextColor(colors.TextFaint)
+						}
 					}).OnClick(a.openPalette)
 				})
 				addMenuBtn := ui.ButtonBase(c).Key("sidebarAddMenu").Label("新建").Tooltip("新建主机、本地终端或分组").
@@ -720,13 +732,14 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 
 // tabBar 把标签放进标题栏，省下一整行高度给终端。它和侧栏一样透明，选中的标签浮起来。
 func (a *app) tabBar(c *ui.Context, colors design.Colors) {
-	bar := c.TitleBar()
+	bar := a.titleBar(c)
 	left := float32(4)
 	if !a.sidebarOpen {
 		left = max(bar.Left, design.Gap)
 	}
+	right := max(bar.Right+design.Gap, design.Gap+2)
 	height := max(bar.Height, 40)
-	ui.Row(c).Height(height).Shrink(0).Padding(0, design.Gap+2, 0, left).Gap(4).AlignItems(ui.Center).DragWindow().Children(func() {
+	ui.Row(c).Height(height).Shrink(0).Padding(0, right, 0, left).Gap(4).AlignItems(ui.Center).DragWindow().Children(func() {
 		if !a.sidebarOpen {
 			iconButton(c, colors, "panel-left", locales.ViewShowSidebar(), func() { a.sidebarOpen = true })
 		}
@@ -1103,7 +1116,7 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 				}
 			})
 		}
-		ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Gap(14).Wrap().Justify(ui.Center).AlignItems(ui.Center).Children(func() {
 			for _, item := range [][2]string{
 				{shortcutText("K"), "命令面板"},
 				{shortcutText("I"), locales.AiAssistantTitle()},
