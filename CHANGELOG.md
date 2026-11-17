@@ -2,6 +2,13 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-11-17
+
+### Fixed
+
+- **Windows / Linux Titlebar Caption Inset (`view.go`, `tab_test.go`)**: Reserved `c.TitleBar().Right` padding in the top tab bar so native window minimize/maximize/close controls no longer overlap or intercept clicks on the Find, SFTP Files, and AI Agent buttons.
+- **Sidebar Command Shortcut Wrapping on Windows (`view.go`, `editor.go`, `design/icons/command.svg`)**: Replaced the fixed-width multi-line `Ctrl+Shift+K` badge inside the sidebar filter input with a compact command icon on non-macOS platforms (keeping the full shortcut in its tooltip), and prevented wrapping on the editor save hint and welcome shortcut row.
+
 ## [0.5.0] - 2026-11-17
 
 ### Added
