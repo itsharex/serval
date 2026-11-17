@@ -3,6 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,6 +16,415 @@ import (
 
 	"github.com/egoist/mygo/ui"
 )
+
+type syncGuideLink struct {
+	Label string
+	URL   string
+}
+
+type s3VendorMeta struct {
+	Name                string
+	DefaultRegion       string
+	RegionPlaceholder   string
+	BucketPlaceholder   string
+	EndpointPlaceholder string
+	EndpointHint        string
+	AccessIDPlaceholder string
+	SecretHint          string
+	Summary             string
+	Steps               []string
+	Links               []syncGuideLink
+}
+
+var s3VendorMetas = []s3VendorMeta{
+	{
+		Name:                "AWS S3",
+		DefaultRegion:       "us-east-1",
+		RegionPlaceholder:   "如 us-east-1 / ap-southeast-1",
+		BucketPlaceholder:   "存储桶名称（全局唯一）",
+		EndpointPlaceholder: "AWS S3 可留空",
+		EndpointHint:        "官方 AWS S3 留空即可，将按 Region 自动匹配区域地址。",
+		AccessIDPlaceholder: "IAM 用户的 Access key ID（如 AKIA...）",
+		SecretHint:          "填入对应 Secret access key（只保存在本机系统安全存储中）。",
+		Summary:             "S3 私有桶 + IAM 子用户读写密钥；Endpoint 可留空。",
+		Steps: []string{
+			"1. 在 S3 控制台新建私有 Bucket，记下桶名和所在 Region（如 ap-southeast-1）。",
+			"2. 到 IAM → 用户创建访问密钥（CLI 用途），授予该桶 GetObject/PutObject/HeadObject 权限。",
+			"3. Endpoint 留空，分别填入 Region、Bucket、Access key ID 与 Secret access key。",
+		},
+		Links: []syncGuideLink{
+			{Label: "打开 S3 控制台", URL: "https://s3.console.aws.amazon.com/"},
+			{Label: "打开 IAM 控制台", URL: "https://console.aws.amazon.com/iam/"},
+		},
+	},
+	{
+		Name:                "Cloudflare R2",
+		DefaultRegion:       "auto",
+		RegionPlaceholder:   "固定填 auto",
+		BucketPlaceholder:   "存储桶名称",
+		EndpointPlaceholder: "https://<账户ID>.r2.cloudflarestorage.com",
+		EndpointHint:        "在 R2 存储桶「设置」页复制“S3 API”地址（切勿填公开域名 r2.dev）。",
+		AccessIDPlaceholder: "R2 API 令牌里的 Access Key ID",
+		SecretHint:          "填入令牌创建页显示的 Secret Access Key（仅创建时展示一次）。",
+		Summary:             "Region 填 auto；到「管理 R2 API 令牌」生成对象读写密钥与 S3 API 地址。",
+		Steps: []string{
+			"1. 打开 R2 控制台建一个 Bucket，进入「管理 R2 API 令牌 → 创建 API 令牌」。",
+			"2. 权限选择「对象读与写」，创建后复制 Access Key ID、Secret Access Key 与管辖端点。",
+			"3. Endpoint 填页面上提供的 S3 API 地址，Region 保持 auto，Bucket 填桶名。",
+		},
+		Links: []syncGuideLink{
+			{Label: "打开 R2 控制台", URL: "https://dash.cloudflare.com/?to=/:account/r2"},
+		},
+	},
+	{
+		Name:                "MinIO",
+		DefaultRegion:       "us-east-1",
+		RegionPlaceholder:   "一般填 us-east-1",
+		BucketPlaceholder:   "存储桶名称",
+		EndpointPlaceholder: "例如 http://127.0.0.1:9000",
+		EndpointHint:        "填写 MinIO S3 API 地址（通常为 9000 端口，而非控制台网页端口 9001）。",
+		AccessIDPlaceholder: "MinIO Access Key",
+		SecretHint:          "填入对应 Secret Key（仅保存在本机系统安全存储中）。",
+		Summary:             "Endpoint 填 API 端口（如 9000）；在后台「Access Keys」生成读写密钥。",
+		Steps: []string{
+			"1. 登录 MinIO 控制台创建一个私有 Bucket。",
+			"2. 左侧进入「Access Keys → Create access key」生成一组 Access Key 与 Secret Key。",
+			"3. Endpoint 填 API 地址（默认 9000 端口），Region 保持 us-east-1 即可。",
+		},
+		Links: []syncGuideLink{
+			{Label: "查看 MinIO 文档", URL: "https://min.io/docs/minio/linux/index.html"},
+		},
+	},
+	{
+		Name:                "阿里云 OSS",
+		DefaultRegion:       "oss-cn-hangzhou",
+		RegionPlaceholder:   "如 oss-cn-hangzhou（填 Endpoint 后自动识别）",
+		BucketPlaceholder:   "存储桶名称",
+		EndpointPlaceholder: "https://oss-cn-hangzhou.aliyuncs.com",
+		EndpointHint:        "在 OSS Bucket「概览 → 访问域名」复制“外网访问 Endpoint”（不带桶名前缀）。",
+		AccessIDPlaceholder: "RAM 用户的 AccessKey ID",
+		SecretHint:          "对应阿里云的 AccessKey Secret（仅创建时展示，保存在系统安全存储中）。",
+		Summary:             "填外网 Endpoint 后自动带出 oss-* Region；在 RAM 创建读写密钥。",
+		Steps: []string{
+			"1. 在 OSS 控制台新建“私有”读写 Bucket，在「概览」复制外网 Endpoint（填后自动推导 Region）。",
+			"2. 到 RAM 访问控制创建子用户（OpenAPI 调用访问），授权目标桶读写（AliyunOSSFullAccess 或单桶策略）。",
+			"3. 把子用户的 AccessKey ID 和 AccessKey Secret 分别填入下方两栏。",
+		},
+		Links: []syncGuideLink{
+			{Label: "打开 OSS 控制台", URL: "https://oss.console.aliyun.com/"},
+			{Label: "打开 RAM 访问控制", URL: "https://ram.console.aliyun.com/"},
+		},
+	},
+	{
+		Name:                "腾讯云 COS",
+		DefaultRegion:       "ap-guangzhou",
+		RegionPlaceholder:   "如 ap-guangzhou（填 Endpoint 后自动识别）",
+		BucketPlaceholder:   "完整桶名（必须带 -AppID，如 serval-1250000000）",
+		EndpointPlaceholder: "https://cos.ap-guangzhou.myqcloud.com",
+		EndpointHint:        "在 COS 桶「概览」看访问域名，去掉前面桶名后的部分（如 https://cos.ap-guangzhou.myqcloud.com）。",
+		AccessIDPlaceholder: "对应腾讯云 CAM 密钥里的 SecretId",
+		SecretHint:          "对应腾讯云的 SecretKey（只创建时显示一次，保存在本机系统安全存储中）。",
+		Summary:             "Bucket 需带 -AppID；Access Key ID 填 SecretId，Secret 填 SecretKey。",
+		Steps: []string{
+			"1. 在 COS 控制台建“私有读写”存储桶，桶名末尾必须保留 -AppID（如 serval-1250000000）。",
+			"2. 到访问管理 CAM → 用户，新建「编程访问」子账号并授予 COS 读写权限，生成 SecretId 与 SecretKey。",
+			"3. 填完 Endpoint 会自动填充 Region；Access Key ID 填 SecretId，Secret 栏填 SecretKey。",
+		},
+		Links: []syncGuideLink{
+			{Label: "打开 COS 控制台", URL: "https://console.cloud.tencent.com/cos"},
+			{Label: "打开 CAM 访问管理", URL: "https://console.cloud.tencent.com/cam"},
+		},
+	},
+	{
+		Name:                "华为云 OBS",
+		DefaultRegion:       "cn-north-4",
+		RegionPlaceholder:   "如 cn-north-4（填 Endpoint 后自动识别）",
+		BucketPlaceholder:   "存储桶名称",
+		EndpointPlaceholder: "https://obs.cn-north-4.myhuaweicloud.com",
+		EndpointHint:        "在 OBS 桶「概览 → 基本信息」复制 Endpoint（不带桶名前缀）。",
+		AccessIDPlaceholder: "华为云「我的凭证」里的 AK（Access Key ID）",
+		SecretHint:          "对应「我的凭证」下载文件里的 SK（Secret Access Key）。",
+		Summary:             "填 Endpoint 自动带出 Region；在「我的凭证」获取 AK 和 SK。",
+		Steps: []string{
+			"1. 在 OBS 控制台创建“私有”存储桶，在「概览」复制 Endpoint（粘贴后自动推导 Region）。",
+			"2. 右上角账号 →「我的凭证 → 访问密钥」新增访问密钥（或使用授权 OBS 读写的 IAM 子用户 AK/SK）。",
+			"3. 将下载到的 Access Key Id (AK) 与 Secret Access Key (SK) 填入下方。",
+		},
+		Links: []syncGuideLink{
+			{Label: "打开 OBS 控制台", URL: "https://console.huaweicloud.com/obs/"},
+			{Label: "打开我的凭证", URL: "https://console.huaweicloud.com/home/?locale=zh-cn#/kps/myCredential"},
+		},
+	},
+	{
+		Name:                "S3 兼容服务（自定义）",
+		DefaultRegion:       "us-east-1",
+		RegionPlaceholder:   "服务商要求填写的 Region，一般为 us-east-1",
+		BucketPlaceholder:   "存储桶名称",
+		EndpointPlaceholder: "https://s3.your-provider.com",
+		EndpointHint:        "填写第三方对象存储提供的 S3 API 终端地址。",
+		AccessIDPlaceholder: "访问密钥 ID（Access Key ID）",
+		SecretHint:          "填入对应的访问密钥（Secret Access Key），只保存在系统安全存储中。",
+		Summary:             "支持 Backblaze B2、Wasabi、Ceph RGW 等 S3 SigV4 兼容存储。",
+		Steps: []string{
+			"1. 适用于 Backblaze B2、Wasabi、Ceph RGW、Garage 等兼容 S3 SigV4 协议的存储。",
+			"2. 在对应后台新建私有 Bucket，获取具备对象读写权限的 Key ID、Secret 与 Endpoint。",
+		},
+	},
+}
+
+func s3MetaFor(vendor string) s3VendorMeta {
+	for _, m := range s3VendorMetas {
+		if m.Name == vendor {
+			return m
+		}
+	}
+	return s3VendorMetas[0]
+}
+
+// inferS3Region 尝试从常见云厂商的 Endpoint 域名中自动提取 Region，降低配置出错率。
+func inferS3Region(vendor, endpoint string) string {
+	ep := strings.TrimSpace(endpoint)
+	if ep == "" {
+		return ""
+	}
+	if !strings.HasPrefix(ep, "http://") && !strings.HasPrefix(ep, "https://") {
+		ep = "https://" + ep
+	}
+	u, err := url.Parse(ep)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case strings.HasSuffix(host, ".r2.cloudflarestorage.com"):
+		return "auto"
+	case strings.HasSuffix(host, ".aliyuncs.com"):
+		first, _, _ := strings.Cut(host, ".")
+		if strings.HasPrefix(first, "oss-") {
+			return first
+		}
+	case strings.HasSuffix(host, ".myqcloud.com"):
+		parts := strings.Split(host, ".")
+		for _, part := range parts {
+			if strings.HasPrefix(part, "ap-") || strings.HasPrefix(part, "na-") || strings.HasPrefix(part, "eu-") || strings.HasPrefix(part, "sa-") {
+				return part
+			}
+		}
+	case strings.HasSuffix(host, ".myhuaweicloud.com"):
+		parts := strings.Split(host, ".")
+		if len(parts) >= 3 && parts[0] == "obs" {
+			return parts[1]
+		}
+	case strings.HasSuffix(host, ".amazonaws.com"):
+		parts := strings.Split(host, ".")
+		if len(parts) >= 4 && parts[0] == "s3" && parts[1] != "amazonaws" {
+			return parts[1]
+		}
+	}
+	if vendor == "Cloudflare R2" {
+		return "auto"
+	}
+	return ""
+}
+
+type webdavFieldKeys struct {
+	vendor, server, user, password, subDir string
+}
+
+type s3FieldKeys struct {
+	vendor, region, bucket, accessID, secret, endpoint, subDir string
+}
+
+func (a *app) syncGuideCard(c *ui.Context, colors design.Colors, keyPrefix, summary string, expanded *bool, steps []string, links []syncGuideLink) {
+	t := c.Theme()
+	ui.Column(c).Padding(8, 10).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
+		ui.Text(c, summary).FontSize(design.TextSmall).TextColor(t.TextMuted)
+		if len(steps) > 0 || len(links) > 0 {
+			ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+				if len(steps) > 0 && expanded != nil {
+					label := "查看配置步骤"
+					if *expanded {
+						label = "收起配置步骤"
+					}
+					stepBtn := ui.ButtonBase(c).Key(keyPrefix+"GuideToggle").Label(label).
+						Height(22).Padding(0, 8).Radius(design.RadiusRow).
+						Background(colors.Chip).AlignItems(ui.Center).Transition(design.Hover)
+					if stepBtn.Hovered() {
+						stepBtn.Background(t.Accent.Alpha(0.12))
+					}
+					stepBtn.Children(func() {
+						ui.Text(c, label).FontSize(design.TextSmall).FontWeight(500).TextColor(t.Text).NoWrap()
+					}).OnClick(func() {
+						*expanded = !*expanded
+					})
+				}
+				for i, item := range links {
+					link := item
+					btn := ui.ButtonBase(c).Key(fmt.Sprintf("%sGuideLink:%d", keyPrefix, i)).
+						Label(link.Label).Height(22).Padding(0, 8).Gap(4).Radius(design.RadiusRow).
+						Background(t.Accent.Alpha(0.12)).AlignItems(ui.Center).Transition(design.Hover)
+					if btn.Hovered() {
+						btn.Background(t.Accent.Alpha(0.20))
+					}
+					btn.Children(func() {
+						ui.Icon(c, design.Icon("external-link")).FontSize(12).TextColor(t.Accent)
+						ui.Text(c, link.Label).FontSize(design.TextSmall).FontWeight(500).TextColor(t.Accent).NoWrap()
+					}).OnClick(func() {
+						if a.openURL != nil {
+							_ = a.openURL(link.URL)
+						}
+					})
+				}
+			})
+		}
+		if expanded != nil && *expanded {
+			for _, step := range steps {
+				ui.Text(c, step).FontSize(design.TextSmall).TextColor(t.TextMuted)
+			}
+		}
+	})
+}
+
+func (a *app) webdavConfigFields(c *ui.Context, colors design.Colors, keys webdavFieldKeys,
+	vendor, server, user, password *string, showPassword *bool, subDir *string, showGuide *bool,
+	passwordPlaceholder, subDirPlaceholder string, fillDefaultDir bool,
+) {
+	if !slices.Contains(webdavVendors, *vendor) {
+		*vendor = "自定义"
+	}
+	ui.Field(c, "服务商", func() {
+		c.Key(keys.vendor)
+		ui.Select(c, vendor, webdavVendors)
+	})
+	placeholder := "https://example.com/dav/"
+	summary := "填写 WebDAV 目录地址与账号密码即可，无需手动写 /vault.json。"
+	var steps []string
+	var links []syncGuideLink
+	switch *vendor {
+	case "坚果云":
+		placeholder = "https://dav.jianguoyun.com/dav/"
+		if *server == "" {
+			*server = "https://dav.jianguoyun.com/dav/"
+		}
+		summary = "坚果云请到「安全选项 → 第三方应用管理」生成专用应用密码（勿填登录密码）。"
+		steps = []string{
+			"1. 登录坚果云网页端，点右上角账号 →「账户信息 → 安全选项 → 第三方应用管理」。",
+			"2. 添加应用（名称填 Serval）生成专用应用密码，将邮箱与该应用密码填入下方。",
+		}
+		links = []syncGuideLink{{Label: "打开坚果云官网", URL: "https://www.jianguoyun.com/"}}
+	case "Nextcloud":
+		placeholder = "https://your-domain.com/remote.php/dav/files/username/"
+		summary = "在 Nextcloud「文件设置」左下角复制 WebDAV 地址；开两步验证需用应用密码。"
+		steps = []string{
+			"1. 打开 Nextcloud「文件」页面，在左下角「文件设置」里复制你的 WebDAV 地址。",
+			"2. 若开启了两步验证，需到「个人设置 → 安全 → 设备与应用」创建专用应用密码。",
+		}
+	case "群晖 NAS":
+		placeholder = "https://nas-ip:5006/home/"
+		summary = "需在套件中心启用 WebDAV Server，建议使用 HTTPS 5006 端口。"
+		steps = []string{
+			"1. 在 DSM「套件中心」安装并启动 WebDAV Server，启用 HTTPS 端口（默认 5006）。",
+			"2. 地址通常为 https://你的NAS地址:5006/home/，建议单独开一个同步用权限账号。",
+		}
+	}
+	if summary != "" {
+		a.syncGuideCard(c, colors, keys.vendor, summary, showGuide, steps, links)
+	}
+
+	ui.Field(c, "WebDAV 服务器地址", func() {
+		c.Key(keys.server)
+		ui.TextInput(c, server).Placeholder(placeholder)
+	}).Description("填服务器目录地址即可，无需手动写 /vault.json。")
+
+	ui.Field(c, "WebDAV 账户", func() {
+		c.Key(keys.user)
+		ui.TextInput(c, user).Placeholder("账号或邮箱")
+	})
+
+	ui.Field(c, "WebDAV 密码", func() {
+		passwordInput(c, colors, keys.password, "WebDAV 密码", password, showPassword, func(el ui.Element) {
+			el.Placeholder(passwordPlaceholder)
+		})
+	}).Description("凭据只保存在这台设备的系统安全存储中。")
+
+	dirDesc := "数据将保存在该目录下（例如 serval/vault.json），便于多应用分类管理。"
+	if !fillDefaultDir {
+		dirDesc = "如另一台设备保留默认子目录 serval 可填 serval；若直接存在服务器根目录请留空。"
+	}
+	ui.Field(c, "远程根目录", func() {
+		c.Key(keys.subDir)
+		ui.TextInput(c, subDir).Placeholder(subDirPlaceholder)
+	}).Description(dirDesc)
+}
+
+func (a *app) s3ConfigFields(c *ui.Context, colors design.Colors, keys s3FieldKeys,
+	vendor, lastVendor, lastEndpoint, region, bucket, accessID, secret *string, showSecret *bool,
+	endpoint, subDir *string, showGuide *bool, secretPlaceholder string,
+) {
+	if !slices.Contains(s3Vendors, *vendor) {
+		*vendor = "AWS S3"
+	}
+	ui.Field(c, "服务商", func() {
+		c.Key(keys.vendor)
+		ui.Select(c, vendor, s3Vendors)
+	})
+	meta := s3MetaFor(*vendor)
+	if *lastVendor != *vendor {
+		prevMeta := s3MetaFor(*lastVendor)
+		if *region == "" || *region == prevMeta.DefaultRegion {
+			*region = meta.DefaultRegion
+		}
+		*lastVendor = *vendor
+	}
+	if *region == "" && meta.DefaultRegion != "" {
+		*region = meta.DefaultRegion
+	}
+	if *endpoint != *lastEndpoint {
+		prevInferred := inferS3Region(*vendor, *lastEndpoint)
+		if inferred := inferS3Region(*vendor, *endpoint); inferred != "" &&
+			(*region == "" || *region == meta.DefaultRegion || *region == prevInferred) {
+			*region = inferred
+		}
+		*lastEndpoint = *endpoint
+	}
+
+	a.syncGuideCard(c, colors, keys.vendor, meta.Summary, showGuide, meta.Steps, meta.Links)
+
+	ui.Field(c, "Endpoint 终端节点", func() {
+		c.Key(keys.endpoint)
+		ui.TextInput(c, endpoint).Placeholder(meta.EndpointPlaceholder)
+	}).Description(meta.EndpointHint)
+
+	ui.Field(c, "区域 (Region)", func() {
+		c.Key(keys.region)
+		ui.TextInput(c, region).Placeholder(meta.RegionPlaceholder)
+	})
+
+	ui.Field(c, "存储桶 (Bucket)", func() {
+		c.Key(keys.bucket)
+		ui.TextInput(c, bucket).Placeholder(meta.BucketPlaceholder)
+	})
+
+	ui.Field(c, "Access Key ID", func() {
+		c.Key(keys.accessID)
+		ui.TextInput(c, accessID).Placeholder(meta.AccessIDPlaceholder)
+	})
+
+	secretDesc := meta.SecretHint
+	if secretDesc == "" {
+		secretDesc = "密钥只保存在这台设备的系统安全存储中。"
+	}
+	ui.Field(c, "Secret Access Key", func() {
+		passwordInput(c, colors, keys.secret, "Secret Access Key", secret, showSecret, func(el ui.Element) {
+			el.Placeholder(secretPlaceholder)
+		})
+	}).Description(secretDesc)
+
+	ui.Field(c, "远程根目录", func() {
+		c.Key(keys.subDir)
+		ui.TextInput(c, subDir).Placeholder("默认 serval")
+	}).Description("数据将保存在该目录下（例如 serval/vault.json），多设备恢复时请保持一致。")
+}
 
 // syncSecretName 是系统安全存储里 WebDAV 密码的名字。地址和账号在 device.json，密码不进文件。
 const syncSecretName = "sync-password"
@@ -119,9 +532,7 @@ func (p *settingsPanel) buildDraftConfig() (fileURL string, user string, passwor
 	return fileURL, user, password, nil
 }
 
-// configureSync 保存本机的同步设置。password 为空时保留安全存储里已有的密码。
-// 地址会规范成 vault.json 的 URL。开启并且保险库未锁定、窗口已就绪时立刻同步一次。
-func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
+func (a *app) configureSyncWithMeta(rawURL, user, password string, enabled bool, kind, vendor, subDir string) error {
 	var fileURL string
 	if strings.TrimSpace(rawURL) != "" {
 		var err error
@@ -151,9 +562,9 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 	next.SyncURL = fileURL
 	next.SyncUser = strings.TrimSpace(user)
 	next.SyncOn = enabled
-	next.SyncSubDir = strings.TrimSpace(a.settingsPanel.syncSubDir)
-	next.SyncVendor = strings.TrimSpace(a.settingsPanel.syncVendor)
-	next.SyncKind = strings.TrimSpace(a.settingsPanel.syncKind)
+	next.SyncSubDir = strings.TrimSpace(subDir)
+	next.SyncVendor = strings.TrimSpace(vendor)
+	next.SyncKind = strings.TrimSpace(kind)
 	if err := a.saveLocal(next); err != nil {
 		return err
 	}
@@ -163,6 +574,13 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 		a.stopSyncLoop()
 	}
 	return nil
+}
+
+// configureSync 保存本机的同步设置。password 为空时保留安全存储里已有的密码。
+// 地址会规范成 vault.json 的 URL。开启并且保险库未锁定、窗口已就绪时立刻同步一次。
+func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
+	return a.configureSyncWithMeta(rawURL, user, password, enabled,
+		a.settingsPanel.syncKind, a.settingsPanel.syncVendor, a.settingsPanel.syncSubDir)
 }
 
 // saveSyncSettings 把设置页里的草稿写入本机。密码留空时不覆盖系统安全存储里已有的密码。
@@ -305,7 +723,14 @@ func formatSyncTime(t time.Time) string {
 
 func (a *app) openRestore() {
 	a.settingsPanel = settingsPanel{}
-	a.restore = restorePanel{open: true, fresh: true}
+	a.restore = restorePanel{
+		open:         true,
+		fresh:        true,
+		syncKind:     "WebDAV",
+		syncVendor:   "自定义",
+		lastS3Vendor: "AWS S3",
+		s3Region:     "us-east-1",
+	}
 }
 
 // restoreDialog 让空设备下载已有的保险库，再用原来的主密码解锁。
@@ -314,30 +739,48 @@ func (a *app) restoreDialog(c *ui.Context, colors design.Colors) {
 	if !p.open || a.setup.open {
 		return
 	}
-	sheet(c, colors, &p.open, &p.fresh, 460, 22, func() {
-		ui.Column(c).Gap(14).Children(func() {
+	if p.syncKind == "" {
+		p.syncKind = "WebDAV"
+	}
+	_, windowHeight := c.Size()
+	sheet(c, colors, &p.open, &p.fresh, 520, 22, func() {
+		ui.Column(c).Gap(12).Children(func() {
 			ui.Text(c, "恢复保险库").FontSize(design.TextHeading).FontWeight(600)
-			ui.Text(c, "从同步服务下载已有的保险库。下载完成后输入原来的主密码解锁。").
+			ui.Text(c, "选择你在原设备使用的同步服务；下载后输入原来的主密码即可解锁全部主机与密钥。").
 				FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
-			userLabel := "账号"
-			passLabel := "同步密码"
-			userDesc := "可选"
-			if syncer.IsS3URL(p.url) {
-				userLabel = "AccessKey"
-				passLabel = "SecretKey"
-				userDesc = "S3 访问密钥 ID"
-			}
-			ui.Field(c, "服务地址", func() {
-				c.Key("restoreURL")
-				ui.TextInput(c, &p.url).Placeholder("WebDAV 地址或 s3://bucket/vault.json").AutoFocus()
-			}).Description("支持 WebDAV 或 S3 对象存储（如 s3://my-bucket/vault.json）。")
-			ui.Field(c, userLabel, func() {
-				c.Key("restoreUser")
-				ui.TextInput(c, &p.user).Placeholder(userDesc)
+			ui.Field(c, "同步方式", func() {
+				c.Key("restoreKind")
+				ui.Select(c, &p.syncKind, syncKindOptions)
 			})
-			ui.Field(c, passLabel, func() {
-				passwordInput(c, colors, "restorePassword", passLabel, &p.password, &p.showPassword, nil)
-			}).Description("凭据只存放在这台设备的系统安全存储里。")
+			ui.Scroll(c).Key("restoreScroll").MaxHeight(max(windowHeight-240, 220)).Children(func() {
+				ui.Column(c).Gap(10).Children(func() {
+					if p.syncKind == "S3 兼容存储" {
+						if p.syncSubDir == "" && p.lastS3Vendor == "AWS S3" && p.s3Bucket == "" && p.s3Endpoint == "" {
+							p.syncSubDir = "serval"
+						}
+						a.s3ConfigFields(c, colors, s3FieldKeys{
+							vendor:   "restoreS3Vendor",
+							region:   "restoreS3Region",
+							bucket:   "restoreS3Bucket",
+							accessID: "restoreS3AccessID",
+							secret:   "restoreS3Secret",
+							endpoint: "restoreS3Endpoint",
+							subDir:   "restoreS3SubDir",
+						}, &p.syncVendor, &p.lastS3Vendor, &p.lastS3Endpoint,
+							&p.s3Region, &p.s3Bucket, &p.user, &p.password, &p.showPassword, &p.s3Endpoint, &p.syncSubDir,
+							&p.showSyncGuide, "输入 Secret Access Key")
+					} else {
+						a.webdavConfigFields(c, colors, webdavFieldKeys{
+							vendor:   "restoreWebdavVendor",
+							server:   "restoreURL",
+							user:     "restoreUser",
+							password: "restorePassword",
+							subDir:   "restoreSubDir",
+						}, &p.syncVendor, &p.url, &p.user, &p.password, &p.showPassword, &p.syncSubDir,
+							&p.showSyncGuide, "输入同步密码（坚果云填第三方应用密码）", "通常为 serval，若直接存在根目录可留空", false)
+					}
+				})
+			})
 			if p.err != "" {
 				ui.Text(c, p.err).Key("restoreError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 			}
@@ -436,13 +879,93 @@ func (a *app) overwriteRemote() {
 	}()
 }
 
+func (p *restorePanel) buildRestoreTarget() (fileURL, fallbackURL, kind, vendor, subDir string, err error) {
+	rawURL := strings.TrimSpace(p.url)
+	subDir = strings.TrimSpace(p.syncSubDir)
+	kind = strings.TrimSpace(p.syncKind)
+	if kind == "" {
+		kind = "WebDAV"
+	}
+	vendor = strings.TrimSpace(p.syncVendor)
+
+	// 兼容直接在 url 填入 s3://... 的快捷恢复或测试场景
+	if syncer.IsS3URL(rawURL) && strings.TrimSpace(p.s3Bucket) == "" {
+		fileURL, err = normalizeSyncURL(rawURL)
+		if err != nil {
+			return "", "", "", "", "", err
+		}
+		target, parseErr := syncer.ParseS3URL(fileURL)
+		if parseErr == nil {
+			if dir := path.Dir(target.Key); dir != "." && dir != "/" {
+				subDir = dir
+			} else {
+				subDir = ""
+			}
+		}
+		return fileURL, "", "S3 兼容存储", vendor, subDir, nil
+	}
+
+	if kind == "S3 兼容存储" {
+		bucket := strings.TrimSpace(p.s3Bucket)
+		if bucket == "" {
+			return "", "", "", "", "", errors.New("请填写存储桶 (Bucket)")
+		}
+		cleanSub := strings.Trim(subDir, "/")
+		key := "vault.json"
+		if cleanSub != "" {
+			key = cleanSub + "/vault.json"
+		}
+		reg := strings.TrimSpace(p.s3Region)
+		if reg == "" {
+			if inferred := inferS3Region(vendor, p.s3Endpoint); inferred != "" {
+				reg = inferred
+			} else {
+				reg = s3MetaFor(vendor).DefaultRegion
+			}
+		}
+		target := syncer.S3Target{
+			Endpoint: strings.TrimSpace(p.s3Endpoint),
+			Region:   reg,
+			Bucket:   bucket,
+			Key:      key,
+		}
+		fileURL = target.FormatURL()
+		// 若填写了默认子目录却未找到，再回退检查桶根目录（或反之）
+		if cleanSub != "" {
+			rootTarget := target
+			rootTarget.Key = "vault.json"
+			fallbackURL = rootTarget.FormatURL()
+		} else {
+			servalTarget := target
+			servalTarget.Key = "serval/vault.json"
+			fallbackURL = servalTarget.FormatURL()
+		}
+		return fileURL, fallbackURL, kind, vendor, cleanSub, nil
+	}
+
+	if rawURL == "" {
+		return "", "", "", "", "", errors.New("请填写同步地址")
+	}
+	fileURL, err = syncer.FileURLWithDir(rawURL, subDir)
+	if err != nil {
+		return "", "", "", "", "", err
+	}
+	// 原设备常按默认子目录 serval 上传，但恢复时用户常只贴根目录地址：找不到时自动尝试 serval/vault.json
+	if subDir == "" && !strings.HasSuffix(strings.ToLower(rawURL), ".json") {
+		if fb, fbErr := syncer.FileURLWithDir(rawURL, "serval"); fbErr == nil && fb != fileURL {
+			fallbackURL = fb
+		}
+	}
+	return fileURL, fallbackURL, "WebDAV", vendor, subDir, nil
+}
+
 // submitRestore 下载远端保险库。本地是空的才整份换上；已有数据时拒绝覆盖。
 func (a *app) submitRestore() {
 	p := &a.restore
 	if p.busy {
 		return
 	}
-	fileURL, err := normalizeSyncURL(p.url)
+	fileURL, fallbackURL, kind, vendor, subDir, err := p.buildRestoreTarget()
 	if err != nil {
 		p.err = err.Error()
 		return
@@ -462,6 +985,8 @@ func (a *app) submitRestore() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
+		usedURL := fileURL
+		usedSubDir := subDir
 		remote, err := newSyncRemote(fileURL, user, password)
 		if err != nil {
 			a.post(func() {
@@ -473,6 +998,26 @@ func (a *app) submitRestore() {
 			return
 		}
 		body, _, err := remote.Download(ctx)
+		if errors.Is(err, syncer.ErrNotFound) && fallbackURL != "" {
+			if fbRemote, fbErr := newSyncRemote(fallbackURL, user, password); fbErr == nil {
+				if fbBody, _, dlErr := fbRemote.Download(ctx); dlErr == nil {
+					body = fbBody
+					err = nil
+					usedURL = fallbackURL
+					if syncer.IsS3URL(usedURL) {
+						if target, parseErr := syncer.ParseS3URL(usedURL); parseErr == nil {
+							if d := path.Dir(target.Key); d != "." && d != "/" {
+								usedSubDir = d
+							} else {
+								usedSubDir = ""
+							}
+						}
+					} else if usedSubDir == "" {
+						usedSubDir = "serval"
+					}
+				}
+			}
+		}
 		a.post(func() {
 			p := &a.restore
 			p.busy = false
@@ -491,7 +1036,7 @@ func (a *app) submitRestore() {
 				p.err = err.Error()
 				return
 			}
-			if err := a.configureSync(fileURL, user, password, true); err != nil {
+			if err := a.configureSyncWithMeta(usedURL, user, password, true, kind, vendor, usedSubDir); err != nil {
 				p.err = err.Error()
 				return
 			}
@@ -674,6 +1219,10 @@ func (a *app) syncNow(manual bool) {
 func syncUserMessage(err error) string {
 	switch {
 	case errors.Is(err, syncer.ErrAuth):
+		detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(err.Error(), syncer.ErrAuth.Error()), ":"))
+		if detail != "" {
+			return detail
+		}
 		return "同步账号或密码不正确。"
 	case errors.Is(err, syncer.ErrUnavailable):
 		s := err.Error()
@@ -684,6 +1233,10 @@ func syncUserMessage(err error) string {
 	case errors.Is(err, syncer.ErrConflict):
 		return "同步时和其他设备改到了一起，请稍后再试。"
 	case errors.Is(err, syncer.ErrNoFolder):
+		detail := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(err.Error(), syncer.ErrNoFolder.Error()), ":"))
+		if detail != "" {
+			return detail
+		}
 		return "同步地址下还没有这个文件夹，请先在服务器上建好。"
 	case errors.Is(err, syncer.ErrNoETag):
 		return "同步服务没有返回文件版本，为避免覆盖已取消上传。"

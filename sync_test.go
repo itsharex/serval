@@ -652,3 +652,140 @@ func TestSyncUserMessageNoDoublePrefix(t *testing.T) {
 		t.Fatalf("期望 '连不上同步服务: 测试连接时服务器返回了 502'，得到 %s", msg2)
 	}
 }
+
+func TestS3VendorGuidanceAndGuidedRestore(t *testing.T) {
+	h := newHarness(t)
+	h.click("设置")
+	h.tt.Frame()
+	h.click("同步")
+	h.tt.Frame()
+
+	h.a.settingsPanel.syncKind = "S3 兼容存储"
+	h.tt.Frame()
+	if !h.tt.HasText("S3 私有桶 + IAM 子用户读写密钥；Endpoint 可留空。") {
+		t.Fatalf("AWS S3 应展示清晰的新手摘要引导: %q", h.tt.Texts())
+	}
+	h.click("查看配置步骤")
+	h.tt.Frame()
+	if !h.tt.HasText("1. 在 S3 控制台新建私有 Bucket，记下桶名和所在 Region（如 ap-southeast-1）。") {
+		t.Fatalf("点击查看配置步骤应展开详细 1-2-3 步引导: %q", h.tt.Texts())
+	}
+
+	h.a.settingsPanel.syncVendor = "Cloudflare R2"
+	h.tt.Frame()
+	if h.a.settingsPanel.s3Region != "auto" || !h.tt.HasText("打开 R2 控制台") {
+		t.Fatalf("切到 Cloudflare R2 应自动切换默认 Region 为 auto 并显示 R2 引导与链接: region=%q texts=%q",
+			h.a.settingsPanel.s3Region, h.tt.Texts())
+	}
+
+	h.a.settingsPanel.syncVendor = "阿里云 OSS"
+	h.tt.Frame()
+	if h.a.settingsPanel.s3Region != "oss-cn-hangzhou" {
+		t.Fatalf("切到阿里云 OSS 应切换默认 Region 为 oss-cn-hangzhou，实际 %q", h.a.settingsPanel.s3Region)
+	}
+	h.a.settingsPanel.s3Endpoint = "https://oss-cn-beijing.aliyuncs.com"
+	h.tt.Frame()
+	if h.a.settingsPanel.s3Region != "oss-cn-beijing" {
+		t.Fatalf("填写 OSS 北京 Endpoint 应自动识别 Region=oss-cn-beijing，实际 %q", h.a.settingsPanel.s3Region)
+	}
+	h.click("打开 OSS 控制台")
+	h.tt.Frame()
+	if len(h.openedURLs) != 1 || h.openedURLs[0] != "https://oss.console.aliyun.com/" {
+		t.Fatalf("点击 OSS 控制台快捷链接打开地址不正确: %v", h.openedURLs)
+	}
+
+	h.a.settingsPanel.syncVendor = "腾讯云 COS"
+	h.tt.Frame()
+	h.a.settingsPanel.s3Endpoint = "https://cos.ap-shanghai.myqcloud.com"
+	h.tt.Frame()
+	if h.a.settingsPanel.s3Region != "ap-shanghai" || !h.tt.HasText("打开 CAM 访问管理") {
+		t.Fatalf("切到腾讯云 COS 应自动识别 ap-shanghai 并提供 CAM 访问管理直达链接: region=%q texts=%q",
+			h.a.settingsPanel.s3Region, h.tt.Texts())
+	}
+	h.click("打开 CAM 访问管理")
+	h.tt.Frame()
+	if len(h.openedURLs) != 2 || h.openedURLs[1] != "https://console.cloud.tencent.com/cam" {
+		t.Fatalf("点击腾讯云 CAM 快捷链接打开地址不正确: %v", h.openedURLs)
+	}
+
+	// 验证在“从同步恢复”中直接使用向导式 S3 表单（无需手写 s3://...?endpoint=）即可恢复并回退兼容默认 serval 目录
+	remote, err := vault.Open(filepath.Join(t.TempDir(), "remote.json"), "mac-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Protect(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	remoteBody, err := remote.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	objects := map[string][]byte{
+		"/team-vault/serval/vault.json": remoteBody,
+	}
+	etags := map[string]string{
+		"/team-vault/serval/vault.json": `"etag-1"`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			data, ok := objects[r.URL.Path]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`<Error><Code>NoSuchKey</Code></Error>`))
+				return
+			}
+			w.Header().Set("ETag", etags[r.URL.Path])
+			w.WriteHeader(http.StatusOK)
+			w.Write(data)
+		case http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			objects[r.URL.Path] = body
+			etags[r.URL.Path] = `"etag-2"`
+			w.Header().Set("ETag", `"etag-2"`)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	h2 := newBareHarness(t)
+	t.Cleanup(func() {
+		h2.a.stopSyncLoop()
+	})
+	empty, err := vault.Open(filepath.Join(h2.dir, "empty.json"), "win-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2.a.vault = empty
+	h2.a.reload()
+	h2.tt.Frame()
+
+	h2.click("从同步恢复")
+	h2.tt.Frame()
+	h2.a.restore.syncKind = "S3 兼容存储"
+	h2.a.restore.syncVendor = "MinIO"
+	h2.a.restore.s3Endpoint = srv.URL
+	h2.a.restore.s3Bucket = "team-vault"
+	h2.a.restore.user = "minio-ak"
+	h2.a.restore.password = "minio-sk"
+	h2.a.restore.syncSubDir = "" // 未填子目录时应自动回退命中 serval/vault.json
+	h2.tt.Frame()
+
+	h2.click("开始恢复")
+	h2.pump("向导式 S3 恢复成功并锁定", func() bool {
+		return h2.a.vault.State() == vault.Locked && h2.tt.HasText("Serval 已锁定")
+	})
+	if h2.a.vault.ID() != remote.ID() {
+		t.Fatalf("应采纳远端 VaultID=%s，实际=%s", remote.ID(), h2.a.vault.ID())
+	}
+	if h2.a.local.SyncKind != "S3 兼容存储" || h2.a.local.SyncVendor != "MinIO" || h2.a.local.SyncSubDir != "serval" {
+		t.Fatalf("恢复后应记住同步类型、服务商与回退命中的子目录: kind=%q vendor=%q subDir=%q",
+			h2.a.local.SyncKind, h2.a.local.SyncVendor, h2.a.local.SyncSubDir)
+	}
+}

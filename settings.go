@@ -251,6 +251,7 @@ type settingsPanel struct {
 	allowMerge       bool
 	showSyncPassword bool
 	showS3Secret     bool
+	showSyncGuide    bool
 
 	// AI 助手页草稿
 	editingProfileID string
@@ -272,11 +273,13 @@ type settingsPanel struct {
 	webdavPassword string
 
 	// S3 专用字段
-	s3Region   string
-	s3Bucket   string
-	s3AccessID string
-	s3Secret   string
-	s3Endpoint string
+	s3Region       string
+	s3Bucket       string
+	s3AccessID     string
+	s3Secret       string
+	s3Endpoint     string
+	lastS3Vendor   string
+	lastS3Endpoint string
 
 	// 兼容老字段
 	syncURL      string
@@ -286,13 +289,22 @@ type settingsPanel struct {
 
 // restorePanel 是空设备“从同步恢复”的面板。
 type restorePanel struct {
-	open, fresh  bool
-	url          string
-	user         string
-	password     string
-	showPassword bool
-	busy         bool
-	err          string
+	open, fresh    bool
+	syncKind       string
+	syncVendor     string
+	lastS3Vendor   string
+	lastS3Endpoint string
+	s3Region       string
+	s3Bucket       string
+	s3Endpoint     string
+	syncSubDir     string
+	url            string
+	user           string
+	password       string
+	showPassword   bool
+	showSyncGuide  bool
+	busy           bool
+	err            string
 }
 
 // openSettings 打开设置面板。
@@ -345,6 +357,8 @@ func (a *app) openSettings() {
 			p.syncVendor = "自定义"
 		}
 	}
+	p.lastS3Vendor = p.syncVendor
+	p.lastS3Endpoint = p.s3Endpoint
 	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
 	if len(profiles) > 0 {
 		for _, prof := range profiles {
@@ -904,110 +918,27 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	})
 
 	if p.syncKind == "WebDAV" {
-		if !slices.Contains(webdavVendors, p.syncVendor) {
-			p.syncVendor = "自定义"
-		}
-		ui.Field(c, "服务商", func() {
-			c.Key("webdavVendor")
-			ui.Select(c, &p.syncVendor, webdavVendors)
-		})
-		// 切换服务商自动辅助填入提示或常用地址前缀
-		placeholder := "https://example.com/dav/"
-		switch p.syncVendor {
-		case "坚果云":
-			placeholder = "https://dav.jianguoyun.com/dav/"
-			if p.webdavServer == "" {
-				p.webdavServer = "https://dav.jianguoyun.com/dav/"
-			}
-		case "Nextcloud":
-			placeholder = "https://your-domain.com/remote.php/dav/files/username/"
-		case "群晖 NAS":
-			placeholder = "https://nas-ip:5006/home/"
-		}
-
-		ui.Field(c, "WebDAV 服务器地址", func() {
-			c.Key("webdavServer")
-			ui.TextInput(c, &p.webdavServer).Placeholder(placeholder)
-		}).Description("填服务器基础地址，无需手动写 /vault.json。")
-
-		ui.Field(c, "WebDAV 账户", func() {
-			c.Key("webdavUser")
-			ui.TextInput(c, &p.webdavUser).Placeholder("账号或邮箱")
-		})
-
-		ui.Field(c, "WebDAV 密码", func() {
-			passwordInput(c, colors, "webdavPassword", "WebDAV 密码", &p.webdavPassword, &p.showSyncPassword, func(el ui.Element) {
-				el.Placeholder("应用密码（坚果云请使用“第三方应用密码”）")
-			})
-		}).Description("密码保存在系统安全存储中，不会以明文保存。")
-
+		a.webdavConfigFields(c, colors, webdavFieldKeys{
+			vendor:   "webdavVendor",
+			server:   "webdavServer",
+			user:     "webdavUser",
+			password: "webdavPassword",
+			subDir:   "syncSubDir",
+		}, &p.syncVendor, &p.webdavServer, &p.webdavUser, &p.webdavPassword, &p.showSyncPassword, &p.syncSubDir,
+			&p.showSyncGuide, "应用密码（坚果云请使用“第三方应用密码”）", "默认 serval", true)
 	} else {
-		// S3 兼容存储
-		if !slices.Contains(s3Vendors, p.syncVendor) {
-			p.syncVendor = "AWS S3"
-		}
-		ui.Field(c, "服务商", func() {
-			c.Key("s3Vendor")
-			ui.Select(c, &p.syncVendor, s3Vendors)
-		})
-
-		ui.Text(c, "使用 IAM Access Key，需要 s3:PutObject/GetObject/HeadObject 权限。").
-			FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
-
-		endpointPlaceholder := "例如 https://s3-compatible.example.com"
-		regionPlaceholder := "例如 us-east-1"
-		switch p.syncVendor {
-		case "AWS S3":
-			endpointPlaceholder = "AWS 可留空"
-			if p.s3Region == "" {
-				p.s3Region = "us-east-1"
-			}
-		case "Cloudflare R2":
-			endpointPlaceholder = "https://<account_id>.r2.cloudflarestorage.com"
-			if p.s3Region == "" {
-				p.s3Region = "auto"
-			}
-		case "MinIO":
-			endpointPlaceholder = "例如 http://127.0.0.1:9000"
-		case "阿里云 OSS":
-			endpointPlaceholder = "例如 https://oss-cn-hangzhou.aliyuncs.com"
-		case "腾讯云 COS":
-			endpointPlaceholder = "例如 https://cos.ap-guangzhou.myqcloud.com"
-		case "华为云 OBS":
-			endpointPlaceholder = "例如 https://obs.cn-north-4.myhuaweicloud.com"
-		}
-
-		ui.Field(c, "区域 (Region)", func() {
-			c.Key("s3Region")
-			ui.TextInput(c, &p.s3Region).Placeholder(regionPlaceholder)
-		})
-
-		ui.Field(c, "存储桶 (Bucket)", func() {
-			c.Key("s3Bucket")
-			ui.TextInput(c, &p.s3Bucket).Placeholder("存储桶名称")
-		})
-
-		ui.Field(c, "Access Key ID", func() {
-			c.Key("s3AccessID")
-			ui.TextInput(c, &p.s3AccessID).Placeholder("访问密钥 ID")
-		})
-
-		ui.Field(c, "Secret Access Key", func() {
-			passwordInput(c, colors, "s3Secret", "Secret Access Key", &p.s3Secret, &p.showS3Secret, func(el ui.Element) {
-				el.Placeholder("留空则保持现有密钥")
-			})
-		}).Description("密钥保存在系统安全存储中，不会以明文保存。")
-
-		ui.Field(c, "Endpoint 终端节点", func() {
-			c.Key("s3Endpoint")
-			ui.TextInput(c, &p.s3Endpoint).Placeholder(endpointPlaceholder)
-		}).Description("多数 S3 兼容服务需填写（AWS S3 可留空）。")
+		a.s3ConfigFields(c, colors, s3FieldKeys{
+			vendor:   "s3Vendor",
+			region:   "s3Region",
+			bucket:   "s3Bucket",
+			accessID: "s3AccessID",
+			secret:   "s3Secret",
+			endpoint: "s3Endpoint",
+			subDir:   "syncSubDir",
+		}, &p.syncVendor, &p.lastS3Vendor, &p.lastS3Endpoint,
+			&p.s3Region, &p.s3Bucket, &p.s3AccessID, &p.s3Secret, &p.showS3Secret, &p.s3Endpoint, &p.syncSubDir,
+			&p.showSyncGuide, "留空则保持现有密钥")
 	}
-
-	ui.Field(c, "远程根目录", func() {
-		c.Key("syncSubDir")
-		ui.TextInput(c, &p.syncSubDir).Placeholder("默认 serval")
-	}).Description("数据将保存在该目录下（例如 serval/vault.json），便于多应用分类管理。")
 
 	c.Key("syncEnabled")
 	ui.Checkbox(c, &p.syncOn, "自动同步")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -315,5 +316,107 @@ func TestS3TargetFormatAndParse(t *testing.T) {
 	}
 	if client.Endpoint != target.Endpoint || client.AccessKeyId != "test-ak" || client.SecretAccessKey != "test-sk" {
 		t.Errorf("构造的 client 字段不符合预期: %+v", client)
+	}
+}
+
+func TestS3ObjectURLStyleByVendor(t *testing.T) {
+	cases := []struct {
+		name   string
+		client S3Client
+		want   string
+	}{
+		{
+			name:   "AWS S3 默认区域",
+			client: S3Client{Region: "us-east-1", Bucket: "serval-bak", Key: "serval/vault.json"},
+			want:   "https://serval-bak.s3.amazonaws.com/serval/vault.json",
+		},
+		{
+			name:   "AWS S3 非 us-east-1 自动带区域域名",
+			client: S3Client{Region: "ap-southeast-1", Bucket: "serval-bak", Key: "serval/vault.json"},
+			want:   "https://serval-bak.s3.ap-southeast-1.amazonaws.com/serval/vault.json",
+		},
+		{
+			name:   "阿里云 OSS 自动走虚拟主机样式",
+			client: S3Client{Endpoint: "https://oss-cn-hangzhou.aliyuncs.com", Region: "oss-cn-hangzhou", Bucket: "my-vault", Key: "serval/vault.json"},
+			want:   "https://my-vault.oss-cn-hangzhou.aliyuncs.com/serval/vault.json",
+		},
+		{
+			name:   "腾讯云 COS 自动走虚拟主机样式",
+			client: S3Client{Endpoint: "https://cos.ap-guangzhou.myqcloud.com", Region: "ap-guangzhou", Bucket: "my-vault-1250000000", Key: "serval/vault.json"},
+			want:   "https://my-vault-1250000000.cos.ap-guangzhou.myqcloud.com/serval/vault.json",
+		},
+		{
+			name:   "华为云 OBS 自动走虚拟主机样式",
+			client: S3Client{Endpoint: "https://obs.cn-north-4.myhuaweicloud.com", Region: "cn-north-4", Bucket: "my-vault", Key: "serval/vault.json"},
+			want:   "https://my-vault.obs.cn-north-4.myhuaweicloud.com/serval/vault.json",
+		},
+		{
+			name:   "Cloudflare R2 自动走路径样式",
+			client: S3Client{Endpoint: "https://acc123.r2.cloudflarestorage.com", Region: "auto", Bucket: "my-vault", Key: "serval/vault.json"},
+			want:   "https://acc123.r2.cloudflarestorage.com/my-vault/serval/vault.json",
+		},
+		{
+			name:   "MinIO 端口地址走路径样式",
+			client: S3Client{Endpoint: "http://127.0.0.1:9000", Region: "us-east-1", Bucket: "my-vault", Key: "serval/vault.json"},
+			want:   "http://127.0.0.1:9000/my-vault/serval/vault.json",
+		},
+		{
+			name:   "显式强制 PathStyle",
+			client: S3Client{Endpoint: "https://oss-cn-hangzhou.aliyuncs.com", Region: "oss-cn-hangzhou", Bucket: "my-vault", Key: "serval/vault.json", PathStyle: true},
+			want:   "https://oss-cn-hangzhou.aliyuncs.com/my-vault/serval/vault.json",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.client.objectURL()
+			if err != nil {
+				t.Fatalf("objectURL 失败: %v", err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("objectURL = %q, 期望 %q", got.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestS3ProbeDistinguishesNoSuchBucketAndNoSuchKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "missing-bucket"):
+			w.WriteHeader(http.StatusNotFound)
+			if r.Method == http.MethodGet {
+				w.Write([]byte(`<Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>`))
+			}
+		case strings.Contains(r.URL.Path, "bad-sig"):
+			w.WriteHeader(http.StatusForbidden)
+			if r.Method == http.MethodGet {
+				w.Write([]byte(`<Error><Code>SignatureDoesNotMatch</Code><Message>bad sig</Message></Error>`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			if r.Method == http.MethodGet {
+				w.Write([]byte(`<Error><Code>NoSuchKey</Code><Message>The specified key does not exist</Message></Error>`))
+			}
+		}
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+
+	okClient := &S3Client{Endpoint: srv.URL, Region: "us-east-1", Bucket: "good-bucket", Key: "serval/vault.json", AccessKeyId: "ak", SecretAccessKey: "sk"}
+	if err := okClient.Probe(ctx); err != nil {
+		t.Fatalf("NoSuchKey 时 Probe 应返回 nil（桶存在但首次尚未上传）: %v", err)
+	}
+
+	noBucketClient := &S3Client{Endpoint: srv.URL, Region: "us-east-1", Bucket: "missing-bucket", Key: "serval/vault.json", AccessKeyId: "ak", SecretAccessKey: "sk"}
+	if err := noBucketClient.Probe(ctx); !errors.Is(err, ErrNoFolder) {
+		t.Fatalf("NoSuchBucket 时 Probe 应返回 ErrNoFolder，实际: %v", err)
+	}
+
+	badSigClient := &S3Client{Endpoint: srv.URL, Region: "us-east-1", Bucket: "bad-sig", Key: "serval/vault.json", AccessKeyId: "ak", SecretAccessKey: "sk"}
+	err := badSigClient.Probe(ctx)
+	if !errors.Is(err, ErrAuth) || !strings.Contains(err.Error(), "Secret Access Key") {
+		t.Fatalf("SignatureDoesNotMatch 应返回 ErrAuth 且带详细提示，实际: %v", err)
 	}
 }
