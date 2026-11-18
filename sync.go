@@ -246,7 +246,7 @@ func (a *app) syncGuideCard(c *ui.Context, colors design.Colors, keyPrefix, summ
 					if *expanded {
 						label = "收起配置步骤"
 					}
-					stepBtn := ui.ButtonBase(c).Key(keyPrefix+"GuideToggle").Label(label).
+					stepBtn := ui.ButtonBase(c.Key(keyPrefix+"GuideToggle")).Label(label).
 						Height(22).Padding(0, 8).Radius(design.RadiusRow).
 						Background(colors.Chip).AlignItems(ui.Center).Transition(design.Hover)
 					if stepBtn.Hovered() {
@@ -260,7 +260,7 @@ func (a *app) syncGuideCard(c *ui.Context, colors design.Colors, keyPrefix, summ
 				}
 				for i, item := range links {
 					link := item
-					btn := ui.ButtonBase(c).Key(fmt.Sprintf("%sGuideLink:%d", keyPrefix, i)).
+					btn := ui.ButtonBase(c.Key(fmt.Sprintf("%sGuideLink:%d", keyPrefix, i))).
 						Label(link.Label).Height(22).Padding(0, 8).Gap(4).Radius(design.RadiusRow).
 						Background(t.Accent.Alpha(0.12)).AlignItems(ui.Center).Transition(design.Hover)
 					if btn.Hovered() {
@@ -752,7 +752,7 @@ func (a *app) restoreDialog(c *ui.Context, colors design.Colors) {
 				c.Key("restoreKind")
 				ui.Select(c, &p.syncKind, syncKindOptions)
 			})
-			ui.Scroll(c).Key("restoreScroll").MaxHeight(max(windowHeight-240, 220)).Children(func() {
+			ui.Scroll(c.Key("restoreScroll")).MaxHeight(max(windowHeight-240, 220)).Children(func() {
 				ui.Column(c).Gap(10).Children(func() {
 					if p.syncKind == "S3 兼容存储" {
 						if p.syncSubDir == "" && p.lastS3Vendor == "AWS S3" && p.s3Bucket == "" && p.s3Endpoint == "" {
@@ -782,17 +782,17 @@ func (a *app) restoreDialog(c *ui.Context, colors design.Colors) {
 				})
 			})
 			if p.err != "" {
-				ui.Text(c, p.err).Key("restoreError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
+				ui.Text(c.Key("restoreError"), p.err).FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 			}
 			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-				ui.Button(c, "取消").Key("restoreCancel").Disabled(p.busy).OnClick(func() {
+				ui.Button(c.Key("restoreCancel"), "取消").Disabled(p.busy).OnClick(func() {
 					a.restore = restorePanel{}
 				})
 				label := "开始恢复"
 				if p.busy {
 					label = "正在恢复…"
 				}
-				ui.PrimaryButton(c, label).Key("restoreSubmit").Disabled(p.busy).OnClick(a.submitRestore)
+				ui.PrimaryButton(c.Key("restoreSubmit"), label).Disabled(p.busy).OnClick(a.submitRestore)
 			})
 		})
 	})

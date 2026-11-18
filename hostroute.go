@@ -99,12 +99,12 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 	if !f.showJumps || !f.showProxy {
 		ui.Row(c).Gap(8).Children(func() {
 			if !f.showJumps {
-				ui.Button(c, locales.RouteAddJump()).Key("addJumps").OnClick(func() {
+				ui.Button(c.Key("addJumps"), locales.RouteAddJump()).OnClick(func() {
 					f.showJumps, f.jumps = true, []string{pickHost()}
 				})
 			}
 			if !f.showProxy {
-				ui.Button(c, locales.RouteUseProxy()).Key("addProxy").OnClick(func() {
+				ui.Button(c.Key("addProxy"), locales.RouteUseProxy()).OnClick(func() {
 					f.showProxy = true
 					if f.proxyName == "" && len(a.proxies) > 0 {
 						f.proxyName = a.proxies[0].Name
@@ -121,7 +121,7 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 					values, labels := a.jumpChoices(f, i)
 					curIdx := indexOr(values, f.jumps[i], 0)
 					selectedLabel := labels[curIdx]
-					ui.Row(c).Key(fmt.Sprintf("jumpRow:%d", i)).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Row(c.Key(fmt.Sprintf("jumpRow:%d", i))).Gap(6).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, fmt.Sprintf("%d", i+1)).FontSize(design.TextSmall).TextColor(colors.TextFaint).Width(14)
 						ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 							c.Key(fmt.Sprintf("addJump:%d", i))
@@ -155,7 +155,7 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 					}
 				}
 				chainNodes = append(chainNodes, targetLabel)
-				ui.Row(c).Key("jumpChainPreview").Gap(4).Wrap().AlignItems(ui.Center).
+				ui.Row(c.Key("jumpChainPreview")).Gap(4).Wrap().AlignItems(ui.Center).
 					Padding(4, 8).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 					for i, node := range chainNodes {
 						if i > 0 {
@@ -169,7 +169,7 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 					}
 				})
 				ui.Row(c).Children(func() {
-					ui.Button(c, locales.RouteAddAnother()).Key("addJumpMore").OnClick(func() {
+					ui.Button(c.Key("addJumpMore"), locales.RouteAddAnother()).OnClick(func() {
 						f.jumps = append(f.jumps, pickHost())
 					})
 				})
@@ -197,8 +197,8 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 				} else {
 					ui.Text(c, locales.RouteNoProxyYet()).FontSize(design.TextSmall).TextColor(t.TextMuted).Grow(1)
 				}
-				ui.Button(c, locales.RouteNewProxy()).Key("addProxyNew").OnClick(func() { a.openProxyAdd(true) })
-				ui.Button(c, locales.RouteDontUseProxy()).Key("addProxyRemove").OnClick(func() {
+				ui.Button(c.Key("addProxyNew"), locales.RouteNewProxy()).OnClick(func() { a.openProxyAdd(true) })
+				ui.Button(c.Key("addProxyRemove"), locales.RouteDontUseProxy()).OnClick(func() {
 					f.showProxy, f.proxyName, f.legacyProxy = false, "", ""
 				})
 			})

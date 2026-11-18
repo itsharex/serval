@@ -557,7 +557,7 @@ func (a *app) zmodemBar(c *ui.Context, colors design.Colors, p *pane) {
 	if total > 0 {
 		frac = min(float32(done)/float32(total), 1)
 	}
-	ui.Column(c).Key("zmodemBar").Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Background(colors.Hover).Children(func() {
+	ui.Column(c.Key("zmodemBar")).Shrink(0).BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Background(colors.Hover).Children(func() {
 		ui.Row(c).Height(32).Padding(0, 12).Gap(8).AlignItems(ui.Center).FontSize(design.TextSmall).Children(func() {
 			ui.Icon(c, design.Icon(icon)).FontSize(13).TextColor(theme.Accent)
 			ui.Text(c, verb).NoWrap().Shrink(0)
@@ -567,7 +567,7 @@ func (a *app) zmodemBar(c *ui.Context, colors design.Colors, p *pane) {
 				ui.Text(c, fmt.Sprintf("%s / %s", formatSize(done), formatSize(total))).
 					TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 			}
-			ui.ButtonBase(c).Key("cancelZmodem").Label(locales.ZmCancelTransfer()).Shrink(0).Tooltip(locales.ZmCancelHint()).Children(func() {
+			ui.ButtonBase(c.Key("cancelZmodem")).Label(locales.ZmCancelTransfer()).Shrink(0).Tooltip(locales.ZmCancelHint()).Children(func() {
 				ui.Text(c, locales.Cancel()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(tr.cancel)
 		})

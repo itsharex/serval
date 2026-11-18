@@ -80,7 +80,7 @@ func passwordInput(c *ui.Context, colors design.Colors, key, fieldLabel string, 
 			iconName = "eye-off"
 			btnLabel = "隐藏" + fieldLabel
 		}
-		btn := ui.ButtonBase(c).Key(key+"Reveal").Label(btnLabel).Tooltip(btnLabel).
+		btn := ui.ButtonBase(c.Key(key+"Reveal")).Label(btnLabel).Tooltip(btnLabel).
 			Size(28, 28).Center().Radius(6).Shrink(0)
 		if btn.Hovered() {
 			btn.Background(colors.Hover)
@@ -135,10 +135,10 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 			}
 			submit := input.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Cancel()).Key("authCancel").OnClick(func() {
+				ui.Button(c.Key("authCancel"), locales.Cancel()).OnClick(func() {
 					a.auth = authSheet{}
 				})
-				if ui.PrimaryButton(c, locales.Connect()).Key("authSubmit").Clicked() || submit {
+				if ui.PrimaryButton(c.Key("authSubmit"), locales.Connect()).Clicked() || submit {
 					a.submitSecret()
 				}
 			})
@@ -178,16 +178,16 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 			}
 			ui.Text(c, locales.SheetMasterPasswordWarning()).FontSize(design.TextSmall).TextColor(colors.Danger)
 			if s.err != "" {
-				ui.Text(c, s.err).Key("setupError").TextColor(t.Danger)
+				ui.Text(c.Key("setupError"), s.err).TextColor(t.Danger)
 			}
 			submit := confirm.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Cancel()).Key("setupCancel").Disabled(s.busy).OnClick(func() { a.setup = setupSheet{} })
+				ui.Button(c.Key("setupCancel"), locales.Cancel()).Disabled(s.busy).OnClick(func() { a.setup = setupSheet{} })
 				label := locales.SheetSetAndContinue()
 				if s.busy {
 					label = locales.SheetSetting()
 				}
-				b := ui.PrimaryButton(c, label).Key("setupSubmit").Disabled(s.busy)
+				b := ui.PrimaryButton(c.Key("setupSubmit"), label).Disabled(s.busy)
 				if (b.Clicked() || submit) && !s.busy {
 					a.submitSetup()
 				}
@@ -243,10 +243,10 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 			}
 			submit := input.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Cancel()).Key("fileOpCancel").Disabled(op.busy).OnClick(func() {
+				ui.Button(c.Key("fileOpCancel"), locales.Cancel()).Disabled(op.busy).OnClick(func() {
 					a.fileOp = fileOpState{}
 				})
-				if ui.PrimaryButton(c, btnText).Key("fileOpSubmit").Disabled(op.busy).Clicked() || (submit && !op.busy) {
+				if ui.PrimaryButton(c.Key("fileOpSubmit"), btnText).Disabled(op.busy).Clicked() || (submit && !op.busy) {
 					a.submitFileOp()
 				}
 			})
@@ -304,7 +304,7 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 				label = locales.SheetUnlocking()
 			}
 			submit := input.Submitted()
-			b := ui.PrimaryButton(c, label).Key("unlockSubmit").Disabled(u.busy)
+			b := ui.PrimaryButton(c.Key("unlockSubmit"), label).Disabled(u.busy)
 			if (b.Clicked() || submit) && !u.busy {
 				a.submitUnlock()
 			}
@@ -348,7 +348,7 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 	}
 	closeSheet := func() { a.cancelChallenge() }
 	sheet(c, colors, &ch.open, &ch.fresh, 400, 20, func() {
-		ui.Column(c).Key("challengeBody").Gap(16).Children(func() {
+		ui.Column(c.Key("challengeBody")).Gap(16).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				design.DistroCoatView(c, ch.host.ID, ch.host.Distro, ch.host.Production, 28)
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
@@ -389,7 +389,7 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 			})
 			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
 				ui.Button(c, locales.Cancel()).OnClick(closeSheet)
-				if ui.PrimaryButton(c, locales.SheetVerify()).Key("submitChallenge").Clicked() || lastSubmitted {
+				if ui.PrimaryButton(c.Key("submitChallenge"), locales.SheetVerify()).Clicked() || lastSubmitted {
 					a.submitChallenge()
 				}
 			})

@@ -577,7 +577,7 @@ func formChipButton(c *ui.Context, colors design.Colors, key, label, text string
 	if selected {
 		fg, bg = t.Accent, t.Accent.Alpha(0.14)
 	}
-	b := ui.ButtonBase(c).Key(key).Label(label).Height(22).Padding(0, 8).Radius(design.RadiusChip).
+	b := ui.ButtonBase(c.Key(key)).Label(label).Height(22).Padding(0, 8).Radius(design.RadiusChip).
 		AlignItems(ui.Center).Background(bg).Transition(design.Hover)
 	if !selected && b.Hovered() {
 		b.Background(colors.Hover)
@@ -673,7 +673,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 	sheet(c, colors, &f.open, &f.fresh, 440, 22, func() {
 		ui.Column(c).Gap(12).Children(func() {
 			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
-			ui.Scroll(c).Key("hostFormScroll").MaxHeight(max(windowHeight-180, 120)).Children(func() {
+			ui.Scroll(c.Key("hostFormScroll")).MaxHeight(max(windowHeight-180, 120)).Children(func() {
 				ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
 					ui.Field(c, "协议", func() {
 						c.Key("addProtocol")
@@ -700,7 +700,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 									}
 								})
 							})
-							ui.Button(c, "刷新端口").Key("refreshSerialPorts").OnClick(func() {
+							ui.Button(c.Key("refreshSerialPorts"), "刷新端口").OnClick(func() {
 								f.serialPorts = serial.ListPorts()
 							})
 						})
@@ -722,7 +722,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 						if f.showSerialAdv {
 							advTitle = "▾ 高级串口参数"
 						}
-						ui.Button(c, advTitle).Key("toggleSerialAdv").Height(26).Padding(0, 8).OnClick(func() {
+						ui.Button(c.Key("toggleSerialAdv"), advTitle).Height(26).Padding(0, 8).OnClick(func() {
 							f.showSerialAdv = !f.showSerialAdv
 						})
 						if f.showSerialAdv {
@@ -867,7 +867,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 					if f.showSSHAdv {
 						advLabel = "▾ 高级设置"
 					}
-					ui.Button(c, advLabel).Key("addSSHAdvToggle").Height(26).Padding(0, 8).OnClick(func() {
+					ui.Button(c.Key("addSSHAdvToggle"), advLabel).Height(26).Padding(0, 8).OnClick(func() {
 						f.showSSHAdv = !f.showSSHAdv
 					})
 					if f.showSSHAdv {
@@ -890,11 +890,11 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 				})
 			})
 			if f.err != "" {
-				ui.Text(c, f.err).Key("addError").TextColor(t.Danger)
+				ui.Text(c.Key("addError"), f.err).TextColor(t.Danger)
 			}
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Cancel()).Key("addCancel").OnClick(func() { a.form = hostForm{} })
-				ui.PrimaryButton(c, submit).Key("addSubmit").OnClick(a.saveForm)
+				ui.Button(c.Key("addCancel"), locales.Cancel()).OnClick(func() { a.form = hostForm{} })
+				ui.PrimaryButton(c.Key("addSubmit"), submit).OnClick(a.saveForm)
 			})
 		})
 	})
@@ -913,7 +913,7 @@ func (a *app) keyField(c *ui.Context, f *hostForm) {
 				ui.Text(c, locales.HostNoPrivateKey()).
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 				ui.Row(c).Children(func() {
-					ui.Button(c, "从文件导入私钥").Key("addHostImportKey").OnClick(a.importKeyFromHostForm)
+					ui.Button(c.Key("addHostImportKey"), "从文件导入私钥").OnClick(a.importKeyFromHostForm)
 				})
 			})
 		})
@@ -940,7 +940,7 @@ func (a *app) keyField(c *ui.Context, f *hostForm) {
 					}
 				}
 			})
-			ui.Button(c, "导入").Key("addHostImportKey").OnClick(a.importKeyFromHostForm)
+			ui.Button(c.Key("addHostImportKey"), "导入").OnClick(a.importKeyFromHostForm)
 		})
 	})
 }
@@ -967,7 +967,7 @@ func (a *app) totpField(c *ui.Context, colors design.Colors, f *hostForm) {
 			if f.clearTOTP {
 				text = "撤销清除验证码"
 			}
-			ui.Button(c, text).Key("addTOTPClear").OnClick(func() {
+			ui.Button(c.Key("addTOTPClear"), text).OnClick(func() {
 				f.clearTOTP = !f.clearTOTP
 				if f.clearTOTP {
 					f.totp = ""
@@ -999,7 +999,7 @@ func (a *app) passwordField(c *ui.Context, colors design.Colors, f *hostForm) {
 			if f.clearPassword {
 				text = locales.HostUndoClear()
 			}
-			ui.Button(c, text).Key("addPasswordClear").OnClick(func() {
+			ui.Button(c.Key("addPasswordClear"), text).OnClick(func() {
 				f.clearPassword = !f.clearPassword
 				if f.clearPassword {
 					f.password = ""

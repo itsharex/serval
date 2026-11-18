@@ -627,7 +627,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 					}
 				}
 			})
-			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-165, 120)).Children(func() {
+			ui.Scroll(c.Key("settingsScroll")).MaxHeight(max(windowHeight-165, 120)).Children(func() {
 				ui.Column(c).Gap(11).Padding(0, 4, 0, 0).Children(func() {
 					if p.tab == settingsTabGeneral {
 						ui.Field(c, locales.SetAppearance(), func() {
@@ -660,7 +660,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 								ui.Checkbox(c, &p.sessionLog, "记录终端输出").OnChange(func() {
 									a.setSessionLog(p.sessionLog)
 								})
-								ui.Button(c, "选择日志文件夹").Key("settingsLogDir").OnClick(func() {
+								ui.Button(c.Key("settingsLogDir"), "选择日志文件夹").OnClick(func() {
 									a.pickSessionLogDir(false)
 								})
 								pathText := a.local.SessionLogDir
@@ -771,10 +771,10 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				})
 			})
 			if p.err != "" {
-				ui.Text(c, p.err).Key("settingsError").TextColor(t.Danger)
+				ui.Text(c.Key("settingsError"), p.err).TextColor(t.Danger)
 			}
 			ui.Row(c).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Done()).Key("settingsClose").OnClick(a.closeSettings)
+				ui.Button(c.Key("settingsClose"), locales.Done()).OnClick(a.closeSettings)
 			})
 		})
 	})
@@ -845,7 +845,7 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 	if a.vault != nil && a.vault.State() != vault.Unprotected {
 		if !p.changePwOpen {
 			ui.Row(c).Children(func() {
-				ui.Button(c, locales.SetChangeMasterPassword()).Key("settingsOpenChangePw").OnClick(func() {
+				ui.Button(c.Key("settingsOpenChangePw"), locales.SetChangeMasterPassword()).OnClick(func() {
 					p.changePwOpen = true
 					p.revealChangePw = true
 					p.currentPassword = ""
@@ -856,7 +856,7 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 				})
 			})
 		} else {
-			form := ui.Column(c).Key("settingsChangePwForm").Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
+			form := ui.Column(c.Key("settingsChangePwForm")).Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
 			if p.revealChangePw {
 				p.revealChangePw = false
 				form.ScrollIntoView()
@@ -875,10 +875,10 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 					passwordInput(c, colors, "settingsConfirmPw", locales.SetConfirmMasterPassword(), &p.confirmPassword, &p.showConfirmPw, nil)
 				})
 				if p.changePwErr != "" {
-					ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
+					ui.Text(c.Key("settingsChangePwError"), p.changePwErr).TextColor(colors.Danger).FontSize(design.TextSmall)
 				}
 				ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-					ui.Button(c, locales.Cancel()).Key("settingsCancelPw").OnClick(func() {
+					ui.Button(c.Key("settingsCancelPw"), locales.Cancel()).OnClick(func() {
 						p.changePwOpen = false
 						p.showCurrentPw, p.showNewPw, p.showConfirmPw = false, false, false
 						p.changePwErr = ""
@@ -887,7 +887,7 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 					if p.changePwBusy {
 						label = locales.SetSaving()
 					}
-					ui.PrimaryButton(c, label).Key("settingsSavePw").Disabled(p.changePwBusy).OnClick(func() {
+					ui.PrimaryButton(c.Key("settingsSavePw"), label).Disabled(p.changePwBusy).OnClick(func() {
 						a.submitChangePassword()
 					})
 				})
@@ -953,10 +953,10 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		if p.probeBusy {
 			label = "正在测试连接"
 		}
-		ui.Button(c, label).Key("syncTest").Disabled(p.probeBusy).OnClick(a.testSyncFromPanel)
-		ui.PrimaryButton(c, "保存配置").Key("syncSave").OnClick(a.saveSyncSettings)
+		ui.Button(c.Key("syncTest"), label).Disabled(p.probeBusy).OnClick(a.testSyncFromPanel)
+		ui.PrimaryButton(c.Key("syncSave"), "保存配置").OnClick(a.saveSyncSettings)
 		if a.local.SyncOn || a.local.SyncURL != "" {
-			ui.Button(c, "清除配置").Key("syncClear").OnClick(func() {
+			ui.Button(c.Key("syncClear"), "清除配置").OnClick(func() {
 				p.syncOn = false
 				p.syncURL = ""
 				p.syncUser = ""
@@ -981,18 +981,18 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		if !p.probeOK {
 			col = colors.Danger
 		}
-		ui.Text(c, p.probeMsg).Key("syncProbe").FontSize(design.TextSmall).TextColor(col).Selectable()
+		ui.Text(c.Key("syncProbe"), p.probeMsg).FontSize(design.TextSmall).TextColor(col).Selectable()
 	}
 	switch {
 	case a.syncing:
-		ui.Text(c, "正在同步…").Key("syncProgress").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+		ui.Text(c.Key("syncProgress"), "正在同步…").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
 	case !a.lastSync.IsZero():
-		ui.Text(c, "上次同步 "+formatSyncTime(a.lastSync)).Key("syncLast").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+		ui.Text(c.Key("syncLast"), "上次同步 "+formatSyncTime(a.lastSync)).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
 	}
 	if a.syncErr != "" {
-		ui.Text(c, a.syncErr).Key("syncError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
+		ui.Text(c.Key("syncError"), a.syncErr).FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 		if a.syncDifferentVault && !a.vault.Empty() {
-			ui.Button(c, "用本机覆盖远端").Key("syncOverwriteBtn").OnClick(func() {
+			ui.Button(c.Key("syncOverwriteBtn"), "用本机覆盖远端").OnClick(func() {
 				a.syncOverwriteAsk = true
 			})
 		}
@@ -1000,7 +1000,7 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 
 	if a.syncConfigured() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.PrimaryButton(c, "立即同步").Key("syncNowBtn").Disabled(a.syncing).OnClick(func() {
+			ui.PrimaryButton(c.Key("syncNowBtn"), "立即同步").Disabled(a.syncing).OnClick(func() {
 				a.syncNow(true)
 			})
 			ui.Text(c, "基于记录版本自动与远端双向合并同步").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
@@ -1015,12 +1015,12 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		dirLabel = a.local.SyncDir
 	}
 	ui.Field(c, "本地同步文件夹", func() {
-		ui.Text(c, dirLabel).Key("syncDirPath").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
+		ui.Text(c.Key("syncDirPath"), dirLabel).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
 	}).Description("将加密的保险库镜像保存至 iCloud Drive、Dropbox 或 Syncthing 文件夹。与云同步独立运作。")
 	ui.Row(c).Gap(8).Children(func() {
-		ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
+		ui.Button(c.Key("syncDirChoose"), "选择同步文件夹").OnClick(a.chooseSyncDir)
 		if a.local.SyncDir != "" {
-			ui.Button(c, "停止使用此文件夹").Key("syncDirStop").OnClick(func() {
+			ui.Button(c.Key("syncDirStop"), "停止使用此文件夹").OnClick(func() {
 				if err := a.setSyncDir(""); err != nil {
 					p.err = err.Error()
 				}
@@ -1055,7 +1055,7 @@ func (a *app) knownHostsSection(c *ui.Context, colors design.Colors) {
 func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 	t := c.Theme()
 	host := k.Host
-	ui.Row(c).Key("known:"+host).Padding(8, 10).Gap(10).AlignItems(ui.Center).
+	ui.Row(c.Key("known:"+host)).Padding(8, 10).Gap(10).AlignItems(ui.Center).
 		Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -1070,7 +1070,7 @@ func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 					TextColor(t.TextMuted).SingleLine()
 			}
 		})
-		ui.Button(c, locales.Delete()).Key("knownDelete:" + host).OnClick(func() {
+		ui.Button(c.Key("knownDelete:"+host), locales.Delete()).OnClick(func() {
 			a.deleteKnownHost(host)
 		})
 	})
@@ -1865,7 +1865,7 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 				borderCol = t.Accent.Alpha(0.35)
 			}
 
-			ui.Column(c).Key("aiCard:"+item.ID).Padding(12, 14).Gap(12).Radius(design.RadiusRow).Background(cardBg).Border(1, borderCol).Children(func() {
+			ui.Column(c.Key("aiCard:"+item.ID)).Padding(12, 14).Gap(12).Radius(design.RadiusRow).Background(cardBg).Border(1, borderCol).Children(func() {
 				// 卡片头：左侧图标与状态摘要，右侧编辑、删除、启用开关
 				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 					badgeBg := colors.Chip
@@ -1906,13 +1906,13 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 						})
 					})
 
-					iconButton(c, colors, "pencil", "编辑 "+item.Name, func() {
+					iconButton(c.Key("aiEdit:"+item.ID), colors, "pencil", "编辑 "+item.Name, func() {
 						a.toggleEditAIProfile(item.ID)
-					}).Key("aiEdit:" + item.ID)
+					})
 
-					iconButton(c, colors, "trash-2", "删除 "+item.Name, func() {
+					iconButton(c.Key("aiProfileDel:"+item.ID), colors, "trash-2", "删除 "+item.Name, func() {
 						a.deleteAIProfileInSettings(item.ID)
-					}).Key("aiProfileDel:" + item.ID)
+					})
 
 					sw := isActive
 					c.Key("aiSwitch:" + item.ID)
@@ -1978,10 +1978,10 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, fmt.Sprintf("已自动获取 %d 个可用模型，可在 AI 面板底部菜单直接选择", len(p.aiModels))).
 					FontSize(design.TextSmall).TextColor(colors.Live).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-				ui.Button(c, fetchLabel).Key("aiFetchModelsBtn").Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
+				ui.Button(c.Key("aiFetchModelsBtn"), fetchLabel).Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
 					a.fetchAIModels(true)
 				})
-				ui.Button(c, "手动输入").Key("aiToggleManualModel").Shrink(0).OnClick(func() {
+				ui.Button(c.Key("aiToggleManualModel"), "手动输入").Shrink(0).OnClick(func() {
 					p.aiManualModel = true
 				})
 			})
@@ -1994,11 +1994,11 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 				ui.TextInput(c, &p.aiModel).Placeholder("自动获取失败或不支持列表时可手动填写模型名").Grow(1).MinWidth(0).OnSubmit(func() {
 					a.commitAISettings()
 				})
-				ui.Button(c, fetchLabel).Key("aiFetchModelsBtn").Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
+				ui.Button(c.Key("aiFetchModelsBtn"), fetchLabel).Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
 					a.fetchAIModels(true)
 				})
 				if hasFetchedModels {
-					ui.Button(c, "使用自动列表").Key("aiToggleManualModel").Shrink(0).OnClick(func() {
+					ui.Button(c.Key("aiToggleManualModel"), "使用自动列表").Shrink(0).OnClick(func() {
 						p.aiManualModel = false
 					})
 				}
@@ -2011,7 +2011,7 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 		if p.aiTestBusy {
 			label = "正在测试连接"
 		}
-		ui.Button(c, label).Key("aiTestBtn").Disabled(p.aiTestBusy).OnClick(func() {
+		ui.Button(c.Key("aiTestBtn"), label).Disabled(p.aiTestBusy).OnClick(func() {
 			a.commitAISettings()
 			p.aiTestBusy = true
 			p.aiTestMsg = ""
@@ -2113,7 +2113,7 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 			}()
 		})
 		if p.editingProfileID != "" {
-			ui.Button(c, "收起").Key("aiCollapseEditBtn").OnClick(func() {
+			ui.Button(c.Key("aiCollapseEditBtn"), "收起").OnClick(func() {
 				a.commitAISettings()
 				p.editingProfileID = ""
 				p.aiTestMsg = ""
@@ -2126,6 +2126,6 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 		if !p.aiTestOK {
 			col = colors.Danger
 		}
-		ui.Text(c, p.aiTestMsg).Key("aiTestResult").FontSize(design.TextSmall).TextColor(col)
+		ui.Text(c.Key("aiTestResult"), p.aiTestMsg).FontSize(design.TextSmall).TextColor(col)
 	}
 }

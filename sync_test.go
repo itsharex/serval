@@ -181,6 +181,10 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	if !h.a.settingsPanel.syncOn {
 		t.Fatal("勾选后应启用同步")
 	}
+	if box, ok := h.tt.Find("WebDAV 服务器地址"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 200)
+		h.tt.Frame()
+	}
 	h.click("测试连接")
 	h.pump("错误密码的测试结果", func() bool { return h.tt.HasText("同步账号或密码不正确。") })
 
@@ -237,6 +241,10 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	}
 	if h.a.settingsPanel.webdavPassword != "" {
 		t.Fatal("再次打开时不应把已存密码填回输入框")
+	}
+	if box, ok := h.tt.Find("WebDAV 服务器地址"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 160)
+		h.tt.Frame()
 	}
 	h.click("保存配置")
 	h.tt.Frame()
@@ -389,6 +397,10 @@ func TestSyncJoinMergesBothSides(t *testing.T) {
 	h.tt.Frame()
 	h.click("自动同步")
 	h.tt.Frame()
+	if box, ok := h.tt.Find("WebDAV 服务器地址"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 200)
+		h.tt.Frame()
+	}
 	h.click("保存配置")
 	h.tt.Frame()
 	h.click("合并并同步")

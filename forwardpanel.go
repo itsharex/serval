@@ -454,7 +454,7 @@ func (a *app) forwardListPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "端口转发").FontSize(design.TextHeading).FontWeight(600).Grow(1)
-			ui.PrimaryButton(c, "添加转发").Key("forwardsAdd").OnClick(a.openForwardAdd)
+			ui.PrimaryButton(c.Key("forwardsAdd"), "添加转发").OnClick(a.openForwardAdd)
 		})
 		if len(a.forwards) == 0 {
 			ui.Column(c).Gap(6).Padding(12, 0).Children(func() {
@@ -474,7 +474,7 @@ func (a *app) forwardListPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
-			ui.Button(c, "完成").Key("forwardsClose").OnClick(func() { a.forwardPanel = forwardPanel{} })
+			ui.Button(c.Key("forwardsClose"), "完成").OnClick(func() { a.forwardPanel = forwardPanel{} })
 		})
 	})
 }
@@ -486,12 +486,12 @@ func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 	if running {
 		actionText, verb = "停止", "停止 "
 	}
-	line := ui.Row(c).Key("forwardline:"+f.ID).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
+	line := ui.Row(c.Key("forwardline:"+f.ID)).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
 	if line.Hovered() {
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c).Key("forward:"+f.ID).Label(f.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("forward:"+f.ID)).Label(f.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
 			ui.Icon(c, design.Icon("arrow-left-right")).FontSize(18).TextColor(t.TextMuted).Shrink(0)
@@ -500,8 +500,8 @@ func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 				ui.Text(c, f.Summary()+"  "+a.forwardStatus(f)).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 			})
 		}).OnClick(func() { a.editForward(f) })
-		ui.Button(c, actionText).Key("forwardRun:" + f.ID).Label(verb + f.Name).Shrink(0).OnClick(func() { a.toggleForward(f) })
-		delBtn := ui.ButtonBase(c).Key("forwardDelete:"+f.ID).Label("删除 "+f.Name).Tooltip("删除 "+f.Name).
+		ui.Button(c.Key("forwardRun:"+f.ID), actionText).Label(verb + f.Name).Shrink(0).OnClick(func() { a.toggleForward(f) })
+		delBtn := ui.ButtonBase(c.Key("forwardDelete:"+f.ID)).Label("删除 "+f.Name).Tooltip("删除 "+f.Name).
 			Size(26, 26).Center().Radius(6).Shrink(0)
 		if delBtn.Hovered() {
 			delBtn.Background(colors.Hover)
@@ -586,13 +586,13 @@ func (a *app) forwardEditPage(c *ui.Context) {
 			}
 		}).Description("绑定主机后，连上它就自动开启，最后一条相关会话断开后关闭。")
 		if p.err != "" {
-			ui.Text(c, p.err).Key("forwardError").TextColor(t.Danger)
+			ui.Text(c.Key("forwardError"), p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, "返回").Key("forwardBack").OnClick(func() {
+			ui.Button(c.Key("forwardBack"), "返回").OnClick(func() {
 				p.editing, p.err = false, ""
 			})
-			ui.PrimaryButton(c, "保存转发").Key("forwardSubmit").OnClick(a.saveForward)
+			ui.PrimaryButton(c.Key("forwardSubmit"), "保存转发").OnClick(a.saveForward)
 		})
 	})
 }

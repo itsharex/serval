@@ -1043,7 +1043,7 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 	}
 
 	// 左侧拖拽手柄（不做宽度动画，避免终端连续收到 SIGWINCH）
-	grip := ui.Box(c).Key("aiDrawerResize").Width(8).Shrink(0).Margin(design.Gap/2, -4).
+	grip := ui.Box(c.Key("aiDrawerResize")).Width(8).Shrink(0).Margin(design.Gap/2, -4).
 		Cursor(ui.CursorResizeEW).Focusable().Label("调整 AI 面板宽度")
 	dx, _, held := grip.Dragged()
 	switch {
@@ -1059,7 +1059,7 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 		})
 	}
 
-	drawer := raised(ui.Column(c).Key("aiDrawer").Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	drawer := raised(ui.Column(c.Key("aiDrawer")).Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	drawer.Transition(design.SlideIn(18)).Children(func() {
 		a.aiDrawerHeader(c, colors)
 		if p.showHistory {
@@ -1112,19 +1112,19 @@ func (a *app) aiDrawerHeader(c *ui.Context, colors design.Colors) {
 			ui.Text(c, targetText).FontSize(design.TextSmall).TextColor(chipFg).SingleLine().Ellipsis("…")
 		})
 
-		histBtn := iconButton(c, colors, "history", "历史会话", func() {
+		histBtn := iconButton(c.Key("aiHistoryBtn"), colors, "history", "历史会话", func() {
 			saveActiveConversation(&a.ai)
 			a.ai.showHistory = !a.ai.showHistory
-		}).Key("aiHistoryBtn")
+		})
 		if a.ai.showHistory {
 			histBtn.Background(colors.Hover)
 		}
 		if len(a.ai.turns) > 0 || a.ai.showHistory {
-			iconButton(c, colors, "plus", "新开会话", a.newAIConversation).Key("aiNewChatBtn")
+			iconButton(c.Key("aiNewChatBtn"), colors, "plus", "新开会话", a.newAIConversation)
 		}
-		iconButton(c, colors, "x", "关闭 AI 面板", func() {
+		iconButton(c.Key("aiCloseBtn"), colors, "x", "关闭 AI 面板", func() {
 			a.ai.open = false
-		}).Key("aiCloseBtn")
+		})
 	})
 }
 
@@ -1135,12 +1135,12 @@ func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Shrink(0).Children(func() {
 			ui.Text(c, fmt.Sprintf("本终端历史会话（%d）", len(p.convs))).
 				FontSize(design.TextBody).FontWeight(600).Grow(1).MinWidth(0)
-			ui.Button(c, "新建会话").Key("aiHistoryNewBtn").Height(26).Padding(0, 10).OnClick(a.newAIConversation)
-			ui.Button(c, "返回对话").Key("aiHistoryBackBtn").Height(26).Padding(0, 10).OnClick(func() {
+			ui.Button(c.Key("aiHistoryNewBtn"), "新建会话").Height(26).Padding(0, 10).OnClick(a.newAIConversation)
+			ui.Button(c.Key("aiHistoryBackBtn"), "返回对话").Height(26).Padding(0, 10).OnClick(func() {
 				p.showHistory = false
 			})
 		})
-		ui.Scroll(c).Key("aiHistoryScroll").Grow(1).MinHeight(0).Children(func() {
+		ui.Scroll(c.Key("aiHistoryScroll")).Grow(1).MinHeight(0).Children(func() {
 			if len(p.convs) == 0 {
 				ui.Box(c).Padding(14).Radius(design.RadiusRow).Background(colors.Hover).Children(func() {
 					ui.Text(c, "当前终端暂无历史会话，发送消息后会自动记录在这里。").
@@ -1162,7 +1162,7 @@ func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
 						row.Background(colors.Hover).Border(1, colors.Hairline)
 					}
 					row.Children(func() {
-						openBtn := ui.ButtonBase(c).Key("aiConv:" + item.ID).Label("打开会话 " + item.Title).
+						openBtn := ui.ButtonBase(c.Key("aiConv:" + item.ID)).Label("打开会话 " + item.Title).
 							Grow(1).MinWidth(0).OnClick(func() {
 							a.selectAIConversation(item.ID)
 						})
@@ -1180,9 +1180,9 @@ func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
 								ui.Text(c, meta).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 							})
 						})
-						iconButton(c, colors, "trash-2", "删除会话 "+item.ID, func() {
+						iconButton(c.Key("aiDelConv:"+item.ID), colors, "trash-2", "删除会话 "+item.ID, func() {
 							a.deleteAIConversation(item.ID)
-						}).Key("aiDelConv:" + item.ID).Tooltip("删除该会话")
+						}).Tooltip("删除该会话")
 					})
 				}
 			})
@@ -1198,7 +1198,7 @@ func (a *app) aiMessageStream(c *ui.Context, colors design.Colors) {
 		p.autoScroll = false
 	}
 
-	ui.Scroll(c).Key("aiScroll").Grow(1).MinHeight(0).TrackScroll(&p.scroll).Children(func() {
+	ui.Scroll(c.Key("aiScroll")).Grow(1).MinHeight(0).TrackScroll(&p.scroll).Children(func() {
 		ui.Column(c).Padding(12).Gap(14).Children(func() {
 			if len(p.turns) == 0 && p.contextError == "" {
 				a.aiWelcomeView(c, colors)
@@ -1216,7 +1216,7 @@ func (a *app) aiMessageStream(c *ui.Context, colors design.Colors) {
 			}
 
 			if p.err != "" && (len(p.turns) == 0 || p.turns[len(p.turns)-1].err == "") {
-				ui.Text(c, p.err).Key("aiError").TextColor(colors.Danger).FontSize(design.TextSmall).Selectable()
+				ui.Text(c.Key("aiError"), p.err).TextColor(colors.Danger).FontSize(design.TextSmall).Selectable()
 			}
 		})
 	})
@@ -1240,7 +1240,7 @@ func (a *app) aiWelcomeView(c *ui.Context, colors design.Colors) {
 		}
 		for _, st := range starters {
 			item := st
-			b := ui.ButtonBase(c).Key(item.key).Padding(8, 10).Radius(design.RadiusRow).
+			b := ui.ButtonBase(c.Key(item.key)).Padding(8, 10).Radius(design.RadiusRow).
 				Background(colors.Hover).Border(1, colors.Hairline).Transition(design.Hover)
 			if b.Hovered() {
 				b.Background(colors.Selected)
@@ -1366,7 +1366,7 @@ func (a *app) renderToolCard(c *ui.Context, colors design.Colors, turnIdx, sIdx,
 	}
 
 	ui.Column(c).Padding(7, 10).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
-		hdr := ui.ButtonBase(c).Key(fmt.Sprintf("aiTool:%d:%d:%d", turnIdx, sIdx, tIdx)).
+		hdr := ui.ButtonBase(c.Key(fmt.Sprintf("aiTool:%d:%d:%d", turnIdx, sIdx, tIdx))).
 			OnClick(func() {
 				tool.Expanded = !tool.Expanded
 			})
@@ -1431,7 +1431,7 @@ func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx 
 					if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
 						copyKey = "aiCopyBtn"
 					}
-					ui.Button(c, "复制命令").Key(copyKey).Height(26).Padding(0, 10).OnClick(func() {
+					ui.Button(c.Key(copyKey), "复制命令").Height(26).Padding(0, 10).OnClick(func() {
 						c.WriteClipboard(cmdVal)
 						a.toast(ui.Toast{Title: "命令已复制到剪贴板"})
 					})
@@ -1442,7 +1442,7 @@ func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx 
 						if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
 							insertKey = "aiInsertBtn"
 						}
-						ui.PrimaryButton(c, "填入终端（需确认）").Key(insertKey).Height(26).Padding(0, 10).OnClick(func() {
+						ui.PrimaryButton(c.Key(insertKey), "填入终端（需确认）").Height(26).Padding(0, 10).OnClick(func() {
 							a.insertCommandToTerminal(cmdVal)
 						})
 					}
@@ -1614,10 +1614,10 @@ func (a *app) aiApprovalCard(c *ui.Context, colors design.Colors, ap *aiApproval
 			ui.Text(c, ap.command).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
 		})
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, "拒绝").Key("aiDenyBtn").Height(26).Padding(0, 12).OnClick(func() {
+			ui.Button(c.Key("aiDenyBtn"), "拒绝").Height(26).Padding(0, 12).OnClick(func() {
 				a.resolveAgentApproval(ap, false)
 			})
-			ui.PrimaryButton(c, "允许执行").Key("aiApproveBtn").Height(26).Padding(0, 12).OnClick(func() {
+			ui.PrimaryButton(c.Key("aiApproveBtn"), "允许执行").Height(26).Padding(0, 12).OnClick(func() {
 				a.resolveAgentApproval(ap, true)
 			})
 		})
@@ -1653,7 +1653,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 					if strings.HasPrefix(p.query, "/") && len(p.query) > 1 && !strings.HasPrefix(item.Cmd, strings.TrimSpace(p.query)) {
 						continue
 					}
-					row := ui.ButtonBase(c).Key("aiSlash:"+item.Cmd).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
+					row := ui.ButtonBase(c.Key("aiSlash:"+item.Cmd)).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() {
 						row.Background(colors.Selected)
 					}
@@ -1674,7 +1674,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 				for _, opt := range aiMentionOptions {
 					item := opt
-					row := ui.ButtonBase(c).Key("aiMention:"+item.ID).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
+					row := ui.ButtonBase(c.Key("aiMention:"+item.ID)).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() {
 						row.Background(colors.Selected)
 					}
@@ -1703,7 +1703,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 						Background(t.Accent.Alpha(0.12)).Border(1, t.Accent.Alpha(0.28))
 					chip.Children(func() {
 						ui.Text(c, mentionLabel(ctxID)).FontSize(design.TextSmall - 0.5).TextColor(t.Accent)
-						ui.ButtonBase(c).Key("aiDropCtx:"+ctxID).Label("移除 "+mentionLabel(ctxID)).Size(14, 14).Center().Children(func() {
+						ui.ButtonBase(c.Key("aiDropCtx:"+ctxID)).Label("移除 "+mentionLabel(ctxID)).Size(14, 14).Center().Children(func() {
 							ui.Icon(c, design.Icon("x")).FontSize(10).TextColor(t.Accent)
 						}).OnClick(func() {
 							a.removeAIContext(ctxID)
@@ -1728,12 +1728,12 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 			in.OnSubmit(a.submitAIInput)
 
 			ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
-				ui.Button(c, "@").Key("aiMentionBtn").Label("引用上下文").Tooltip("@ 引用终端或主机上下文").
+				ui.Button(c.Key("aiMentionBtn"), "@").Label("引用上下文").Tooltip("@ 引用终端或主机上下文").
 					Height(24).Padding(0, 7).OnClick(func() {
 					p.showMentions = !p.showMentions
 					p.showSlash = false
 				})
-				ui.Button(c, "/").Key("aiSlashBtn").Label("快捷指令").Tooltip("/ 快捷运维指令").
+				ui.Button(c.Key("aiSlashBtn"), "/").Label("快捷指令").Tooltip("/ 快捷运维指令").
 					Height(24).Padding(0, 7).OnClick(func() {
 					p.showSlash = !p.showSlash
 					p.showMentions = false
@@ -1826,13 +1826,13 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 				}).Height(24).Padding(0, 8).Shrink(0)
 
 				if p.loading {
-					ui.Button(c, locales.AiStop()).Key("aiStopBtn").Height(26).Padding(0, 10).OnClick(a.stopAIRequest)
+					ui.Button(c.Key("aiStopBtn"), locales.AiStop()).Height(26).Padding(0, 10).OnClick(a.stopAIRequest)
 				} else {
 					sendLabel := "发送"
 					if len(p.turns) == 0 && p.contextError != "" && strings.TrimSpace(p.query) == "" {
 						sendLabel = "分析报错"
 					}
-					ui.PrimaryButton(c, sendLabel).Key("aiSubmitBtn").Height(26).Padding(0, 12).OnClick(a.submitAIInput)
+					ui.PrimaryButton(c.Key("aiSubmitBtn"), sendLabel).Height(26).Padding(0, 12).OnClick(a.submitAIInput)
 				}
 			})
 		})

@@ -229,8 +229,8 @@ func (a *app) editorDialog(c *ui.Context, colors design.Colors) {
 				Font(design.FontTerminal).FontSize(design.TextBody).
 				ReadOnly(ed.busy).AutoFocus()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, "关闭").Key("editorClose").Disabled(ed.busy).OnClick(func() { a.requestCloseEditor() })
-				ui.PrimaryButton(c, saveText).Key("editorSave").Disabled(ed.busy).OnClick(func() { a.saveEditor(false) })
+				ui.Button(c.Key("editorClose"), "关闭").Disabled(ed.busy).OnClick(func() { a.requestCloseEditor() })
+				ui.PrimaryButton(c.Key("editorSave"), saveText).Disabled(ed.busy).OnClick(func() { a.saveEditor(false) })
 			})
 		})
 	})

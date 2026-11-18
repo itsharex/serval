@@ -6,7 +6,7 @@ tool github.com/egoist/mygo/cmd/mygo
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/egoist/mygo v0.9.0
+	github.com/egoist/mygo v0.10.0
 	github.com/pkg/sftp v1.13.12
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.62.0

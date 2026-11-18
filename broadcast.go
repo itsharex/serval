@@ -314,7 +314,7 @@ func (a *app) joinAllBroadcastInTab(t *tab) {
 func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 	theme := c.Theme()
 	t := a.current()
-	ui.Row(c).Key("broadcastBar").Height(34).Shrink(0).Padding(0, design.Gap+4).Gap(8).
+	ui.Row(c.Key("broadcastBar")).Height(34).Shrink(0).Padding(0, design.Gap+4).Gap(8).
 		AlignItems(ui.Center).Background(theme.Accent.Alpha(0.08)).
 		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 		ui.Icon(c, design.Icon("radio")).FontSize(13).TextColor(theme.Accent)
@@ -324,7 +324,7 @@ func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 		if t != nil && t.root != nil {
 			var panes []*pane
 			t.root.each(func(p *pane) { panes = append(panes, p) })
-			ui.ScrollHorizontal(c).Key("broadcastChipsScroll").Grow(1).MinWidth(0).Height(26).
+			ui.ScrollHorizontal(c.Key("broadcastChipsScroll")).Grow(1).MinWidth(0).Height(26).
 				Scrollbars(false).AlignItems(ui.Center).Gap(6).Children(func() {
 				for i, p := range panes {
 					ord := i + 1
@@ -338,7 +338,7 @@ func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 							fg, bg = theme.Accent, theme.Accent.Alpha(0.16)
 						}
 					}
-					chipBtn := ui.ButtonBase(c).Key(fmt.Sprintf("bcastChip:%d", p.id)).
+					chipBtn := ui.ButtonBase(c.Key(fmt.Sprintf("bcastChip:%d", p.id))).
 						Label(fmt.Sprintf("切换广播窗格 %d", ord)).
 						Tooltip(fmt.Sprintf("%s #%d（点击加入或移出广播）", tabLabel(t), ord)).
 						Height(22).Padding(0, 8).Gap(5).Radius(design.RadiusChip).
@@ -361,7 +361,7 @@ func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 					})
 				}
 			})
-			ui.ButtonBase(c).Key("broadcastSelectAll").Label("全选当前窗格").
+			ui.ButtonBase(c.Key("broadcastSelectAll")).Label("全选当前窗格").
 				Height(24).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
 				Background(colors.Card).Border(1, colors.CardBorder).Transition(design.Hover).
 				Children(func() {
@@ -373,7 +373,7 @@ func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 			ui.Spacer(c)
 		}
 
-		exitBtn := ui.ButtonBase(c).Key("exitAllBroadcast").Label("退出广播").Tooltip("退出全部广播").
+		exitBtn := ui.ButtonBase(c.Key("exitAllBroadcast")).Label("退出广播").Tooltip("退出全部广播").
 			Height(24).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
 			Background(theme.Accent.Alpha(0.14)).Transition(design.Hover)
 		if exitBtn.Hovered() {

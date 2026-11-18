@@ -168,7 +168,7 @@ type pillMatch struct{ list string }
 // raised 为 true 时是浅色下的白色浮起胶囊（深色下是一层提亮）；否则是一层淡淡的底色。
 func selectionPill(c *ui.Context, colors design.Colors, list string, bg ui.Color, raised bool) {
 	// 绝对定位的元素默认画在同级元素上面，必须用负的 ZIndex 压到文字下面，否则会盖住内容。
-	pill := ui.Box(c).Key("pill").Absolute().Top(0).Left(0).Right(0).Bottom(0).ZIndex(-1).Radius(design.RadiusRow).
+	pill := ui.Box(c.Key("pill")).Absolute().Top(0).Left(0).Right(0).Bottom(0).ZIndex(-1).Radius(design.RadiusRow).
 		Background(bg).AccessHidden(true).PassThrough()
 	if raised {
 		pill.Shadow(0, 1, 2, 0, colors.SelectedShadow)
@@ -186,7 +186,7 @@ func sidebarIconButton(c *ui.Context, colors design.Colors, key, icon, label str
 	if count > 0 {
 		tip = fmt.Sprintf("%s（%d）", label, count)
 	}
-	b := ui.ButtonBase(c).Key(key).Label(label).Tooltip(tip).
+	b := ui.ButtonBase(c.Key(key)).Label(label).Tooltip(tip).
 		Height(30).Grow(1).Center().Gap(3).Radius(design.RadiusRow).Transition(design.Hover)
 	if b.Hovered() {
 		b.Background(colors.Hover)
@@ -238,8 +238,8 @@ func (a *app) groupDialog(c *ui.Context, colors design.Colors) {
 				ui.Text(c, a.groupSheet.err).FontSize(design.TextSmall).TextColor(t.Danger)
 			}
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Cancel()).Key("groupCancel").OnClick(func() { a.groupSheet = groupDialogState{} })
-				ui.PrimaryButton(c, submit).Key("groupSubmit").OnClick(a.submitGroupDialog)
+				ui.Button(c.Key("groupCancel"), locales.Cancel()).OnClick(func() { a.groupSheet = groupDialogState{} })
+				ui.PrimaryButton(c.Key("groupSubmit"), submit).OnClick(a.submitGroupDialog)
 			})
 		})
 	})
@@ -260,20 +260,20 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	bar := a.titleBar(c)
 	// 侧栏的宽度一步到位（不让终端逐帧改尺寸），内容从左侧滑入、淡入。
-	ui.Column(c).Key("sidebar").Width(a.effectiveSidebarWidth()).Shrink(0).DragWindow().Transition(design.SlideIn(-14)).Children(func() {
+	ui.Column(c.Key("sidebar")).Width(a.effectiveSidebarWidth()).Shrink(0).DragWindow().Transition(design.SlideIn(-14)).Children(func() {
 		ui.Box(c).Height(max(bar.Height, 12)).Shrink(0)
 
 		ui.Column(c).Padding(2, 12, 10, 12).Children(func() {
 			// 搜索框 + 清除按钮 + 快捷键提示 + 顶部“+”新建菜单（添加主机 / 本地终端 / 新建分组）。
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Row(c).Key("hostFilterRow").Height(32).Grow(1).MinWidth(0).Padding(0, 4, 0, 10).Gap(4).
+				ui.Row(c.Key("hostFilterRow")).Height(32).Grow(1).MinWidth(0).Padding(0, 4, 0, 10).Gap(4).
 					AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 					ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted).Shrink(0)
 					c.Key("hostFilter")
 					ui.TextInput(c, &a.hostFilter).Placeholder("过滤主机").Label("过滤主机").
 						Grow(1).MinWidth(0).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
 					if a.hostFilter != "" {
-						clr := ui.ButtonBase(c).Key("clearHostFilterInput").Label("清除过滤").Tooltip("清除过滤文字").
+						clr := ui.ButtonBase(c.Key("clearHostFilterInput")).Label("清除过滤").Tooltip("清除过滤文字").
 							Size(20, 20).Center().Radius(4).Shrink(0).Transition(design.Hover)
 						if clr.Hovered() {
 							clr.Background(colors.Hover)
@@ -282,7 +282,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 							ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 						}).OnClick(func() { a.hostFilter = "" })
 					}
-					cmd := ui.ButtonBase(c).Key("openPalette").Label(locales.ViewSearchHostsAndActions()).
+					cmd := ui.ButtonBase(c.Key("openPalette")).Label(locales.ViewSearchHostsAndActions()).
 						Height(22).MinWidth(22).Padding(0, 5).Center().Radius(6).Shrink(0).
 						Tooltip("命令面板（" + shortcutText("K") + "）")
 					if cmd.Hovered() {
@@ -296,7 +296,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						}
 					}).OnClick(a.openPalette)
 				})
-				addMenuBtn := ui.ButtonBase(c).Key("sidebarAddMenu").Label("新建").Tooltip("新建主机、本地终端或分组").
+				addMenuBtn := ui.ButtonBase(c.Key("sidebarAddMenu")).Label("新建").Tooltip("新建主机、本地终端或分组").
 					Size(30, 30).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
 				if addMenuBtn.Hovered() {
 					addMenuBtn.Background(colors.Hover)
@@ -316,7 +316,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					}
 				})
 				if len(a.hosts) > 0 {
-					probeBtn := ui.ButtonBase(c).Key("probeHosts").Label("检测连通性").Tooltip("检测全部主机连通性").
+					probeBtn := ui.ButtonBase(c.Key("probeHosts")).Label("检测连通性").Tooltip("检测全部主机连通性").
 						Size(30, 30).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
 					if probeBtn.Hovered() {
 						probeBtn.Background(colors.Hover)
@@ -331,7 +331,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					a.activeTag = ""
 				}
 				ui.Scroll(c).MaxHeight(58).Children(func() {
-					ui.Row(c).Key("tagFilterRow").Padding(6, 0, 0, 0).Gap(5).Wrap().Children(func() {
+					ui.Row(c.Key("tagFilterRow")).Padding(6, 0, 0, 0).Gap(5).Wrap().Children(func() {
 						for _, tag := range allTags {
 							tagName := tag
 							selected := a.activeTag == tagName
@@ -339,7 +339,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 							if selected {
 								fg, bg = t.Accent, t.Accent.Alpha(0.16)
 							}
-							b := ui.ButtonBase(c).Key("tagFilter:"+tagName).Label("筛选标签 "+tagName).
+							b := ui.ButtonBase(c.Key("tagFilter:"+tagName)).Label("筛选标签 "+tagName).
 								Height(22).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).
 								Background(bg).Transition(design.Hover)
 							if !selected && b.Hovered() {
@@ -368,7 +368,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				if filtering {
 					ui.Row(c).Padding(4, 8).Radius(design.RadiusRow).Background(colors.Hover).AlignItems(ui.Center).Gap(6).Children(func() {
 						ui.Text(c, locales.HostFilterSortHint()).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Grow(1)
-						ui.ButtonBase(c).Key("clearHostFilter").Label("清空").Children(func() {
+						ui.ButtonBase(c.Key("clearHostFilter")).Label("清空").Children(func() {
 							ui.Text(c, "清空").FontSize(design.TextSmall - 1).TextColor(t.Accent).FontWeight(600)
 						}).OnClick(func() {
 							a.hostFilter = ""
@@ -399,12 +399,12 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						continue
 					}
 					collapsed := a.groupCollapsed(group)
-					ui.Column(c).Key("group:" + group).Gap(2).Children(func() {
+					ui.Column(c.Key("group:" + group)).Gap(2).Children(func() {
 						iconName, action := "chevron-down", "折叠"
 						if collapsed {
 							iconName, action = "chevron-right", "展开"
 						}
-						header := ui.ButtonBase(c).Key("groupToggle:"+group).Label(action+" "+group).
+						header := ui.ButtonBase(c.Key("groupToggle:"+group)).Label(action+" "+group).
 							Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
 							Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.groupMenu(group))
 						var groupInsertLine bool
@@ -440,7 +440,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						}
 						if !filtering && len(rows) > 0 {
 							lastID := rows[len(rows)-1].ID
-							endDrop := ui.Box(c).Key("groupEnd:" + group).Height(8).Shrink(0)
+							endDrop := ui.Box(c.Key("groupEnd:" + group)).Height(8).Shrink(0)
 							var endInsertLine bool
 							if dragged, ok := ui.DragOver[hostDrag](endDrop); ok && dragged.ID != lastID {
 								endInsertLine = true
@@ -465,7 +465,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 			noticeBanner(c, colors, "hostsError", "dismissHostsError", "关闭系统错误", a.hostsError, func() { a.hostsError = "" })
 			noticeBanner(c, colors, "notice", "dismissNotice", "关闭通知", a.notice, func() { a.notice = "" })
 			a.syncStatus(c, colors)
-			ui.Row(c).Key("sidebarToolbar").Gap(4).AlignItems(ui.Center).Children(func() {
+			ui.Row(c.Key("sidebarToolbar")).Gap(4).AlignItems(ui.Center).Children(func() {
 				sidebarIconButton(c, colors, "openKeys", "key-round", locales.ViewKeys(), len(a.keys), a.openKeys)
 				sidebarIconButton(c, colors, "openProxies", "globe", locales.Proxy(), len(a.proxies), a.openProxies)
 				sidebarIconButton(c, colors, "openForwards", "arrow-left-right", locales.PortForward(), len(a.forwards), a.openForwards)
@@ -484,7 +484,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 
 func (a *app) sidebarResizeHandle(c *ui.Context, colors design.Colors) {
 	// 放在侧栏最右侧 6px 范围内，紧邻内容区左缘而不伸进内容区，避免后续列遮挡命中区域。
-	grip := ui.Box(c).Key("sidebarResize").Width(6).Shrink(0).Margin(0, 0, 0, -6).
+	grip := ui.Box(c.Key("sidebarResize")).Width(6).Shrink(0).Margin(0, 0, 0, -6).
 		Cursor(ui.CursorResizeEW).Focusable().Label("调整侧栏宽度")
 	dx, _, held := grip.Dragged()
 	if a.sidebarWidth <= 0 {
@@ -525,10 +525,10 @@ func noticeBanner(c *ui.Context, colors design.Colors, key, dismissKey, dismissL
 	if message == "" {
 		return
 	}
-	ui.Row(c).Key(key).Padding(6, 6, 6, 10).Margin(0, 0, 4, 0).Gap(6).AlignItems(ui.Start).
+	ui.Row(c.Key(key)).Padding(6, 6, 6, 10).Margin(0, 0, 4, 0).Gap(6).AlignItems(ui.Start).
 		Radius(design.RadiusRow).Background(colors.DangerSoft).Children(func() {
 		ui.Text(c, message).FontSize(design.TextSmall).TextColor(colors.Danger).Grow(1).MinWidth(0).Selectable()
-		btn := ui.ButtonBase(c).Key(dismissKey).Size(20, 20).Center().Radius(4).Shrink(0).
+		btn := ui.ButtonBase(c.Key(dismissKey)).Size(20, 20).Center().Radius(4).Shrink(0).
 			Label(dismissLabel).Tooltip(dismissLabel).Transition(design.Hover)
 		if btn.Hovered() {
 			btn.Background(colors.Danger.Alpha(0.14))
@@ -562,7 +562,7 @@ func (a *app) syncStatus(c *ui.Context, colors design.Colors) {
 		caption = "同步正常"
 		tip = "上次同步 " + formatSyncTime(a.lastSync)
 	}
-	row := ui.ButtonBase(c).Key("syncStatus").Label("同步状态").Tooltip(tip).Height(28).Padding(0, 8).Gap(8).
+	row := ui.ButtonBase(c.Key("syncStatus")).Label("同步状态").Tooltip(tip).Height(28).Padding(0, 8).Gap(8).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 	if row.Hovered() {
 		row.Background(colors.Hover)
@@ -585,7 +585,7 @@ func (a *app) sidebarEmpty(c *ui.Context) {
 		ui.Text(c, locales.ViewNoHostsHint()).
 			FontSize(design.TextSmall).TextColor(t.TextMuted)
 		if a.vault != nil && a.vault.Empty() {
-			ui.Button(c, "从同步恢复").Key("restoreOpen").OnClick(a.openRestore)
+			ui.Button(c.Key("restoreOpen"), "从同步恢复").OnClick(a.openRestore)
 		}
 	})
 }
@@ -642,7 +642,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 
 	// 外层负责背景、悬停和选中高亮，里面并排放主机按钮和“更多”按钮。
 	// 两个按钮不能嵌套：嵌在按钮里的按钮，读屏软件和键盘都找不到。
-	line := ui.Row(c).Key("line:"+h.ID).AlignItems(ui.Center).Padding(0, 6, 0, 0).
+	line := ui.Row(c.Key("line:"+h.ID)).AlignItems(ui.Center).Padding(0, 6, 0, 0).
 		Radius(design.RadiusRow).Transition(design.Hover)
 	hovered := line.Hovered()
 	if !selected && hovered {
@@ -668,7 +668,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		if selected {
 			selectionPill(c, colors, "hosts", colors.Selected, true)
 		}
-		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Tooltip(hostTooltip(h, health)).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("host:"+h.ID)).Label(h.Name).Tooltip(hostTooltip(h, health)).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		if !filtering {
 			row.Drag(hostDrag{ID: h.ID})
@@ -719,7 +719,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		// “更多”按钮只在悬停或选中时出现，打开和右键相同的菜单：
 		// 不知道可以右键的人也能找到编辑和删除。键盘用户在行上按菜单键或 Shift+F10。
 		if hovered || selected {
-			more := ui.ButtonBase(c).Key("more:"+h.ID).Label(locales.MoreActions()).Size(24, 24).Radius(6).Shrink(0).Transition(design.Hover)
+			more := ui.ButtonBase(c.Key("more:"+h.ID)).Label(locales.MoreActions()).Size(24, 24).Radius(6).Shrink(0).Transition(design.Hover)
 			if more.Hovered() {
 				more.Background(colors.Hover)
 			}
@@ -747,7 +747,7 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 		hasConnectingTabs := len(tabs) > 0 && len(a.connecting) > 0
 		ui.Row(c).Grow(1).MinWidth(0).Gap(4).AlignItems(ui.Center).Children(func() {
 			if len(tabs) > 0 || hasConnectingTabs {
-				ui.ScrollHorizontal(c).Key("tabScroll").Shrink(1).MinWidth(0).Height(32).
+				ui.ScrollHorizontal(c.Key("tabScroll")).Shrink(1).MinWidth(0).Height(32).
 					Scrollbars(false).Gap(4).AlignItems(ui.Center).Children(func() {
 					for i, t := range tabs {
 						a.tabItem(c, colors, i, t, tabs)
@@ -759,12 +759,12 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 					}
 				})
 			}
-			iconButton(c, colors, "plus", "新建标签页", func() { a.openLocalTerminal() }).
-				Key("newTabBtn").Tooltip("新建本地终端")
+			iconButton(c.Key("newTabBtn"), colors, "plus", "新建标签页", func() { a.openLocalTerminal() }).
+				Tooltip("新建本地终端")
 		})
 		if t := a.current(); t != nil {
 			if !t.local && !a.isSavedHost(t.host.ID) { // 本地终端不是主机，不能保存
-				ui.Button(c, locales.ViewSaveAsHost()).Key("saveAsHost").Height(28).Padding(0, 8).
+				ui.Button(c.Key("saveAsHost"), locales.ViewSaveAsHost()).Height(28).Padding(0, 8).
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
 			iconButton(c, colors, "search", locales.ViewFindShortcut(shortcutText("F")), func() { a.openSearch(t) })
@@ -772,7 +772,7 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 				iconButton(c, colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
 			}
 		}
-		aiBtn := iconButton(c, colors, "sparkles", "AI Agent（"+shortcutText("I")+"）", a.toggleAI).Key("tabToggleAI")
+		aiBtn := iconButton(c.Key("tabToggleAI"), colors, "sparkles", "AI Agent（"+shortcutText("I")+"）", a.toggleAI)
 		if a.ai.open {
 			aiBtn.Background(c.Theme().Accent.Alpha(0.14))
 		}
@@ -797,13 +797,13 @@ func (a *app) connectingTabPill(c *ui.Context, colors design.Colors, hostID stri
 		phase = locales.ViewConnecting()
 	}
 	cancel := a.connecting[hostID]
-	ui.Row(c).Key("connectingTab:"+hostID).Height(28).MinWidth(110).MaxWidth(240).Shrink(0).
+	ui.Row(c.Key("connectingTab:"+hostID)).Height(28).MinWidth(110).MaxWidth(240).Shrink(0).
 		Padding(0, 8, 0, 10).Gap(6).AlignItems(ui.Center).Radius(design.RadiusRow).
 		Background(colors.Card).Border(1, theme.Accent.Alpha(0.35)).Tooltip(phase).Children(func() {
 		design.DistroCoatView(c, h.ID, h.Distro, h.Production, 14)
 		ui.Text(c, name).TextColor(theme.Text).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 		ui.Text(c, phase).TextColor(theme.TextMuted).FontSize(design.TextSmall - 0.5).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-		ui.ButtonBase(c).Key("cancelConnectTab:"+hostID).Label("取消连接 "+name).Tooltip("取消连接").
+		ui.ButtonBase(c.Key("cancelConnectTab:"+hostID)).Label("取消连接 "+name).Tooltip("取消连接").
 			Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
 			ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 		}).OnClick(func() {
@@ -886,7 +886,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 	title := displayTabTitle(tabs, i)
 	// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
-	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(title).AccessSelected(selected).
+	item := ui.ButtonBase(c.Key(fmt.Sprintf("tab:%d", t.id))).Label(title).AccessSelected(selected).
 		Height(28).MinWidth(88).MaxWidth(200).Shrink(0).Padding(0, 10).Gap(8).AlignItems(ui.Center).
 		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t)).Drag(tabDrag{ID: t.id})
 	if selected && t.id != a.lastScrolledTabID {
@@ -920,7 +920,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 		}
 		ui.Text(c, title).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 		if hovered || selected {
-			ui.ButtonBase(c).Key("close").Label(locales.ViewCloseTab(title)).Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
+			ui.ButtonBase(c.Key("close")).Label(locales.ViewCloseTab(title)).Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
 				ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 			}).OnClick(func() { a.closeTab(t) })
 		}
@@ -1024,7 +1024,7 @@ func (a *app) workspace(c *ui.Context, colors design.Colors) {
 				a.emptyState(c, colors)
 			})
 		} else {
-			ui.Column(c).Key(t.id).Grow(1).MinWidth(0).Children(func() {
+			ui.Column(c.Key(t.id)).Grow(1).MinWidth(0).Children(func() {
 				if !a.sidebarOpen && (a.hostsError != "" || a.notice != "") {
 					ui.Column(c).Padding(design.Gap/2, design.Gap/2, 0, design.Gap/2).Children(func() {
 						noticeBanner(c, colors, "hostsError", "dismissHostsError", "关闭系统错误", a.hostsError, func() { a.hostsError = "" })
@@ -1078,13 +1078,13 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 						design.DistroCoatView(c, h.ID, h.Distro, h.Production, 18)
 						ui.Text(c, name).FontWeight(500)
 						ui.Text(c, phase).FontSize(design.TextSmall).TextColor(t.TextMuted)
-						ui.Button(c, "取消连接").Key("cancelConnect:"+hostID).Height(24).Padding(0, 8).OnClick(cancel)
+						ui.Button(c.Key("cancelConnect:"+hostID), "取消连接").Height(24).Padding(0, 8).OnClick(cancel)
 					})
 				}
 			}
 		}
 		if len(a.hosts) == 0 {
-			ui.PrimaryButton(c, locales.AddHost()).Key("addFirst").OnClick(func() { a.openAdd() })
+			ui.PrimaryButton(c.Key("addFirst"), locales.AddHost()).OnClick(func() { a.openAdd() })
 			return
 		}
 		var recents []hosts.Host
@@ -1102,7 +1102,7 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.EmptyRecentHosts()).FontSize(design.TextSmall).FontWeight(600).TextColor(colors.TextFaint)
 				for _, h := range recents {
 					host := h
-					btn := ui.ButtonBase(c).Key("recent:"+host.ID).Label("连接 "+host.Name).
+					btn := ui.ButtonBase(c.Key("recent:"+host.ID)).Label("连接 "+host.Name).
 						Height(32).Padding(0, 8).Gap(8).Justify(ui.Start).AlignItems(ui.Center).
 						Radius(design.RadiusRow).Transition(design.Hover)
 					if btn.Hovered() {
@@ -1142,7 +1142,7 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		quiet := *c.Theme()
 		quiet.Border = ui.Transparent
 		// Themed 默认会铺上主题的底色，这里要透明，否则渐变背景上会多出一块矩形。
-		ui.Themed(c, &quiet).Key(p.id).Background(ui.Transparent).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+		ui.Themed(c.Key(p.id), &quiet).Background(ui.Transparent).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
 			if p.vertical {
 				ui.SplitVerticalPercent(c, &p.percent, first, second).Grow(1).MinHeight(0)
 			} else {
@@ -1153,7 +1153,7 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	}
 	focused := p == t.focus
 	dim := !focused && t.root.leaves() > 1
-	card := raised(ui.Column(c).Key(p.id).Grow(1).MinWidth(0).MinHeight(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	card := raised(ui.Column(c.Key(p.id)).Grow(1).MinWidth(0).MinHeight(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	// 新窗格从略小、半透明弹到正常大小。用的是姿态动画：只重绘、不重建界面，
 	// 也不改变布局尺寸，所以终端不会在动画过程中逐帧改尺寸。
 	pose := ui.Pose{}
@@ -1170,12 +1170,12 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	card.Children(func() {
 		a.paneHeader(c, colors, t, p)
 		if p.ended && !t.reconnecting {
-			ui.Row(c).Key(fmt.Sprintf("endedBanner:%d", p.id)).Height(32).Shrink(0).Padding(0, 12).Gap(8).
+			ui.Row(c.Key(fmt.Sprintf("endedBanner:%d", p.id))).Height(32).Shrink(0).Padding(0, 12).Gap(8).
 				AlignItems(ui.Center).Background(colors.DangerSoft).BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 				ui.Icon(c, design.Icon("cloud-off")).FontSize(14).TextColor(colors.Danger)
 				ui.Text(c, locales.PaneDisconnected()).FontSize(design.TextSmall).FontWeight(500).TextColor(c.Theme().Text).Grow(1)
-				ui.Button(c, locales.Reconnect()).Key("bannerReconnect").Height(24).Padding(0, 8).OnClick(func() { a.reconnect(t) })
-				ui.Button(c, locales.PaneCloseTab()).Key("bannerClose").Height(24).Padding(0, 8).OnClick(func() { a.closeTab(t) })
+				ui.Button(c.Key("bannerReconnect"), locales.Reconnect()).Height(24).Padding(0, 8).OnClick(func() { a.reconnect(t) })
+				ui.Button(c.Key("bannerClose"), locales.PaneCloseTab()).Height(24).Padding(0, 8).OnClick(func() { a.closeTab(t) })
 			})
 		}
 		if p.searchOpen {
@@ -1243,13 +1243,13 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		user, dir := paneUserAndDir(t, p)
 		if user != "" {
 			if user == "root" {
-				ui.Row(c).Key(fmt.Sprintf("paneUser:%d", p.id)).Height(20).Padding(0, 7).Gap(4).
+				ui.Row(c.Key(fmt.Sprintf("paneUser:%d", p.id))).Height(20).Padding(0, 7).Gap(4).
 					Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).Background(colors.DangerSoft).Children(func() {
 					ui.Box(c).Size(5, 5).Radius(3).Background(colors.Danger)
 					ui.Text(c, user).TextColor(colors.Danger).FontWeight(700).FontSize(design.TextSmall - 0.5).NoWrap()
 				})
 			} else {
-				chip(c, user, theme.TextMuted, colors.Chip).Key(fmt.Sprintf("paneUser:%d", p.id))
+				chip(c.Key(fmt.Sprintf("paneUser:%d", p.id)), user, theme.TextMuted, colors.Chip)
 			}
 		}
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
@@ -1260,17 +1260,17 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		})
 		switch {
 		case t.reconnecting:
-			chip(c, locales.ViewReconnecting(t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
-			ui.ButtonBase(c).Key("cancelReconnect").Label(locales.Cancel()).Shrink(0).Children(func() {
+			chip(c.Key("status"), locales.ViewReconnecting(t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14))
+			ui.ButtonBase(c.Key("cancelReconnect")).Label(locales.Cancel()).Shrink(0).Children(func() {
 				ui.Text(c, locales.Cancel()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.cancelReconnect(t) })
 		case p.ended:
-			ui.Text(c, locales.ViewSessionEnded()).Key("status").TextColor(theme.TextMuted).NoWrap().Shrink(0)
-			ui.ButtonBase(c).Key("reconnect").Label(locales.Reconnect()).Shrink(0).Children(func() {
+			ui.Text(c.Key("status"), locales.ViewSessionEnded()).TextColor(theme.TextMuted).NoWrap().Shrink(0)
+			ui.ButtonBase(c.Key("reconnect")).Label(locales.Reconnect()).Shrink(0).Children(func() {
 				ui.Text(c, locales.Reconnect()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.reconnect(t) })
 		case t.local:
-			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewLocal()).Children(func() {
+			ui.Row(c.Key("status")).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewLocal()).Children(func() {
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
 				dot.Scale(s, s)
@@ -1279,7 +1279,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				}
 			})
 		case t.stalled:
-			chip(c, locales.ViewServerUnresponsive(), theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
+			chip(c.Key("status"), locales.ViewServerUnresponsive(), theme.Warning, theme.Warning.Alpha(0.14))
 		default:
 			if t.host.Production {
 				label := locales.ViewProduction()
@@ -1288,7 +1288,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				}
 				chip(c, label, colors.Danger, colors.DangerSoft)
 			}
-			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected()).Children(func() {
+			ui.Row(c.Key("status")).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected()).Children(func() {
 				// 圆点第一次出现时（连上、或从“无响应”恢复）放大回弹一次，提示状态变好了。
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
@@ -1319,7 +1319,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			if t.host.Production {
 				fg, bg = colors.Danger, colors.DangerSoft
 			}
-			b := ui.ButtonBase(c).Key(fmt.Sprintf("paneBroadcast:%d", p.id)).
+			b := ui.ButtonBase(c.Key(fmt.Sprintf("paneBroadcast:%d", p.id))).
 				Label(fmt.Sprintf("移出窗格广播：%s %d", t.host.Name, paneOrdinal(t.root, p))).
 				Tooltip("点击移出广播").
 				Height(20).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
@@ -1338,7 +1338,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if t.root.leaves() > 1 {
 			moreLabel = fmt.Sprintf("%s %d", locales.PaneMoreActions(), paneOrdinal(t.root, p))
 		}
-		moreBtn := ui.ButtonBase(c).Key(fmt.Sprintf("paneMore:%d", p.id)).Label(moreLabel).Tooltip(locales.PaneMoreActions()).
+		moreBtn := ui.ButtonBase(c.Key(fmt.Sprintf("paneMore:%d", p.id))).Label(moreLabel).Tooltip(locales.PaneMoreActions()).
 			Size(26, 26).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
 		if moreBtn.Hovered() {
 			moreBtn.Background(colors.Hover)
@@ -1396,7 +1396,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 	}
 	// 终端与文件抽屉之间的拖动分隔条：负外边距贴在两张卡片之间的空隙里，不改变卡片间距；
 	// 拖动改变抽屉宽度，双击恢复默认宽度。
-	grip := ui.Box(c).Key("drawerResize").Width(8).Shrink(0).Margin(design.Gap/2, -4).
+	grip := ui.Box(c.Key("drawerResize")).Width(8).Shrink(0).Margin(design.Gap/2, -4).
 		Cursor(ui.CursorResizeEW).Focusable().Label("调整文件抽屉宽度")
 	dx, _, held := grip.Dragged()
 	switch {
@@ -1416,11 +1416,11 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 		})
 	}
 	// 两栏并排，支持拖动调整抽屉总宽和内部左右栏比例；不做宽度动画，避免终端连续收到几十次 SIGWINCH。
-	drawer := raised(ui.Column(c).Key("drawer").Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	drawer := raised(ui.Column(c.Key("drawer")).Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	// 抽屉的宽度一步到位，终端只改一次尺寸；内容从右侧滑入。
 	// 之前用 Collapse 让宽度从 0 长大，会让终端逐帧改尺寸，已改掉。
 	drawer.Transition(design.SlideIn(18)).Children(func() {
-		ui.Row(c).Key("filesHeader").Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).
+		ui.Row(c.Key("filesHeader")).Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 			theme := c.Theme()
 			ui.Icon(c, design.Icon("folder")).FontSize(13).TextColor(theme.Accent)
@@ -1432,11 +1432,11 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 			} else {
 				ui.Spacer(c)
 			}
-			iconButton(c, colors, "x", "关闭文件抽屉", func() {
+			iconButton(c.Key("filesClose"), colors, "x", "关闭文件抽屉", func() {
 				a.filesOpen = false
 				t.filesOpen = false
 			}).
-				Key("filesClose").Tooltip("关闭文件抽屉（" + shortcutText("J") + "）")
+				Tooltip("关闭文件抽屉（" + shortcutText("J") + "）")
 		})
 		// 抽屉本身接收拖放，目标是当前列出的目录，不是终端的工作目录。
 		// 平时不铺接收层，避免挡住列表；有文件悬停时再盖一层提示，宽度不变，终端不会跟着改尺寸。
@@ -1478,11 +1478,11 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 			break
 		}
 	}
-	ui.Column(c).Key("transfers").Padding(6, 10, 8, 10).Gap(6).Children(func() {
+	ui.Column(c.Key("transfers")).Padding(6, 10, 8, 10).Gap(6).Children(func() {
 		ui.Row(c).Height(22).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.ViewTransferQueue()).FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted).Grow(1)
 			if hasFinished {
-				clearBtn := ui.ButtonBase(c).Key("clearTransfers").Label("清除已完成").Height(20).Padding(0, 6).
+				clearBtn := ui.ButtonBase(c.Key("clearTransfers")).Label("清除已完成").Height(20).Padding(0, 6).
 					Radius(design.RadiusRow - 2).AlignItems(ui.Center).Transition(design.Hover)
 				if clearBtn.Hovered() {
 					clearBtn.Background(colors.Hover)
@@ -1492,12 +1492,12 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 				}).OnClick(func() { a.clearFinishedTransfers(t) })
 			}
 		})
-		ui.Scroll(c).Key("transfersScroll").MaxHeight(140).Children(func() {
+		ui.Scroll(c.Key("transfersScroll")).MaxHeight(140).Children(func() {
 			ui.Column(c).Gap(4).Children(func() {
 				for _, tr := range t.transfers {
 					item := tr
 					done := item.done.Load()
-					ui.Column(c).Key(fmt.Sprintf("tr:%d", item.id)).Gap(3).Padding(5, 6).
+					ui.Column(c.Key(fmt.Sprintf("tr:%d", item.id))).Gap(3).Padding(5, 6).
 						Radius(design.RadiusRow - 2).Background(colors.Hover).Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							icon := "arrow-down"
@@ -1513,7 +1513,7 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 								iconButton(c, colors, "x", locales.ViewCancelTransfer(), func() { a.cancelTransfer(item) })
 							} else {
 								if item.err != "" {
-									retryBtn := ui.ButtonBase(c).Key(fmt.Sprintf("trRetry:%d", item.id)).
+									retryBtn := ui.ButtonBase(c.Key(fmt.Sprintf("trRetry:%d", item.id))).
 										Label("重试 "+item.fileName).Height(20).Padding(0, 6).Radius(design.RadiusChip).
 										AlignItems(ui.Center).Background(colors.Card).Border(1, colors.CardBorder).Transition(design.Hover)
 									if retryBtn.Hovered() {
@@ -1523,8 +1523,8 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 										ui.Text(c, "重试").FontSize(design.TextSmall - 1).FontWeight(500).TextColor(theme.Accent).NoWrap()
 									}).OnClick(func() { a.retryTransfer(t, item) })
 								}
-								iconButton(c, colors, "x", "移除传输记录 "+item.fileName, func() { a.dismissTransfer(t, item.id) }).
-									Key(fmt.Sprintf("trDismiss:%d", item.id)).Tooltip("移除记录")
+								iconButton(c.Key(fmt.Sprintf("trDismiss:%d", item.id)), colors, "x", "移除传输记录 "+item.fileName, func() { a.dismissTransfer(t, item.id) }).
+									Tooltip("移除记录")
 							}
 						})
 						if !done {
@@ -1616,7 +1616,7 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			a.askDeleteFile(t, entry.Path, entry.Name, entry.IsDir)
 		}
 	}
-	row := ui.ButtonBase(c).Key(entry.Path).Label(entry.Name).Height(28).Padding(0, 8).Gap(8).
+	row := ui.ButtonBase(c.Key(entry.Path)).Label(entry.Name).Height(28).Padding(0, 8).Gap(8).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
 	// 窗口内拖动交给另一栏。拖到桌面要等副本下好：准备好之后才声明系统拖放，
 	// 否则这次手势会变成系统拖动，本机栏收不到。松手在窗口外才开始下那份副本。
@@ -1677,7 +1677,7 @@ func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			} else {
 				countText = fmt.Sprintf("%d/%d", p.searchStatus.Selected, p.searchStatus.Total)
 			}
-			ui.Text(c, countText).Key(fmt.Sprintf("searchStatus:%d", p.id)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+			ui.Text(c.Key(fmt.Sprintf("searchStatus:%d", p.id)), countText).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 		}
 
 		iconButton(c, colors, "arrow-up", locales.ViewPrevious(), func() { p.term.SearchPrevious() }).
@@ -1709,7 +1709,7 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 	over := view.FileDragOver()
 	if p.fileDrag {
 		theme := c.Theme()
-		layer := ui.Box(c).Key(fmt.Sprintf("dropLayer:%d", p.id)).Absolute().Top(0).Right(0).Bottom(0).Left(0).
+		layer := ui.Box(c.Key(fmt.Sprintf("dropLayer:%d", p.id))).Absolute().Top(0).Right(0).Bottom(0).Left(0).
 			Radius(design.RadiusCard).Background(theme.Accent.Alpha(0.10)).Border(1.5, theme.Accent.Alpha(0.6)).
 			Justify(ui.Center).AlignItems(ui.Center).Label(locales.ViewDropUpload())
 		if files := layer.DroppedFiles(); len(files) > 0 {
@@ -1751,7 +1751,7 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
 		memColor = colors.Danger
 	}
 
-	anchor := ui.ButtonBase(c).Key(fmt.Sprintf("monitorBtn:%d", t.id)).Label(locales.MonitorTitle()).Tooltip(locales.MonitorTitle()).
+	anchor := ui.ButtonBase(c.Key(fmt.Sprintf("monitorBtn:%d", t.id))).Label(locales.MonitorTitle()).Tooltip(locales.MonitorTitle()).
 		Height(24).Padding(0, 6).Gap(8).AlignItems(ui.Center).Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
 	if anchor.Hovered() || t.monitorPopoverOpen {
 		anchor.Background(colors.Hover)

@@ -175,7 +175,7 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.Proxy()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
-			ui.PrimaryButton(c, locales.AddProxy()).Key("proxiesAdd").OnClick(func() { a.openProxyAdd(false) })
+			ui.PrimaryButton(c.Key("proxiesAdd"), locales.AddProxy()).OnClick(func() { a.openProxyAdd(false) })
 		})
 		if len(a.proxies) == 0 {
 			ui.Column(c).Gap(6).Padding(20, 0).Children(func() {
@@ -184,7 +184,7 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
 		} else {
-			ui.Scroll(c).Key("proxiesListScroll").MaxHeight(maxListH).Children(func() {
+			ui.Scroll(c.Key("proxiesListScroll")).MaxHeight(maxListH).Children(func() {
 				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
 					for _, px := range a.proxies {
 						a.proxyRow(c, colors, px)
@@ -196,7 +196,7 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
-			ui.Button(c, locales.Done()).Key("proxiesClose").OnClick(func() { a.proxyPanel = proxyPanel{} })
+			ui.Button(c.Key("proxiesClose"), locales.Done()).OnClick(func() { a.proxyPanel = proxyPanel{} })
 		})
 	})
 }
@@ -212,12 +212,12 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 			a.proxyPanel.deleting = &px
 		}
 	}
-	line := ui.Row(c).Key("proxyline:"+px.ID).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
+	line := ui.Row(c.Key("proxyline:"+px.ID)).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
 	if line.Hovered() {
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c).Key("proxy:"+px.ID).Label(px.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("proxy:"+px.ID)).Label(px.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
 			ui.Icon(c, design.Icon("globe")).FontSize(18).TextColor(t.TextMuted)
@@ -231,7 +231,7 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 			})
 		}).OnClick(func() { a.editProxy(px) })
 		row.PopoverMenu(menu)
-		more := ui.ButtonBase(c).Key("proxyMore:"+px.ID).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
+		more := ui.ButtonBase(c.Key("proxyMore:"+px.ID)).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
 		if more.Hovered() {
 			more.Background(colors.Hover)
 		}
@@ -299,7 +299,7 @@ func (a *app) proxyEditPage(c *ui.Context, colors design.Colors) {
 					if p.clearPassword {
 						text = locales.ProxyUndoClear()
 					}
-					ui.Button(c, text).Key("proxyPasswordClear").OnClick(func() {
+					ui.Button(c.Key("proxyPasswordClear"), text).OnClick(func() {
 						p.clearPassword = !p.clearPassword
 						if p.clearPassword {
 							p.password = ""
@@ -309,11 +309,11 @@ func (a *app) proxyEditPage(c *ui.Context, colors design.Colors) {
 			})
 		}
 		if p.err != "" {
-			ui.Text(c, p.err).Key("proxyError").TextColor(t.Danger)
+			ui.Text(c.Key("proxyError"), p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, locales.Back()).Key("proxyBack").OnClick(a.closeProxyEdit)
-			ui.PrimaryButton(c, submit).Key("proxySubmit").OnClick(a.saveProxy)
+			ui.Button(c.Key("proxyBack"), locales.Back()).OnClick(a.closeProxyEdit)
+			ui.PrimaryButton(c.Key("proxySubmit"), submit).OnClick(a.saveProxy)
 		})
 	})
 }

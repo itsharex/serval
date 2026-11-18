@@ -193,7 +193,7 @@ func (a *app) removeRemoteBookmark(t *tab, dir string) {
 
 func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
-	col := ui.Column(c).Key("localPane").Grow(1).MinWidth(0).MinHeight(0)
+	col := ui.Column(c.Key("localPane")).Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, true, a.localDir, item)
 	}
@@ -203,8 +203,8 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	col.Children(func() {
 		ui.Row(c).Height(32).Shrink(0).Padding(4, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "本地").FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
-			iconButton(c, colors, "folder-plus", "新建本地文件夹", a.openLocalNewFolder).
-				Key("localNewFolder").Disabled(a.localDir == "")
+			iconButton(c.Key("localNewFolder"), colors, "folder-plus", "新建本地文件夹", a.openLocalNewFolder).
+				Disabled(a.localDir == "")
 			parent := filepath.Dir(a.localDir)
 			iconButton(c, colors, "arrow-up", "本地上一级", func() { a.openLocal(parent) }).
 				Disabled(a.localDir == "" || parent == a.localDir)
@@ -231,14 +231,14 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 			if a.localDir == "" || a.localDir == "." {
 				title = "本机"
 			}
-			b := ui.ButtonBase(c).Key("editLocalPath").Label("编辑本地路径").Tooltip(a.localDir).
+			b := ui.ButtonBase(c.Key("editLocalPath")).Label("编辑本地路径").Tooltip(a.localDir).
 				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
 				Disabled(a.localDir == "")
 			if b.Hovered() {
 				b.Background(colors.Hover)
 			}
 			b.Children(func() {
-				ui.Text(c, title).Key("localTitle").FontSize(design.TextSmall).FontWeight(600).
+				ui.Text(c.Key("localTitle"), title).FontSize(design.TextSmall).FontWeight(600).
 					Grow(1).MinWidth(0).SingleLine()
 			}).OnClick(func() {
 				a.editingLocalPath = true
@@ -300,7 +300,7 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 		}
 	}
 	// 标签带上“本地”，和远端同名文件同时出现时，点击和读屏不会撞在一起。
-	row := ui.ButtonBase(c).Key("local:"+entry.Path).Label("本地 "+entry.Name).Height(28).Padding(0, 8).Gap(8).
+	row := ui.ButtonBase(c.Key("local:"+entry.Path)).Label("本地 "+entry.Name).Height(28).Padding(0, 8).Gap(8).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
 	row.Drag(paneDrag{local: true, path: entry.Path, name: entry.Name, dir: entry.IsDir})
 	if entry.IsDir {
@@ -324,7 +324,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 	} else {
 		bookmarks = t.host.Bookmarks
 	}
-	col := ui.Column(c).Key("remotePane").Grow(1).MinWidth(0).MinHeight(0)
+	col := ui.Column(c.Key("remotePane")).Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, false, t.dir, item)
 	}
@@ -337,7 +337,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-up", "上传文件夹", func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "" || t.local)
-			bmBtn := ui.ButtonBase(c).Key("remoteBookmarks").Size(28, 28).Center().Radius(design.RadiusRow).
+			bmBtn := ui.ButtonBase(c.Key("remoteBookmarks")).Size(28, 28).Center().Radius(design.RadiusRow).
 				Label("远程目录书签").Tooltip("远程目录书签").Shrink(0).Disabled(t.dir == "" || t.local || !saved)
 			if bmBtn.Hovered() {
 				bmBtn.Background(colors.Hover)
@@ -398,14 +398,14 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			if t.dir == "" {
 				title = "文件"
 			}
-			b := ui.ButtonBase(c).Key("editRemotePath").Label("编辑远程路径").Tooltip(t.dir).
+			b := ui.ButtonBase(c.Key("editRemotePath")).Label("编辑远程路径").Tooltip(t.dir).
 				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
 				Disabled(t.dir == "" || t.local || t.files == nil)
 			if b.Hovered() {
 				b.Background(colors.Hover)
 			}
 			b.Children(func() {
-				ui.Text(c, title).Key("filesTitle").FontSize(design.TextSmall).FontWeight(600).
+				ui.Text(c.Key("filesTitle"), title).FontSize(design.TextSmall).FontWeight(600).
 					Grow(1).MinWidth(0).SingleLine()
 			}).OnClick(func() {
 				a.editingRemotePath = true

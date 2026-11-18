@@ -326,7 +326,7 @@ func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "代码片段").FontSize(design.TextHeading).FontWeight(600).Grow(1)
-			ui.PrimaryButton(c, "新建片段").Key("snippetAdd").OnClick(a.startAddSnippet)
+			ui.PrimaryButton(c.Key("snippetAdd"), "新建片段").OnClick(a.startAddSnippet)
 		})
 		if len(a.snippets) == 0 {
 			ui.Column(c).Gap(6).Padding(20, 0).Children(func() {
@@ -335,7 +335,7 @@ func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
 		} else {
-			ui.Scroll(c).Key("snippetsListScroll").MaxHeight(maxListH).Children(func() {
+			ui.Scroll(c.Key("snippetsListScroll")).MaxHeight(maxListH).Children(func() {
 				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
 					for _, s := range a.sortedSnippets() {
 						a.snippetRow(c, colors, s)
@@ -347,7 +347,7 @@ func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
-			ui.Button(c, "完成").Key("snippetClose").OnClick(func() { a.snippetPanel = snippetPanel{} })
+			ui.Button(c.Key("snippetClose"), "完成").OnClick(func() { a.snippetPanel = snippetPanel{} })
 		})
 	})
 }
@@ -368,12 +368,12 @@ func (a *app) snippetRow(c *ui.Context, colors design.Colors, s snippet) {
 			a.snippetPanel.deleting = &s
 		}
 	}
-	line := ui.Row(c).Key("snippetline:"+s.ID).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
+	line := ui.Row(c.Key("snippetline:"+s.ID)).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
 	if line.Hovered() {
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c).Key("snippet:"+s.ID).Label(s.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("snippet:"+s.ID)).Label(s.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
 			ui.Icon(c, design.Icon("code")).FontSize(16).TextColor(t.TextMuted).Shrink(0)
@@ -385,9 +385,9 @@ func (a *app) snippetRow(c *ui.Context, colors design.Colors, s snippet) {
 			})
 		}).OnClick(func() { a.editSnippet(s) })
 		row.PopoverMenu(menu)
-		ui.Button(c, "执行").Key("snippetSendRow:" + s.ID).Label("发送片段 " + s.Name).
+		ui.Button(c.Key("snippetSendRow:"+s.ID), "执行").Label("发送片段 " + s.Name).
 			Tooltip("发送到当前终端").Disabled(!canSend).OnClick(func() { a.sendSnippet(s) })
-		more := ui.ButtonBase(c).Key("snippetMore:"+s.ID).Label("片段更多 "+s.Name).Tooltip("更多操作").
+		more := ui.ButtonBase(c.Key("snippetMore:"+s.ID)).Label("片段更多 "+s.Name).Tooltip("更多操作").
 			Size(26, 26).Center().Radius(6).Shrink(0)
 		if more.Hovered() {
 			more.Background(colors.Hover)
@@ -418,11 +418,11 @@ func (a *app) snippetEditPage(c *ui.Context) {
 				Placeholder("要发送的命令。变量写成 {{name}}，发送时再填写。")
 		}).Description("变量名用英文字母、数字和下划线。多行内容发送前会再确认一次。")
 		if p.err != "" {
-			ui.Text(c, p.err).Key("snippetError").TextColor(t.Danger)
+			ui.Text(c.Key("snippetError"), p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if saved {
-				ui.Button(c, "删除片段").Key("snippetDelete").OnClick(func() {
+				ui.Button(c.Key("snippetDelete"), "删除片段").OnClick(func() {
 					s, ok := a.snippetByID(p.id)
 					if ok {
 						p.deleting = &s
@@ -430,9 +430,9 @@ func (a *app) snippetEditPage(c *ui.Context) {
 				})
 			}
 			ui.Spacer(c)
-			ui.Button(c, "返回").Key("snippetBack").OnClick(a.closeSnippetEdit)
-			ui.Button(c, "发送到当前窗格").Key("snippetSend").OnClick(func() { a.beginSend(p.body) })
-			ui.PrimaryButton(c, "保存片段").Key("snippetSave").OnClick(a.saveSnippet)
+			ui.Button(c.Key("snippetBack"), "返回").OnClick(a.closeSnippetEdit)
+			ui.Button(c.Key("snippetSend"), "发送到当前窗格").OnClick(func() { a.beginSend(p.body) })
+			ui.PrimaryButton(c.Key("snippetSave"), "保存片段").OnClick(a.saveSnippet)
 		})
 	})
 }
@@ -454,11 +454,11 @@ func (a *app) snippetFillPage(c *ui.Context) {
 			})
 		}
 		if p.err != "" {
-			ui.Text(c, p.err).Key("snippetError").TextColor(t.Danger)
+			ui.Text(c.Key("snippetError"), p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, "返回").Key("snippetFillBack").OnClick(a.cancelSnippetFill)
-			ui.PrimaryButton(c, "填好并发送").Key("snippetFillSubmit").OnClick(a.submitSnippetFill)
+			ui.Button(c.Key("snippetFillBack"), "返回").OnClick(a.cancelSnippetFill)
+			ui.PrimaryButton(c.Key("snippetFillSubmit"), "填好并发送").OnClick(a.submitSnippetFill)
 		})
 	})
 }

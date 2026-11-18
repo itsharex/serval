@@ -317,7 +317,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 	}
 	// 打开时从略小、半透明弹出，和新窗格用同一套姿态，整个应用的“出现”是一种语言。
 	sheet(c, colors, &a.pal.open, &a.pal.fresh, 560, 12, func() {
-		ui.Column(c).Key("paletteBody").Gap(8).Children(func() {
+		ui.Column(c.Key("paletteBody")).Gap(8).Children(func() {
 			ui.Row(c).Gap(9).AlignItems(ui.Center).Padding(0, 2).Children(func() {
 				ui.Icon(c, design.Icon("search")).FontSize(16).TextColor(t.TextMuted)
 				c.Key("paletteInput")
@@ -362,7 +362,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) paletteRow(c *ui.Context, colors design.Colors, i int, item paletteItem, run func()) {
 	t := c.Theme()
-	row := ui.ButtonBase(c).Key(item.key).Label(item.title).Height(40).Padding(0, 10).Gap(10).
+	row := ui.ButtonBase(c.Key(item.key)).Label(item.title).Height(40).Padding(0, 10).Gap(10).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 	selected := i == a.pal.selected
 	if !selected && row.Hovered() {

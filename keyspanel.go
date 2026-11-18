@@ -319,7 +319,7 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.KeyTitle()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
-			ui.PrimaryButton(c, locales.AddPrivateKey()).Key("keysAdd").OnClick(a.startAddKey)
+			ui.PrimaryButton(c.Key("keysAdd"), locales.AddPrivateKey()).OnClick(a.startAddKey)
 		})
 		if len(a.keys) == 0 {
 			ui.Column(c).Gap(6).Padding(20, 0).Children(func() {
@@ -327,7 +327,7 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.KeyEmptyBody()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
 		} else {
-			ui.Scroll(c).Key("keysListScroll").MaxHeight(maxListH).Children(func() {
+			ui.Scroll(c.Key("keysListScroll")).MaxHeight(maxListH).Children(func() {
 				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
 					for _, k := range a.keys {
 						a.keyRow(c, colors, k)
@@ -339,7 +339,7 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
-			ui.Button(c, locales.Done()).Key("keysClose").OnClick(func() { a.keyPanel = keyPanel{} })
+			ui.Button(c.Key("keysClose"), locales.Done()).OnClick(func() { a.keyPanel = keyPanel{} })
 		})
 	})
 }
@@ -380,12 +380,12 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 			a.keyPanel.deleting = &k
 		}
 	}
-	line := ui.Row(c).Key("keyline:"+k.ID).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
+	line := ui.Row(c.Key("keyline:"+k.ID)).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
 	if line.Hovered() {
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c).Key("key:"+k.ID).Label(k.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("key:"+k.ID)).Label(k.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
 			ui.Icon(c, design.Icon("key-round")).FontSize(18).TextColor(t.TextMuted)
@@ -399,8 +399,8 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 			})
 		}).OnClick(func() { a.showKey(k.ID) })
 		row.PopoverMenu(menu)
-		ui.Button(c, locales.CopyPublicKey()).Key("keyCopy:" + k.ID).OnClick(func() { a.copyPublicKey(c, k) })
-		more := ui.ButtonBase(c).Key("keyMore:"+k.ID).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
+		ui.Button(c.Key("keyCopy:"+k.ID), locales.CopyPublicKey()).OnClick(func() { a.copyPublicKey(c, k) })
+		more := ui.ButtonBase(c.Key("keyMore:"+k.ID)).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
 		if more.Hovered() {
 			more.Background(colors.Hover)
 		}
@@ -438,7 +438,7 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 			ui.Field(c, locales.PrivateKey(), func() {
 				ui.Column(c).Gap(8).Children(func() {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Button(c, locales.KeyChooseFile()).Key("keyPick").OnClick(a.pickKeyFile)
+						ui.Button(c.Key("keyPick"), locales.KeyChooseFile()).OnClick(a.pickKeyFile)
 						ui.Text(c, locales.KeyPasteHint()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 					})
 					c.Key("keyPem")
@@ -455,10 +455,10 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 			}
 		}
 		if p.err != "" {
-			ui.Text(c, p.err).Key("keyError").TextColor(t.Danger)
+			ui.Text(c.Key("keyError"), p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, locales.Back()).Key("keyBack").OnClick(func() {
+			ui.Button(c.Key("keyBack"), locales.Back()).OnClick(func() {
 				if p.fromHostForm {
 					a.keyPanel = keyPanel{}
 					return
@@ -472,7 +472,7 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 			case p.generate:
 				label = locales.KeyGenerate()
 			}
-			b := ui.PrimaryButton(c, label).Key("keySubmit").Disabled(p.busy)
+			b := ui.PrimaryButton(c.Key("keySubmit"), label).Disabled(p.busy)
 			if b.Clicked() && !p.busy {
 				a.submitAddKey()
 			}
@@ -500,13 +500,13 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 		})
 		ui.Field(c, locales.KeyPublicKey(), func() {
 			ui.Column(c).Gap(8).Children(func() {
-				ui.Text(c, k.PublicKey).Key("keyPublic").Font(design.FontTerminal).FontSize(design.TextSmall).
+				ui.Text(c.Key("keyPublic"), k.PublicKey).Font(design.FontTerminal).FontSize(design.TextSmall).
 					Padding(8, 10).Radius(design.RadiusRow).Background(colors.Chip).Selectable()
 				ui.Row(c).Gap(8).Children(func() {
-					ui.Button(c, locales.CopyPublicKey()).Key("keyCopyDetail").OnClick(func() { a.copyPublicKey(c, k) })
+					ui.Button(c.Key("keyCopyDetail"), locales.CopyPublicKey()).OnClick(func() { a.copyPublicKey(c, k) })
 					if k.PublicKey != "" {
 						if sshHosts := a.sshHosts(); len(sshHosts) > 0 {
-							ui.Button(c, "部署到主机").Key("keyDeployDetail").PopoverMenuButton(func(m *ui.Menu) {
+							ui.Button(c.Key("keyDeployDetail"), "部署到主机").PopoverMenuButton(func(m *ui.Menu) {
 								for _, h := range sshHosts {
 									host := h
 									if m.Item(host.Name).Chosen() {
@@ -527,7 +527,7 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					if k.Passphrase != "" {
 						ui.Text(c, locales.KeyPassphraseSaved()).Grow(1)
-						ui.Button(c, locales.Clear()).Key("keyClearPassphrase").OnClick(func() { a.clearPassphrase(k.ID) })
+						ui.Button(c.Key("keyClearPassphrase"), locales.Clear()).OnClick(func() { a.clearPassphrase(k.ID) })
 					} else {
 						ui.Text(c, locales.KeyPassphraseUnsaved()).TextColor(t.TextMuted)
 					}
@@ -547,10 +547,10 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Children(func() {
-			ui.Button(c, locales.KeyDelete()).Key("keyDelete").OnClick(func() { p.deleting = &k })
+			ui.Button(c.Key("keyDelete"), locales.KeyDelete()).OnClick(func() { p.deleting = &k })
 			ui.Box(c).Grow(1)
-			ui.Button(c, locales.Back()).Key("keyBack").OnClick(func() { p.page, p.err = keyList, "" })
-			ui.PrimaryButton(c, locales.Save()).Key("keySave").OnClick(a.saveKeyDetail)
+			ui.Button(c.Key("keyBack"), locales.Back()).OnClick(func() { p.page, p.err = keyList, "" })
+			ui.PrimaryButton(c.Key("keySave"), locales.Save()).OnClick(a.saveKeyDetail)
 		})
 	})
 }

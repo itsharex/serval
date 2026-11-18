@@ -264,7 +264,7 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 			if notes := stripHTMLComments(info.Notes); notes != "" {
 				ui.Column(c).Padding(10).Radius(design.RadiusRow).Background(colors.Chip).Gap(6).Children(func() {
 					ui.Text(c, "更新日志").FontSize(design.TextSmall).TextColor(t.TextMuted).FontWeight(600)
-					ui.Scroll(c).Key("updateNotesScroll").MaxHeight(220).Children(func() {
+					ui.Scroll(c.Key("updateNotesScroll")).MaxHeight(220).Children(func() {
 						renderMarkdownBlocks(c, colors, notes, markdownRenderOptions{
 							bodyFontSize:    design.TextSmall,
 							smallFontSize:   design.TextSmall,
@@ -285,7 +285,7 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, "brew upgrade serval").FontSize(design.TextSmall).Font(design.FontTerminal).
 						TextColor(t.Accent).Grow(1).SingleLine().Ellipsis("…")
-					ui.Button(c, "复制升级命令").Key("updateCopyBrew").Height(26).Padding(0, 10).OnClick(func() {
+					ui.Button(c.Key("updateCopyBrew"), "复制升级命令").Height(26).Padding(0, 10).OnClick(func() {
 						c.WriteClipboard("brew upgrade serval")
 						a.toast(ui.Toast{Title: "已复制 Homebrew 升级命令"})
 					})
@@ -293,14 +293,14 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 			})
 
 			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-				ui.Button(c, "稍后再说").Key("updateDismiss").OnClick(func() {
+				ui.Button(c.Key("updateDismiss"), "稍后再说").OnClick(func() {
 					a.update.sheetOpen = false
 				})
 				downloadURL := info.URL
 				if downloadURL == "" {
 					downloadURL = "https://github.com/jhzhang09/serval/releases/latest"
 				}
-				ui.PrimaryButton(c, "前往 GitHub 下载").Key("updateOpenDownload").OnClick(func() {
+				ui.PrimaryButton(c.Key("updateOpenDownload"), "前往 GitHub 下载").OnClick(func() {
 					if a.openURL != nil {
 						_ = a.openURL(downloadURL)
 					}
@@ -328,16 +328,16 @@ func (a *app) aboutAndUpdatesSection(c *ui.Context, colors design.Colors) {
 				if a.update.checking {
 					checkBtnText = "正在检查…"
 				}
-				ui.Button(c, checkBtnText).Key("settingsCheckUpdate").Disabled(a.update.checking).OnClick(func() {
+				ui.Button(c.Key("settingsCheckUpdate"), checkBtnText).Disabled(a.update.checking).OnClick(func() {
 					a.checkForUpdates(true)
 				})
 
 				if a.update.state == updateAvailable && a.update.latest != nil {
-					ui.Button(c, fmt.Sprintf("发现新版本 v%s", strings.TrimPrefix(a.update.latest.Version, "v"))).
-						Key("settingsViewUpdate").OnClick(func() {
-						a.update.sheetOpen = true
-						a.update.sheetFresh = true
-					})
+					ui.Button(c.Key("settingsViewUpdate"), fmt.Sprintf("发现新版本 v%s", strings.TrimPrefix(a.update.latest.Version, "v"))).
+						OnClick(func() {
+							a.update.sheetOpen = true
+							a.update.sheetFresh = true
+						})
 				}
 			})
 		}).Description("轻量、安全的原生跨平台 SSH 客户端。所有用户凭据均经端到端加密保护。")
