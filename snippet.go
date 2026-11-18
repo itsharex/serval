@@ -10,6 +10,7 @@ import (
 
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -22,21 +23,33 @@ type snippet struct {
 	Body string `json:"body"`
 }
 
-// snippetVarPattern 匹配 {{name}}，花括号内侧允许空白。
-var snippetVarPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+// snippetVarPattern 匹配 {{name}} 或 {{name=默认值}}，变量名侧允许空白。
+var snippetVarPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*=([^}]*))?\s*\}\}`)
 
-// snippetVarNames 按出现顺序返回变量名，同名只留第一次。
-func snippetVarNames(body string) []string {
+// snippetVars 按出现顺序返回变量名以及每个变量的默认值（同名变量保留第一次出现的非空默认值）。
+func snippetVars(body string) ([]string, map[string]string) {
 	seen := map[string]bool{}
+	defaults := map[string]string{}
 	var names []string
 	for _, m := range snippetVarPattern.FindAllStringSubmatch(body, -1) {
 		name := m[1]
+		if def := strings.TrimSpace(m[2]); def != "" {
+			if _, has := defaults[name]; !has {
+				defaults[name] = def
+			}
+		}
 		if seen[name] {
 			continue
 		}
 		seen[name] = true
 		names = append(names, name)
 	}
+	return names, defaults
+}
+
+// snippetVarNames 按出现顺序返回变量名，同名只留第一次。
+func snippetVarNames(body string) []string {
+	names, _ := snippetVars(body)
 	return names
 }
 
@@ -106,6 +119,7 @@ func snippetPreview(body string, max int) string {
 // snippetPanel 是代码片段的管理面板，也暂存“填写变量”和“多行确认”这两步。
 type snippetPanel struct {
 	open, fresh bool
+	filter      string
 	editing     bool
 	id          string
 	name, body  string
@@ -219,7 +233,7 @@ func (a *app) beginSend(body string) {
 		a.toast(ui.Toast{Title: "这段代码是空的。"})
 		return
 	}
-	names := snippetVarNames(body)
+	names, defaults := snippetVars(body)
 	if len(names) == 0 {
 		a.confirmOrSend(body)
 		return
@@ -234,6 +248,9 @@ func (a *app) beginSend(body string) {
 	p.fillOnly = fillOnly
 	p.vars = names
 	p.values = make([]string, len(names))
+	for i, name := range names {
+		p.values[i] = defaults[name]
+	}
 	p.pending = body
 	p.err = ""
 }
@@ -321,6 +338,7 @@ func (a *app) snippetsDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
+	p := &a.snippetPanel
 	_, windowHeight := c.Size()
 	maxListH := max(min(windowHeight-240, 340), 120)
 	ui.Column(c).Gap(14).Children(func() {
@@ -335,15 +353,34 @@ func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
 		} else {
-			ui.Scroll(c.Key("snippetsListScroll")).MaxHeight(maxListH).Children(func() {
-				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
-					for _, s := range a.sortedSnippets() {
-						a.snippetRow(c, colors, s)
-					}
-				})
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				c.Key("snippetFilter")
+				ui.TextInput(c, &p.filter).Label(locales.SnippetSearchLabel()).Placeholder(locales.SnippetSearchPlaceholder()).Grow(1)
+				if p.filter != "" {
+					ui.Button(c.Key("snippetFilterClear"), locales.SnippetClearFilter()).Height(28).OnClick(func() { p.filter = "" })
+				}
 			})
+			q := strings.ToLower(strings.TrimSpace(p.filter))
+			ordered := a.sortedSnippets()
+			filtered := ordered[:0]
+			for _, s := range ordered {
+				if q == "" || strings.Contains(strings.ToLower(s.Name), q) || strings.Contains(strings.ToLower(s.Body), q) {
+					filtered = append(filtered, s)
+				}
+			}
+			if len(filtered) == 0 {
+				ui.Text(c, locales.SnippetNoMatches()).FontSize(design.TextSmall).TextColor(t.TextMuted).Padding(12, 4)
+			} else {
+				ui.Scroll(c.Key("snippetsListScroll")).MaxHeight(maxListH).Children(func() {
+					ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+						for _, s := range filtered {
+							a.snippetRow(c, colors, s)
+						}
+					})
+				})
+			}
 		}
-		if p := &a.snippetPanel; p.err != "" {
+		if p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
@@ -415,8 +452,8 @@ func (a *app) snippetEditPage(c *ui.Context) {
 		ui.Field(c, "内容", func() {
 			c.Key("snippetBody")
 			ui.TextArea(c, &p.body).Height(120).Font(design.FontTerminal).FontSize(design.TextSmall).
-				Placeholder("要发送的命令。变量写成 {{name}}，发送时再填写。")
-		}).Description("变量名用英文字母、数字和下划线。多行内容发送前会再确认一次。")
+				Placeholder("要发送的命令。变量可写成 {{name}} 或 {{name=默认值}}，发送时再确认。")
+		}).Description("变量名用英文字母、数字和下划线，支持 {{name=默认值}}。多行内容发送前会再确认一次。")
 		if p.err != "" {
 			ui.Text(c.Key("snippetError"), p.err).TextColor(t.Danger)
 		}

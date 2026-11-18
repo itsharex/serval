@@ -214,6 +214,10 @@ func (a *app) paletteItems(query string) []paletteItem {
 			action("columns-2", locales.PaletteSplitRight(), func() { a.split(t, false) })
 			action("rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
 		}
+		if t.root.leaves() > 1 {
+			actionWithShortcut("arrow-left", locales.PaletteFocusPrevPane(), shortcutText("⌥←"), func() { a.focusPaneStep(t, -1) })
+			actionWithShortcut("arrow-right", locales.PaletteFocusNextPane(), shortcutText("⌥→"), func() { a.focusPaneStep(t, 1) })
+		}
 		if len(a.tabs) > 1 {
 			actionWithShortcut("arrow-left", "左移标签页", shortcutText("⌥["), func() { a.moveTabStep(-1) })
 			actionWithShortcut("arrow-right", "右移标签页", shortcutText("⌥]"), func() { a.moveTabStep(1) })
@@ -233,11 +237,11 @@ func (a *app) paletteItems(query string) []paletteItem {
 		action("folder", locales.PaletteToggleFiles(), a.toggleFiles)
 	}
 	if len(a.hosts) > 0 {
-		action("activity", "探测主机连通性", func() { a.probeAllHosts(true) })
+		action("radar", "探测主机连通性", func() { a.probeAllHosts(true) })
 	}
-	action("terminal", locales.PaletteNewLocalTerminal(), a.openLocalTerminal)
+	actionWithShortcut("terminal", locales.PaletteNewLocalTerminal(), shortcutText("T"), a.openLocalTerminal)
 	action("panel-left", locales.PaletteToggleSidebar(), func() { a.sidebarOpen = !a.sidebarOpen })
-	action("plus", locales.AddHost(), func() { a.openAdd() })
+	actionWithShortcut("plus", locales.AddHost(), shortcutText("N"), func() { a.openAdd() })
 	action("key-round", locales.ViewKeys(), a.openKeys)
 	action("globe", locales.Proxy(), a.openProxies)
 	action("code", "代码片段", a.openSnippets)

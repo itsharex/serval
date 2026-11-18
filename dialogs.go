@@ -61,6 +61,13 @@ func installSystemDialogs(a *app) {
 		dir := downloadsDir(home)
 		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: locales.DialogDownloadTo(), DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: locales.Save(), CreateDirectories: true})
 	}
+	a.chooseBackupFile = func() (string, error) {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: locales.DialogChooseBackupFile(), DefaultPath: downloadsDir(home), ButtonLabel: locales.DialogChooseBackupBtn()})
+		if err != nil || len(paths) == 0 {
+			return "", err
+		}
+		return paths[0], nil
+	}
 	a.openURL = func(url string) error {
 		return mygo.Shell.OpenExternal(url)
 	}

@@ -304,6 +304,22 @@ func (a *app) switchTabStep(delta int) {
 	a.saveSessionLayout()
 }
 
+// switchToTabNumber 按 1~9 快捷键切换标签页：1~8 对应第 1~8 个标签，9 对应最后一个标签。
+func (a *app) switchToTabNumber(n int) {
+	if len(a.tabs) == 0 || n < 1 {
+		return
+	}
+	target := n - 1
+	if n == 9 || target >= len(a.tabs) {
+		target = len(a.tabs) - 1
+	}
+	if target == a.active {
+		return
+	}
+	a.active = target
+	a.saveSessionLayout()
+}
+
 type groupDialogState struct {
 	open, fresh, rename bool
 	oldName, name, err  string

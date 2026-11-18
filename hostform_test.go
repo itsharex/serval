@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -711,4 +712,59 @@ func TestLogonScriptAutoRunsInSSH(t *testing.T) {
 	h.pump("登录后自动执行脚本输出", func() bool {
 		return tb.focus != nil && tb.focus.term != nil && strings.Contains(tb.focus.term.Text(), "LOGON_OK-15")
 	})
+}
+
+func TestHostFormAuthAutoPasswordAndTestConn(t *testing.T) {
+	h := newHarness(t)
+	dev := h.devHost()
+
+	h.a.openAdd()
+	h.tt.Frame()
+	if h.a.form.auth != 0 {
+		t.Fatalf("默认认证应为自动模式 (0)，实际 %d", h.a.form.auth)
+	}
+	if _, ok := h.tt.Find("密码"); !ok {
+		t.Fatalf("自动认证模式下也应显示密码输入框: %q", h.tt.Texts())
+	}
+
+	h.a.form.name = "dev-testconn"
+	h.a.form.address = dev.Address
+	h.a.form.port = fmt.Sprint(dev.Port)
+	h.a.form.user = dev.User
+	h.a.form.password = testPassword
+	h.tt.Frame()
+
+	h.click("测试连接")
+	h.pump("测试连接弹出主机指纹确认", func() bool { return len(h.a.prompts) > 0 })
+	if h.tt.HasText("测试连接") || !h.tt.HasText("信任并连接") {
+		t.Fatalf("确认指纹弹窗出现时主机表单应让位: %q", h.tt.Texts())
+	}
+	h.click("信任并连接")
+	h.pump("测试连接成功", func() bool {
+		return !h.a.form.testBusy && h.a.form.testOK && strings.Contains(h.a.form.testMsg, "连接并认证成功")
+	})
+	if !h.tt.HasText(h.a.form.testMsg) {
+		t.Fatalf("表单内应展示成功反馈: msg=%q texts=%q", h.a.form.testMsg, h.tt.Texts())
+	}
+
+	// 错误端口时“测试连接”应失败并展示错误，不关闭表单
+	h.a.form.port = "1"
+	h.tt.Frame()
+	h.click("测试连接")
+	h.pump("测试连接失败", func() bool {
+		return !h.a.form.testBusy && !h.a.form.testOK && h.a.form.testMsg != ""
+	})
+	if !h.a.form.open {
+		t.Fatal("测试失败后表单应保持打开")
+	}
+
+	// 恢复正确端口并保存，验证自动模式也保存了输入的密码
+	h.a.form.port = fmt.Sprint(dev.Port)
+	h.tt.Frame()
+	h.click("添加")
+	h.tt.Frame()
+	saved := h.host("dev-testconn")
+	if saved.Auth != hosts.AuthAuto || saved.Password != testPassword {
+		t.Fatalf("自动模式保存的认证/密码不正确: %+v", saved)
+	}
 }

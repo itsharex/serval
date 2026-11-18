@@ -267,3 +267,77 @@ func TestSnippetRowQuickExecuteAndMenu(t *testing.T) {
 		t.Fatalf("确认后应删除代码片段: %+v", h.a.snippets)
 	}
 }
+
+func TestSnippetDefaultValuesAndExpand(t *testing.T) {
+	body := "ssh {{ host = prod-01 }} -p {{port=2222}} {{host}} {{empty=}} {{empty=fallback}} {{other}}"
+	names, defaults := snippetVars(body)
+	wantNames := []string{"host", "port", "empty", "other"}
+	if len(names) != len(wantNames) {
+		t.Fatalf("变量名数量 = %v，期望 %v", names, wantNames)
+	}
+	for i := range wantNames {
+		if names[i] != wantNames[i] {
+			t.Fatalf("变量名 = %v，期望 %v", names, wantNames)
+		}
+	}
+	if defaults["host"] != "prod-01" || defaults["port"] != "2222" || defaults["empty"] != "fallback" {
+		t.Fatalf("默认值不对: %+v", defaults)
+	}
+	if _, ok := defaults["other"]; ok {
+		t.Fatalf("无默认值的变量不应出现默认值: %+v", defaults)
+	}
+	got, err := expandSnippet(body, map[string]string{
+		"host":  "web-02",
+		"port":  "22",
+		"empty": "ok",
+		"other": "extra",
+	})
+	if err != nil || got != "ssh web-02 -p 22 web-02 ok ok extra" {
+		t.Fatalf("替换带默认值变量结果不对: %q, err=%v", got, err)
+	}
+}
+
+func TestSnippetFilterAndDefaultPrefillUI(t *testing.T) {
+	h := newHarness(t)
+	h.addSnippet("重启Nginx", "echo restart-nginx")
+	h.addSnippet("部署服务", "echo deploy-{{env=staging}}-{{tag}}")
+
+	// 列表搜索过滤和清空按钮
+	h.openSnippetPanel()
+	if !h.tt.HasText("发送片段 重启Nginx") || !h.tt.HasText("发送片段 部署服务") {
+		t.Fatalf("打开片段面板后应显示全部片段: %q", h.tt.Texts())
+	}
+	h.a.snippetPanel.filter = "nginx"
+	h.tt.Frame()
+	if !h.tt.HasText("发送片段 重启Nginx") || h.tt.HasText("发送片段 部署服务") {
+		t.Fatalf("过滤后应只显示匹配片段: %q", h.tt.Texts())
+	}
+	h.a.snippetPanel.filter = "not-found-xyz"
+	h.tt.Frame()
+	if !h.tt.HasText("没有匹配的代码片段") {
+		t.Fatalf("无匹配时应提示没有匹配的代码片段: %q", h.tt.Texts())
+	}
+	h.click("清空")
+	h.tt.Frame()
+	if h.a.snippetPanel.filter != "" || !h.tt.HasText("发送片段 重启Nginx") || !h.tt.HasText("发送片段 部署服务") {
+		t.Fatalf("点清空后应恢复全部片段: filter=%q texts=%q", h.a.snippetPanel.filter, h.tt.Texts())
+	}
+	h.click("完成")
+	h.tt.Frame()
+
+	// 带默认值的变量在填写页预填
+	tb := h.connectDev()
+	h.sendSnippetNamed("部署服务")
+	if !h.a.snippetPanel.filling || len(h.a.snippetPanel.values) != 2 {
+		t.Fatalf("应进入变量填写页: filling=%v values=%v", h.a.snippetPanel.filling, h.a.snippetPanel.values)
+	}
+	if h.a.snippetPanel.values[0] != "staging" || h.a.snippetPanel.values[1] != "" {
+		t.Fatalf("默认值预填不对: %v", h.a.snippetPanel.values)
+	}
+	h.a.snippetPanel.values[1] = "v2"
+	h.tt.Frame()
+	h.click("填好并发送")
+	h.pump("默认值片段发送", func() bool {
+		return strings.Contains(tb.focus.term.Text(), "deploy-staging-v2")
+	})
+}

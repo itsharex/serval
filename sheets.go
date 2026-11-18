@@ -233,6 +233,10 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 		title = locales.NewFolder()
 		label = locales.SheetFolderName()
 		btnText = locales.SheetCreate()
+	case fileOpNewFile:
+		title = locales.NewFile()
+		label = locales.SheetFileName()
+		btnText = locales.SheetCreate()
 	case fileOpRename:
 		// 标题带上文件名，按钮只写动作：同一界面里可点击的文字不能和标题重复。
 		title = locales.SheetRenameTitle(op.name)

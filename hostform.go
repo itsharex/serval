@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"serval/core/hosts"
 	"serval/core/keys"
 	"serval/core/serial"
+	"serval/core/sshconn"
+	"serval/core/telnet"
 	"serval/core/totp"
 	"serval/core/vault"
 	"serval/design"
@@ -86,7 +91,20 @@ type hostForm struct {
 	// totpSaved 表示已经保存了密钥；clearTOTP 表示用户要求清除。
 	totpSaved, clearTOTP bool
 
+	testBusy   bool
+	testOK     bool
+	testMsg    string
+	testSeq    uint64
+	testCancel context.CancelFunc
+
 	err string
+}
+
+func (a *app) closeHostForm() {
+	if a.form.testCancel != nil {
+		a.form.testCancel()
+	}
+	a.form = hostForm{}
 }
 
 func parityOption(p string) string {
@@ -217,8 +235,8 @@ func (a *app) nameTaken(name, exceptID string) bool {
 	return slices.ContainsFunc(a.hosts, func(h hosts.Host) bool { return h.Name == name && h.ID != exceptID })
 }
 
-// saveForm 校验表单并保存主机。表单里填了密码而保险库还没有主密码时，先设置主密码。
-func (a *app) saveForm() {
+// buildHostFromForm 校验当前主机表单并构造候选的主机配置、原记录与去除自身后的主机列表。
+func (a *app) buildHostFromForm(requireUniqueName bool) (hosts.Host, hosts.Host, []hosts.Host, bool) {
 	f := &a.form
 	address := strings.TrimSpace(f.address)
 	if address == "" {
@@ -227,7 +245,7 @@ func (a *app) saveForm() {
 		} else {
 			f.err = locales.HostAddressRequired()
 		}
-		return
+		return hosts.Host{}, hosts.Host{}, nil, false
 	}
 
 	var proto string
@@ -247,7 +265,7 @@ func (a *app) saveForm() {
 			parsed, err := strconv.Atoi(text)
 			if err != nil || parsed < 1 || parsed > 65535 {
 				f.err = locales.HostPortInvalid()
-				return
+				return hosts.Host{}, hosts.Host{}, nil, false
 			}
 			port = parsed
 		}
@@ -260,7 +278,7 @@ func (a *app) saveForm() {
 			parsed, err := strconv.Atoi(text)
 			if err != nil || parsed < 1 || parsed > 65535 {
 				f.err = locales.HostPortInvalid()
-				return
+				return hosts.Host{}, hosts.Host{}, nil, false
 			}
 			port = parsed
 		}
@@ -269,7 +287,7 @@ func (a *app) saveForm() {
 	user := strings.TrimSpace(f.user)
 	if f.protoIdx == 0 && user == "" {
 		f.err = locales.HostUserRequired()
-		return
+		return hosts.Host{}, hosts.Host{}, nil, false
 	}
 	if f.protoIdx == 1 && user == "" {
 		user = "telnet"
@@ -285,13 +303,13 @@ func (a *app) saveForm() {
 			i := slices.IndexFunc(a.keys, func(k keys.Key) bool { return k.Name == f.keyName })
 			if i < 0 {
 				f.err = locales.HostKeyGone()
-				return
+				return hosts.Host{}, hosts.Host{}, nil, false
 			}
 			keyID = a.keys[i].ID
 		}
 		if auth == hosts.AuthKey && keyID == "" {
 			f.err = locales.HostKeyRequired()
-			return
+			return hosts.Host{}, hosts.Host{}, nil, false
 		}
 	}
 
@@ -299,9 +317,9 @@ func (a *app) saveForm() {
 	if name == "" {
 		name = address
 	}
-	if a.nameTaken(name, f.editing) {
+	if requireUniqueName && a.nameTaken(name, f.editing) {
 		f.err = locales.HostNameTaken(name)
-		return
+		return hosts.Host{}, hosts.Host{}, nil, false
 	}
 	group := strings.TrimSpace(f.group)
 	if group == "" {
@@ -310,14 +328,14 @@ func (a *app) saveForm() {
 	proxyID, legacyProxy, err := a.formProxy(f)
 	if err != nil {
 		f.err = err.Error()
-		return
+		return hosts.Host{}, hosts.Host{}, nil, false
 	}
 	var jumps []string
 	if f.showJumps && f.protoIdx == 0 {
 		for i, j := range f.jumps {
 			if j == pickHost() || strings.TrimSpace(j) == "" {
 				f.err = locales.RouteJumpMissing(i + 1)
-				return
+				return hosts.Host{}, hosts.Host{}, nil, false
 			}
 			jumps = append(jumps, j)
 		}
@@ -367,7 +385,7 @@ func (a *app) saveForm() {
 		if err != nil {
 			f.showSSHAdv = true
 			f.err = err.Error()
-			return
+			return hosts.Host{}, hosts.Host{}, nil, false
 		}
 		h.TOTPSecret, h.TOTPDigits, h.TOTPPeriod, h.TOTPAlgorithm = parsed.Secret, parsed.Digits, parsed.Period, parsed.Algorithm
 	default:
@@ -384,6 +402,23 @@ func (a *app) saveForm() {
 		h.ID = vault.NewID()
 	}
 	all := slices.DeleteFunc(slices.Clone(a.hosts), func(x hosts.Host) bool { return x.ID == h.ID })
+	// 保存或测试前就把链路完整解析一遍：写错的地址、互相引用成环，在这里说清楚，
+	// 而不是等到正式打开终端时才失败。
+	if _, err := hosts.ResolveRoute(h, append(all, h), a.localUser); err != nil {
+		f.err = locales.RouteJumpError(err.Error())
+		return hosts.Host{}, hosts.Host{}, nil, false
+	}
+	return h, previous, all, true
+}
+
+// saveForm 校验表单并保存主机。表单里填了密码而保险库还没有主密码时，先设置主密码。
+func (a *app) saveForm() {
+	f := &a.form
+	f.err = ""
+	h, previous, all, ok := a.buildHostFromForm(true)
+	if !ok {
+		return
+	}
 	changes := []vault.Change{hostChange(h)}
 	if f.editing != "" && previous.Name != "" && previous.Name != h.Name {
 		for i := range all {
@@ -392,12 +427,6 @@ func (a *app) saveForm() {
 				changes = append(changes, hostChange(all[i]))
 			}
 		}
-	}
-	// 保存前就把链路完整解析一遍：写错的地址、互相引用成环，在这里说清楚，
-	// 而不是等到连接时才失败。
-	if _, err := hosts.ResolveRoute(h, append(all, h), a.localUser); err != nil {
-		f.err = locales.RouteJumpError(err.Error())
-		return
 	}
 	if (h.Password != "" || h.TOTPSecret != "") && a.vault.State() == vault.Unprotected {
 		a.requireProtection(a.saveForm)
@@ -416,12 +445,132 @@ func (a *app) saveForm() {
 			}
 		}
 	}
-	title := locales.HostAdded(name)
+	title := locales.HostAdded(h.Name)
 	if f.editing != "" {
-		title = locales.HostSaved(name)
+		title = locales.HostSaved(h.Name)
 	}
-	a.form = hostForm{}
+	a.closeHostForm()
 	a.toast(ui.Toast{Title: title})
+}
+
+// testHostConnection 在后台用表单当前配置执行一次真实连接探测并在表单内展示结果。
+func (a *app) testHostConnection() {
+	f := &a.form
+	if f.testCancel != nil {
+		f.testCancel()
+		f.testCancel = nil
+	}
+	f.err = ""
+	f.testMsg = ""
+	f.testOK = false
+	h, _, _, ok := a.buildHostFromForm(false)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	f.testSeq++
+	seq := f.testSeq
+	f.testBusy = true
+	f.testCancel = cancel
+	start := time.Now()
+
+	finish := func(ok bool, msg string) {
+		if a.post == nil {
+			cancel()
+			return
+		}
+		a.post(func() {
+			cancel()
+			if !a.form.open || a.form.testSeq != seq {
+				return
+			}
+			a.form.testBusy = false
+			a.form.testCancel = nil
+			a.form.testOK = ok
+			a.form.testMsg = msg
+		})
+	}
+
+	switch h.EffectiveProtocol() {
+	case hosts.ProtocolSerial:
+		stopBits := serial.StopBits1
+		if h.EffectiveStopBits() == 2 {
+			stopBits = serial.StopBits2
+		}
+		cfg := serial.Config{
+			Name:     h.Address,
+			BaudRate: h.EffectiveBaudRate(),
+			DataBits: h.EffectiveDataBits(),
+			Parity:   serial.Parity(h.EffectiveParity()),
+			StopBits: stopBits,
+		}
+		go func() {
+			port, err := serial.Open(cfg)
+			if err != nil {
+				finish(false, friendlySerialError(err, h.Address))
+				return
+			}
+			_ = port.Close()
+			finish(true, locales.HostTestSerialOK())
+		}()
+	case hosts.ProtocolTelnet:
+		port := h.Port
+		if port <= 0 {
+			port = 23
+		}
+		addr := net.JoinHostPort(h.Address, strconv.Itoa(port))
+		go func() {
+			conn, err := telnet.DialContext(ctx, addr)
+			if err != nil {
+				if ctx.Err() != nil {
+					finish(false, locales.HostTestTelnetTimeout())
+					return
+				}
+				finish(false, friendlyTelnetError(err))
+				return
+			}
+			_ = conn.Close()
+			finish(true, locales.HostTestTelnetOK(formatLatency(time.Since(start))))
+		}()
+	default:
+		cfg, route, _, _, err := a.prepareDialConfigForHost(ctx, h, nil, false)
+		if err != nil {
+			cancel()
+			f.testBusy = false
+			f.testCancel = nil
+			f.testOK = false
+			f.testMsg = err.Error()
+			return
+		}
+		go func() {
+			client, err := sshconn.Dial(ctx, cfg)
+			if err == nil {
+				_ = client.Close()
+				finish(true, locales.HostTestSSHOK(formatLatency(time.Since(start))))
+				return
+			}
+			who := h
+			var hopErr *sshconn.HopError
+			if errors.As(err, &hopErr) && hopErr.Hop < len(route) {
+				who = route[hopErr.Hop]
+			}
+			var changed *sshconn.HostKeyChangedError
+			switch {
+			case errors.As(err, &changed):
+				finish(false, locales.AppHostKeyMismatch(who.Name, changed.Host))
+			case errors.Is(err, sshconn.ErrHostKeyRejected):
+				finish(false, locales.AppHostKeyNotTrusted(who.Name))
+			case errors.Is(err, sshconn.ErrNoAuthMethod):
+				finish(true, locales.HostTestSSHNoAuth(who.Name, formatLatency(time.Since(start))))
+			case errors.Is(err, sshconn.ErrAuthFailed), errors.Is(err, sshconn.ErrBadPassphrase), errors.Is(err, sshconn.ErrKeyEncrypted):
+				finish(false, locales.HostTestSSHAuthFailed(who.Name))
+			case errors.Is(err, sshconn.ErrAgentUnavailable):
+				finish(false, locales.HostTestAgentUnavailable(who.Name))
+			default:
+				finish(false, err.Error())
+			}
+		}()
+	}
 }
 
 // askDelete 请用户确认删除主机。
@@ -655,8 +804,8 @@ func (a *app) importKeyFromHostForm() {
 
 // hostDialog 是添加、编辑、复制主机的表单面板。设置主密码的面板或密钥/代理子面板打开时让位，表单内容保留。
 func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
-	// 从表单里新建代理、设置主密码或补充加密私钥口令时，子面板盖在上面，表单让位，内容保留。
-	if !a.form.open || a.setup.open || a.proxyPanel.open || a.keyPanel.open {
+	// 从表单里新建代理、设置主密码、补充私钥口令或确认主机指纹时，子面板/确认框盖在上面，表单让位，内容保留。
+	if !a.form.open || a.setup.open || a.proxyPanel.open || a.keyPanel.open || len(a.prompts) > 0 || len(a.challenges) > 0 {
 		return
 	}
 	t := c.Theme()
@@ -849,10 +998,11 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							c.Key("addAuth")
 							ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
 						}).Description(descriptions[f.auth])
-						if f.auth == 1 {
-							a.passwordField(c, colors, f)
-						} else {
+						if f.auth != 1 {
 							a.keyField(c, f)
+						}
+						if f.auth != 2 {
+							a.passwordField(c, colors, f)
 						}
 
 						a.routeFields(c, colors, f)
@@ -892,15 +1042,28 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			if f.err != "" {
 				ui.Text(c.Key("addError"), f.err).TextColor(t.Danger)
 			}
-			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c.Key("addCancel"), locales.Cancel()).OnClick(func() { a.form = hostForm{} })
+			if f.testMsg != "" {
+				msgColor := t.Danger
+				if f.testOK {
+					msgColor = colors.Live
+				}
+				ui.Text(c.Key("addTestResult"), f.testMsg).FontSize(design.TextSmall).TextColor(msgColor)
+			}
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				testLabel := locales.HostTestConn()
+				if f.testBusy {
+					testLabel = locales.HostTestingConn()
+				}
+				ui.Button(c.Key("addTestConn"), testLabel).Disabled(f.testBusy).OnClick(a.testHostConnection)
+				ui.Spacer(c)
+				ui.Button(c.Key("addCancel"), locales.Cancel()).OnClick(a.closeHostForm)
 				ui.PrimaryButton(c.Key("addSubmit"), submit).OnClick(a.saveForm)
 			})
 		})
 	})
 	// 点击外部或按 Esc 关闭时，不把输入的密码留在内存里。
 	if !a.form.open {
-		a.form = hostForm{}
+		a.closeHostForm()
 	}
 }
 

@@ -81,6 +81,7 @@ func (a *app) view(c *ui.Context) {
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
 	a.uploadConfirmDialog(c)
+	a.downloadConfirmDialog(c)
 	a.folderConflictDialog(c)
 	a.lockConfirmDialog(c)
 	a.fileOpDialog(c, colors)
@@ -126,6 +127,12 @@ func (a *app) shortcuts(c *ui.Context) {
 	c.OnShortcut(mods, ui.KeyBracketRight, func() { a.switchTabStep(1) })
 	c.OnShortcut(mods|ui.Alt, ui.KeyBracketLeft, func() { a.moveTabStep(-1) })
 	c.OnShortcut(mods|ui.Alt, ui.KeyBracketRight, func() { a.moveTabStep(1) })
+	c.OnShortcut(mods, ui.KeyT, a.openLocalTerminal)
+	c.OnShortcut(mods, ui.KeyN, a.openAdd)
+	for i, k := range []ui.Key{ui.Key1, ui.Key2, ui.Key3, ui.Key4, ui.Key5, ui.Key6, ui.Key7, ui.Key8, ui.Key9} {
+		n := i + 1
+		c.OnShortcut(mods, k, func() { a.switchToTabNumber(n) })
+	}
 	// KeyW 始终拦截在应用层：没有任何标签页时也不交给系统默认关闭整个窗口。
 	c.OnShortcut(mods, ui.KeyW, func() {
 		if t := a.current(); t != nil {
@@ -134,6 +141,10 @@ func (a *app) shortcuts(c *ui.Context) {
 	})
 	if t := a.current(); t != nil {
 		c.OnShortcut(mods, ui.KeyF, func() { a.openSearch(t) })
+		if t.root.leaves() > 1 {
+			c.OnShortcut(mods|ui.Alt, ui.KeyLeft, func() { a.focusPaneStep(t, -1) })
+			c.OnShortcut(mods|ui.Alt, ui.KeyRight, func() { a.focusPaneStep(t, 1) })
+		}
 		if t.local || t.client != nil {
 			c.OnShortcut(mods, ui.KeyD, func() { a.split(t, false) })
 			c.OnShortcut(mods|ui.Alt, ui.KeyD, func() { a.split(t, true) })
@@ -322,7 +333,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						probeBtn.Background(colors.Hover)
 					}
 					probeBtn.Children(func() {
-						ui.Icon(c, design.Icon("activity")).FontSize(14).TextColor(t.TextMuted)
+						ui.Icon(c, design.Icon("radar")).FontSize(14).TextColor(t.TextMuted)
 					}).OnClick(func() { a.probeAllHosts(true) })
 				}
 			})
@@ -428,9 +439,18 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						if header.Hovered() {
 							header.Background(colors.Hover)
 						}
+						hasLive := collapsed && slices.ContainsFunc(rows, func(h hosts.Host) bool {
+							return a.hasTabForHost(h.ID)
+						})
 						header.Children(func() {
 							ui.Icon(c, design.Icon(iconName)).FontSize(12).TextColor(colors.TextFaint).Shrink(0)
-							ui.Text(c, group).FontSize(design.TextSmall).FontWeight(500).TextColor(colors.TextFaint).SingleLine()
+							ui.Text(c, group).FontSize(design.TextSmall).FontWeight(500).TextColor(colors.TextFaint).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+							if hasLive {
+								ui.Box(c).Size(5, 5).Radius(3).Background(colors.Live).Shrink(0)
+							}
+							if collapsed && len(rows) > 0 {
+								ui.Text(c, fmt.Sprint(len(rows))).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+							}
 						}).OnClick(func() { a.toggleGroup(group) })
 						if collapsed {
 							return
@@ -468,7 +488,13 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 			ui.Row(c.Key("sidebarToolbar")).Gap(4).AlignItems(ui.Center).Children(func() {
 				sidebarIconButton(c, colors, "openKeys", "key-round", locales.ViewKeys(), len(a.keys), a.openKeys)
 				sidebarIconButton(c, colors, "openProxies", "globe", locales.Proxy(), len(a.proxies), a.openProxies)
-				sidebarIconButton(c, colors, "openForwards", "arrow-left-right", locales.PortForward(), len(a.forwards), a.openForwards)
+				fwdBtn := sidebarIconButton(c, colors, "openForwards", "arrow-left-right", locales.PortForward(), len(a.forwards), a.openForwards)
+				if len(a.tunnels) > 0 {
+					fwdBtn.Tooltip(locales.ViewForwardsRunningTooltip(locales.PortForward(), len(a.tunnels)))
+					fwdBtn.Children(func() {
+						ui.Box(c).Size(5, 5).Radius(3).Background(colors.Live).Shrink(0)
+					})
+				}
 				snipBtn := sidebarIconButton(c, colors, "openSnippets", "code", "片段", len(a.snippets), a.openSnippets)
 				snipTip := "代码片段"
 				if len(a.snippets) > 0 {
@@ -692,13 +718,26 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 				coat.Opacity(coat.Keyframes("reachable", design.ReachableBreathe, design.ReachableBreatheOptions))
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, h.Name).FontWeight(500).SingleLine()
+				ui.Text(c, h.Name).FontWeight(500).SingleLine().Ellipsis("…")
 				sub := h.Target()
 				if jumps := hosts.SplitJumps(h.ProxyJump); len(jumps) > 0 {
 					// 经跳板机的主机显示途经路线：连不上时，用户第一眼就知道该先查哪一台。
 					sub = locales.ViewVia(strings.Join(jumps, " → "))
 				}
-				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
+				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+				if len(h.Tags) > 0 {
+					ui.Row(c).Gap(4).Padding(2, 0, 0, 0).Wrap().Children(func() {
+						shown := min(len(h.Tags), 3)
+						for _, tg := range h.Tags[:shown] {
+							ui.Row(c).Height(16).Padding(0, 5).Radius(design.RadiusChip).Background(colors.Chip).AlignItems(ui.Center).Children(func() {
+								ui.Text(c, "#"+tg).FontSize(design.TextSmall - 2).TextColor(colors.TextFaint).NoWrap()
+							})
+						}
+						if len(h.Tags) > 3 {
+							ui.Textf(c, "+%d", len(h.Tags)-3).FontSize(design.TextSmall - 2).TextColor(colors.TextFaint).NoWrap()
+						}
+					})
+				}
 			})
 			// 右侧绿点仅表示当前主机已打开会话，不与连通性探测结果复用，避免误判“已连接”。
 			if connected {
@@ -1295,6 +1334,25 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if !compact && !p.ended && !t.reconnecting && !p.sizeChangedAt.IsZero() && time.Since(p.sizeChangedAt) < 1500*time.Millisecond {
 			ui.Textf(c, "%d × %d", cols, rows).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 		}
+		if !t.local && t.client != nil && !tiny {
+			if n := a.countTunnelsForTab(t.id); n > 0 {
+				lbl := locales.ViewPaneTunnelsBadge(n)
+				accessLbl := lbl
+				if t.root.leaves() > 1 {
+					accessLbl = locales.ViewPaneTunnelsLabel(paneOrdinal(t.root, p), lbl)
+				}
+				tbBtn := ui.ButtonBase(c.Key(fmt.Sprintf("paneTunnels:%d", p.id))).Label(accessLbl).Tooltip(locales.ViewPaneTunnelsTooltip()).
+					Height(20).Padding(0, 7).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
+					Background(colors.Chip).Transition(design.Hover)
+				if tbBtn.Hovered() {
+					tbBtn.Background(colors.Hover)
+				}
+				tbBtn.Children(func() {
+					ui.Box(c).Size(5, 5).Radius(3).Background(colors.Live)
+					ui.Text(c, lbl).FontSize(design.TextSmall - 0.5).TextColor(theme.TextMuted).FontFeatures("tnum").NoWrap()
+				}).OnClick(a.openForwards)
+			}
+		}
 		if t.monitorOpen && !t.local && t.client != nil && !p.ended && !tiny {
 			a.paneMonitorMetrics(c, colors, t)
 		}
@@ -1568,18 +1626,6 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 // fileRow 显示一项文件。
 func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn.Entry) {
 	theme := c.Theme()
-	content := func() {
-		icon := "file"
-		color := colors.TextFaint
-		if entry.IsDir {
-			icon, color = "folder", theme.Accent
-		}
-		ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color)
-		ui.Text(c, entry.Name).Grow(1).MinWidth(0).SingleLine()
-		if !entry.IsDir {
-			ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
-		}
-	}
 	menu := func(m *ui.Menu) {
 		if entry.IsDir {
 			if m.Item(locales.ViewOpen()).Chosen() {
@@ -1610,33 +1656,62 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			a.askDeleteFile(t, entry.Path, entry.Name, entry.IsDir)
 		}
 	}
-	row := ui.ButtonBase(c.Key(entry.Path)).Label(entry.Name).Height(28).Padding(0, 8).Gap(8).
-		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
-	// 窗口内拖动交给另一栏。拖到桌面要等副本下好：准备好之后才声明系统拖放，
-	// 否则这次手势会变成系统拖动，本机栏收不到。松手在窗口外才开始下那份副本。
-	row.Drag(paneDrag{path: entry.Path, name: entry.Name, dir: entry.IsDir})
-	if entry.IsDir {
-		if item, ok := ui.Drop[paneDrag](row); ok {
-			a.acceptPaneDrop(t, false, entry.Path, item)
+	line := ui.Row(c.Key("remoteLine:"+entry.Path)).AlignItems(ui.Center).Radius(design.RadiusRow-2).Padding(0, 2, 0, 0)
+	hovered := line.Hovered()
+	if hovered {
+		line.Background(colors.Hover)
+	}
+	line.Children(func() {
+		row := ui.ButtonBase(c.Key(entry.Path)).Label(entry.Name).Height(28).Grow(1).MinWidth(0).
+			Padding(0, 6, 0, 8).Gap(6).Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
+		// 窗口内拖动交给另一栏。拖到桌面要等副本下好：准备好之后才声明系统拖放，
+		// 否则这次手势会变成系统拖动，本机栏收不到。松手在窗口外才开始下那份副本。
+		row.Drag(paneDrag{path: entry.Path, name: entry.Name, dir: entry.IsDir})
+		if entry.IsDir {
+			if item, ok := ui.Drop[paneDrag](row); ok {
+				a.acceptPaneDrop(t, false, entry.Path, item)
+			}
 		}
-	}
-	if at, ok := row.DragMissed(); ok {
-		w, h := c.Size()
-		if at.X < 0 || at.Y < 0 || at.X > w || at.Y > h {
-			a.prepareDragOut(t, entry)
+		if at, ok := row.DragMissed(); ok {
+			w, h := c.Size()
+			if at.X < 0 || at.Y < 0 || at.X > w || at.Y > h {
+				a.prepareDragOut(t, entry)
+			}
 		}
-	}
-	if _, ready := a.dragReady(t, entry); ready {
-		a.bindDragOut(row, t, entry)
-	}
-	if row.Hovered() {
-		row.Background(colors.Hover)
-	}
-	if entry.IsDir {
-		row.Children(content).OnClick(func() { a.openDir(t, entry.Path) })
-	} else {
-		row.Children(content)
-	}
+		if _, ready := a.dragReady(t, entry); ready {
+			a.bindDragOut(row, t, entry)
+		}
+		if entry.IsDir {
+			row.OnClick(func() { a.openDir(t, entry.Path) })
+		} else if row.DoubleClicked() {
+			a.openEditor(t, entry.Path, entry.Name)
+		}
+		row.Children(func() {
+			icon := "file"
+			color := colors.TextFaint
+			if entry.IsDir {
+				icon, color = "folder", theme.Accent
+			}
+			ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color).Shrink(0)
+			ui.Text(c, entry.Name).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+			if !entry.IsDir {
+				ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+			}
+			if a.effectiveFilesWidth() >= 480 && !entry.ModTime.IsZero() {
+				ui.Text(c, formatShortTime(entry.ModTime)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+			}
+		})
+		if hovered {
+			more := ui.ButtonBase(c.Key("remoteFileMore:"+entry.Path)).Label("更多远程操作 "+entry.Name).
+				Size(22, 22).Center().Radius(4).Shrink(0)
+			if more.Hovered() {
+				more.Background(colors.Hover)
+			}
+			more.Children(func() {
+				ui.Icon(c, design.Icon("ellipsis")).FontSize(13).TextColor(theme.TextMuted)
+			}).PopoverMenuButton(menu, menuButtonOptions(colors))
+		}
+	})
 }
 
 // searchBar 是终端窗格顶部的查找工具条。
@@ -1759,16 +1834,25 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
 	ui.Popover(c, anchor, &t.monitorPopoverOpen, func() {
 		ui.Column(c).Width(240).Padding(12).Gap(8).Children(func() {
 			ui.Text(c, locales.MonitorTitle()).FontWeight(600).FontSize(design.TextBody)
+			clampRatio := func(pct float32) float64 {
+				return min(max(float64(pct)/100.0, 0), 1)
+			}
 			metricRow := func(label, val string, valColor ui.Color) {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, label).FontSize(design.TextSmall).TextColor(tTheme.TextMuted).Grow(1)
 					ui.Text(c, val).FontSize(design.TextSmall).TextColor(valColor).FontWeight(600).FontFeatures("tnum")
 				})
 			}
-			metricRow(locales.MonitorCPU(), fmt.Sprintf("%.1f%%", s.CPUPercent), cpuColor)
+			ui.Column(c).Gap(4).Children(func() {
+				metricRow(locales.MonitorCPU(), fmt.Sprintf("%.1f%%", s.CPUPercent), cpuColor)
+				ui.Progress(c, clampRatio(s.CPUPercent)).Height(3)
+			})
 			metricRow(locales.MonitorLoad(), fmt.Sprintf("%.2f / %.2f", s.Load1, s.Load5), tTheme.Text)
 			if s.MemTotalBytes > 0 {
-				metricRow(locales.MonitorMemory(), fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(s.MemUsedBytes), formatBytes(s.MemTotalBytes), memPercent), memColor)
+				ui.Column(c).Gap(4).Children(func() {
+					metricRow(locales.MonitorMemory(), fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(s.MemUsedBytes), formatBytes(s.MemTotalBytes), memPercent), memColor)
+					ui.Progress(c, clampRatio(memPercent)).Height(3)
+				})
 			}
 			if s.DiskTotalBytes > 0 {
 				diskPercent := float32(s.DiskUsedBytes) * 100.0 / float32(s.DiskTotalBytes)
@@ -1776,7 +1860,10 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
 				if diskPercent >= 90 {
 					diskColor = colors.Danger
 				}
-				metricRow(locales.MonitorDisk(), fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(s.DiskUsedBytes), formatBytes(s.DiskTotalBytes), diskPercent), diskColor)
+				ui.Column(c).Gap(4).Children(func() {
+					metricRow(locales.MonitorDisk(), fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(s.DiskUsedBytes), formatBytes(s.DiskTotalBytes), diskPercent), diskColor)
+					ui.Progress(c, clampRatio(diskPercent)).Height(3)
+				})
 			}
 			metricRow(locales.MonitorNetUp(), formatRate(s.NetTxBytesPerSec), tTheme.Accent)
 			metricRow(locales.MonitorNetDown(), formatRate(s.NetRxBytesPerSec), tTheme.Accent)

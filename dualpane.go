@@ -2,24 +2,35 @@ package main
 
 import (
 	"cmp"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"serval/core/sshconn"
 	"serval/design"
 	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
 
+const (
+	fileSortName = iota
+	fileSortSize
+	fileSortTime
+)
+
 // localEntry 是本机目录里的一项。路径是绝对路径，只在主线程读写。
 type localEntry struct {
-	Name  string
-	Path  string
-	IsDir bool
-	Size  int64
+	Name    string
+	Path    string
+	IsDir   bool
+	Size    int64
+	Mode    fs.FileMode
+	ModTime time.Time
 }
 
 // paneDrag 是从文件抽屉某一栏拖出来的一项。local 为真表示来自本机栏。
@@ -86,10 +97,12 @@ func listLocal(dir string) ([]localEntry, error) {
 		}
 		// 不跟随符号链接，避免点进去绕回上级目录。
 		entries = append(entries, localEntry{
-			Name:  d.Name(),
-			Path:  filepath.Join(dir, d.Name()),
-			IsDir: d.IsDir(),
-			Size:  info.Size(),
+			Name:    d.Name(),
+			Path:    filepath.Join(dir, d.Name()),
+			IsDir:   d.IsDir(),
+			Size:    info.Size(),
+			Mode:    info.Mode(),
+			ModTime: info.ModTime(),
 		})
 	}
 	slices.SortFunc(entries, func(a, b localEntry) int {
@@ -104,8 +117,136 @@ func listLocal(dir string) ([]localEntry, error) {
 	return entries, nil
 }
 
+func compareFileMeta(aDir, bDir bool, aName, bName string, aSize, bSize int64, aMod, bMod time.Time, sortBy int, desc bool) int {
+	if aDir != bDir {
+		if aDir {
+			return -1
+		}
+		return 1
+	}
+	var c int
+	switch sortBy {
+	case fileSortSize:
+		c = cmp.Compare(aSize, bSize)
+	case fileSortTime:
+		c = aMod.Compare(bMod)
+	}
+	if c == 0 {
+		c = cmp.Compare(strings.ToLower(aName), strings.ToLower(bName))
+	}
+	if desc {
+		return -c
+	}
+	return c
+}
+
+func filterLocalEntries(entries []localEntry, query string, sortBy int, desc, hideHidden bool) []localEntry {
+	q := strings.ToLower(strings.TrimSpace(query))
+	out := make([]localEntry, 0, len(entries))
+	for _, e := range entries {
+		if hideHidden && strings.HasPrefix(e.Name, ".") {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(e.Name), q) {
+			continue
+		}
+		out = append(out, e)
+	}
+	if sortBy != fileSortName || desc {
+		slices.SortFunc(out, func(a, b localEntry) int {
+			return compareFileMeta(a.IsDir, b.IsDir, a.Name, b.Name, a.Size, b.Size, a.ModTime, b.ModTime, sortBy, desc)
+		})
+	}
+	return out
+}
+
+func filterRemoteEntries(entries []sshconn.Entry, query string, sortBy int, desc, hideHidden bool) []sshconn.Entry {
+	q := strings.ToLower(strings.TrimSpace(query))
+	out := make([]sshconn.Entry, 0, len(entries))
+	for _, e := range entries {
+		if hideHidden && strings.HasPrefix(e.Name, ".") {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(e.Name), q) {
+			continue
+		}
+		out = append(out, e)
+	}
+	if sortBy != fileSortName || desc {
+		slices.SortFunc(out, func(a, b sshconn.Entry) int {
+			return compareFileMeta(a.IsDir, b.IsDir, a.Name, b.Name, a.Size, b.Size, a.ModTime, b.ModTime, sortBy, desc)
+		})
+	}
+	return out
+}
+
+func formatShortTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	if t.Year() == time.Now().Year() {
+		return t.Format("01-02 15:04")
+	}
+	return t.Format("2006-01-02")
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func (a *app) cdTerminalToRemoteDir(t *tab) {
+	if t == nil || t.local || t.dir == "" {
+		return
+	}
+	if t.focus == nil || t.focus.term == nil || t.focus.ended {
+		a.toast(ui.Toast{Title: locales.RemoteCdDisconnected(), Type: "error"})
+		return
+	}
+	t.followed = t.dir
+	t.focus.term.Send([]byte("cd " + shellSingleQuote(t.dir) + "\n"))
+	t.focus.termHandle.Focus()
+	a.toast(ui.Toast{Title: locales.RemoteCdDone(path.Base(t.dir))})
+}
+
+type localQuickDir struct {
+	label string
+	path  string
+}
+
+func (a *app) localQuickDirs(t *tab) []localQuickDir {
+	var out []localQuickDir
+	seen := map[string]bool{}
+	add := func(label, p string) {
+		if p == "" {
+			return
+		}
+		cleaned := filepath.Clean(p)
+		if seen[cleaned] {
+			return
+		}
+		info, err := os.Stat(cleaned)
+		if err != nil || !info.IsDir() {
+			return
+		}
+		seen[cleaned] = true
+		out = append(out, localQuickDir{label: label, path: cleaned})
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(locales.LocalQuickHome(), home)
+		add(locales.LocalQuickDownloads(), filepath.Join(home, "Downloads"))
+		add(locales.LocalQuickDesktop(), filepath.Join(home, "Desktop"))
+		add(locales.LocalQuickDocuments(), filepath.Join(home, "Documents"))
+	}
+	if t != nil && t.local && t.focus != nil && t.focus.term != nil {
+		if cwd := t.focus.term.Dir(); cwd != "" {
+			add(locales.LocalQuickTermDir(), cwd)
+		}
+	}
+	return out
+}
+
 // acceptPaneDrop 把拖到另一栏的文件传过去。同一栏里松开什么都不做。
-// 下到本机时不覆盖已有文件；传到远端时沿用上传的替换确认。
+// 传到远端时沿用上传的替换确认；下到本机时若同名普通文件已存在则询问替换，目录冲突继续拒绝。
 func (a *app) acceptPaneDrop(t *tab, destLocal bool, destDir string, item paneDrag) {
 	if t == nil || item.local == destLocal || destDir == "" || item.name == "" || item.path == "" {
 		return
@@ -129,8 +270,14 @@ func (a *app) acceptPaneDrop(t *tab, destLocal bool, destDir string, item paneDr
 		return
 	}
 	local := filepath.Join(destDir, item.name)
-	if _, err := os.Lstat(local); err == nil {
-		a.toast(ui.Toast{Title: "没有下载 " + item.name, Description: "本地已经有同名的文件或文件夹，请先把原来的移走。", Type: "error"})
+	if info, err := os.Lstat(local); err == nil {
+		if item.dir || info.IsDir() {
+			a.toast(ui.Toast{Title: "没有下载 " + item.name, Description: "本地已经有同名的文件或文件夹，请先把原来的移走。", Type: "error"})
+			return
+		}
+		a.pendingDownloads = append(a.pendingDownloads, &pendingDownload{
+			tab: t, remotePath: item.path, localPath: local, fileName: item.name,
+		})
 		return
 	}
 	if item.dir {
@@ -191,6 +338,99 @@ func (a *app) removeRemoteBookmark(t *tab, dir string) {
 	t.host.Bookmarks = slices.Clone(next)
 }
 
+func fileToolIconButton(c *ui.Context, colors design.Colors, icon, label string, fn func()) ui.Element {
+	t := c.Theme()
+	b := ui.ButtonBase(c).Size(24, 24).Center().Radius(design.RadiusRow - 2).Label(label).Tooltip(label).Shrink(0)
+	if b.Hovered() {
+		b.Background(colors.Hover)
+	}
+	b.Children(func() {
+		ui.Icon(c, design.Icon(icon)).FontSize(13).TextColor(t.TextMuted)
+	})
+	return b.OnClick(fn)
+}
+
+func fileFilterSubbar(c *ui.Context, colors design.Colors, keyPrefix string, filter *string, filterLabel, clearLabel, hiddenLabel, sortLabel string, sortBy *int, sortDesc, hideHidden *bool, disabled bool) {
+	t := c.Theme()
+	ui.Row(c.Key(keyPrefix+"Subbar")).Height(28).Shrink(0).Padding(0, 10, 4, 10).Gap(4).AlignItems(ui.Center).
+		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+		ui.Row(c).Height(22).Grow(1).MinWidth(0).Padding(0, 4, 0, 6).Gap(4).AlignItems(ui.Center).
+			Radius(4).Background(colors.Chip).Children(func() {
+			ui.Icon(c, design.Icon("search")).FontSize(12).TextColor(colors.TextFaint).Shrink(0)
+			c.Key(keyPrefix + "FilterInput")
+			ui.TextInput(c, filter).Placeholder(locales.FileFilterPlaceholder()).Label(filterLabel).Disabled(disabled).
+				Grow(1).MinWidth(0).FontSize(design.TextSmall-1).Border(0, ui.Transparent).Background(ui.Transparent)
+			if *filter != "" {
+				clr := ui.ButtonBase(c.Key(keyPrefix+"FilterClear")).Label(clearLabel).Tooltip(clearLabel).
+					Size(18, 18).Center().Radius(4).Shrink(0)
+				if clr.Hovered() {
+					clr.Background(colors.Hover)
+				}
+				clr.Children(func() {
+					ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(colors.TextFaint)
+				}).OnClick(func() { *filter = "" })
+			}
+		})
+		hiddenIcon, hiddenTip := "eye", locales.FileHideDotfiles()
+		if *hideHidden {
+			hiddenIcon, hiddenTip = "eye-off", locales.FileShowDotfiles()
+		}
+		hBtn := ui.ButtonBase(c.Key(keyPrefix+"ToggleHidden")).Size(22, 22).Center().Radius(4).
+			Label(hiddenLabel).Tooltip(hiddenTip).Shrink(0).Disabled(disabled)
+		if hBtn.Hovered() {
+			hBtn.Background(colors.Hover)
+		}
+		if *hideHidden {
+			hBtn.Background(t.Accent.Alpha(0.14))
+		}
+		hBtn.Children(func() {
+			ui.Icon(c, design.Icon(hiddenIcon)).FontSize(12).TextColor(t.TextMuted)
+		}).OnClick(func() { *hideHidden = !*hideHidden })
+
+		sortBtn := ui.ButtonBase(c.Key(keyPrefix+"SortBtn")).Size(22, 22).Center().Radius(4).
+			Label(sortLabel).Tooltip(sortLabel).Shrink(0).Disabled(disabled)
+		if sortBtn.Hovered() {
+			sortBtn.Background(colors.Hover)
+		}
+		if *sortBy != fileSortName || *sortDesc {
+			sortBtn.Background(t.Accent.Alpha(0.14))
+		}
+		sortBtn.Children(func() {
+			ui.Icon(c, design.Icon("arrow-up-down")).FontSize(12).TextColor(t.TextMuted)
+		}).PopoverMenuButton(func(m *ui.Menu) {
+			nameLabel := locales.FileSortName()
+			sizeLabel := locales.FileSortSize()
+			timeLabel := locales.FileSortTime()
+			if *sortBy == fileSortName {
+				nameLabel = "✓ " + nameLabel
+			}
+			if *sortBy == fileSortSize {
+				sizeLabel = "✓ " + sizeLabel
+			}
+			if *sortBy == fileSortTime {
+				timeLabel = "✓ " + timeLabel
+			}
+			if m.Item(nameLabel).Chosen() {
+				*sortBy = fileSortName
+			}
+			if m.Item(sizeLabel).Chosen() {
+				*sortBy = fileSortSize
+			}
+			if m.Item(timeLabel).Chosen() {
+				*sortBy = fileSortTime
+			}
+			m.Separator()
+			descLabel := locales.FileSortDescending()
+			if *sortDesc {
+				descLabel = "✓ " + descLabel
+			}
+			if m.Item(descLabel).Chosen() {
+				*sortDesc = !*sortDesc
+			}
+		}, menuButtonOptions(colors))
+	})
+}
+
 func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
 	col := ui.Column(c.Key("localPane")).Grow(1).MinWidth(0).MinHeight(0)
@@ -202,17 +442,18 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	}
 	col.Children(func() {
 		ui.Row(c).Height(32).Shrink(0).Padding(4, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "本地").FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
-			iconButton(c.Key("localNewFolder"), colors, "folder-plus", "新建本地文件夹", a.openLocalNewFolder).
+			ui.Text(c, locales.ViewLocal()).FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
+			fileToolIconButton(c.Key("localNewFile"), colors, "file-plus", locales.LocalNewFile(), a.openLocalNewFile).
+				Disabled(a.localDir == "")
+			fileToolIconButton(c.Key("localNewFolder"), colors, "folder-plus", locales.LocalNewFolder(), a.openLocalNewFolder).
 				Disabled(a.localDir == "")
 			parent := filepath.Dir(a.localDir)
-			iconButton(c, colors, "arrow-up", "本地上一级", func() { a.openLocal(parent) }).
+			fileToolIconButton(c, colors, "arrow-up", locales.LocalParentDirectory(), func() { a.openLocal(parent) }).
 				Disabled(a.localDir == "" || parent == a.localDir)
-			iconButton(c, colors, "refresh-cw", "刷新本地", func() { a.openLocal(a.localDir) }).
+			fileToolIconButton(c, colors, "refresh-cw", locales.LocalRefresh(), func() { a.openLocal(a.localDir) }).
 				Disabled(a.localDir == "")
 		})
-		ui.Row(c).Height(26).Shrink(0).Padding(0, 10, 4, 14).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+		ui.Row(c).Height(26).Shrink(0).Padding(0, 6, 2, 14).Gap(2).AlignItems(ui.Center).Children(func() {
 			if a.editingLocalPath {
 				c.Key("localPathInput")
 				in := ui.TextInput(c, &a.localPathDraft).Height(22).Grow(1).MinWidth(0).
@@ -229,9 +470,9 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 			}
 			title := drawerPath(filepath.ToSlash(a.localDir))
 			if a.localDir == "" || a.localDir == "." {
-				title = "本机"
+				title = locales.ThisMachine()
 			}
-			b := ui.ButtonBase(c.Key("editLocalPath")).Label("编辑本地路径").Tooltip(a.localDir).
+			b := ui.ButtonBase(c.Key("editLocalPath")).Label(locales.LocalEditPath()).Tooltip(a.localDir).
 				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
 				Disabled(a.localDir == "")
 			if b.Hovered() {
@@ -244,16 +485,38 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 				a.editingLocalPath = true
 				a.localPathDraft = a.localDir
 			})
+			quickDirs := a.localQuickDirs(t)
+			quickBtn := ui.ButtonBase(c.Key("localBookmarks")).Size(22, 22).Center().Radius(4).
+				Label(locales.LocalQuickDirs()).Tooltip(locales.LocalQuickDirsTooltip()).Shrink(0).Disabled(len(quickDirs) == 0)
+			if quickBtn.Hovered() {
+				quickBtn.Background(colors.Hover)
+			}
+			quickBtn.Children(func() {
+				ui.Icon(c, design.Icon("bookmark")).FontSize(13).TextColor(theme.TextMuted)
+			}).PopoverMenuButton(func(m *ui.Menu) {
+				for _, q := range quickDirs {
+					dir := q.path
+					if m.Item(q.label + "  " + drawerPath(filepath.ToSlash(dir))).Chosen() {
+						a.openLocal(dir)
+					}
+				}
+			}, menuButtonOptions(colors))
 		})
+		fileFilterSubbar(c, colors, "local", &a.localFilter, "筛选本地文件", "清除本地筛选", "本地隐藏文件", "本地排序方式",
+			&a.localSortBy, &a.localSortDesc, &a.localHideHidden, a.localDir == "")
 		if a.localErr != "" {
 			ui.Text(c, a.localErr).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
 		}
-		entries := a.localEntries
+		entries := filterLocalEntries(a.localEntries, a.localFilter, a.localSortBy, a.localSortDesc, a.localHideHidden)
 		ui.List(c, nil, len(entries), func(i int) {
 			a.localFileRow(c, colors, t, entries[i])
 		}).Grow(1).MinHeight(0).Padding(6, 6, 8, 6).Children(func() {
 			if len(entries) == 0 && a.localErr == "" && a.localGen > 0 {
-				ui.Text(c, "本地目录是空的").TextColor(theme.TextMuted).Padding(8, 8)
+				msg := locales.LocalEmptyDirectory()
+				if len(a.localEntries) > 0 {
+					msg = locales.FileNoMatches()
+				}
+				ui.Text(c, msg).TextColor(theme.TextMuted).Padding(8, 8)
 			}
 		})
 	})
@@ -261,29 +524,20 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 
 func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry localEntry) {
 	theme := c.Theme()
-	content := func() {
-		icon := "file"
-		color := colors.TextFaint
-		if entry.IsDir {
-			icon, color = "folder", theme.Accent
-		}
-		ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color)
-		ui.Text(c, entry.Name).Grow(1).MinWidth(0).SingleLine()
-		if !entry.IsDir {
-			ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
-		}
-	}
+	canUpload := t != nil && !t.local && t.files != nil && t.dir != ""
 	menu := func(m *ui.Menu) {
-		canUpload := t != nil && !t.local && t.files != nil && t.dir != ""
 		if entry.IsDir {
 			if m.Item(locales.ViewOpen()).Chosen() {
 				a.openLocal(entry.Path)
 			}
-			if m.Item("上传文件夹").Disabled(!canUpload).Chosen() {
+			if m.Item(locales.ViewUploadFolder()).Disabled(!canUpload).Chosen() {
 				a.planFolderUpload(t, entry.Path, t.dir)
 			}
 		} else {
-			if m.Item("上传文件").Disabled(!canUpload).Chosen() {
+			if m.Item(locales.Edit()).Chosen() {
+				a.openLocalEditor(entry.Path, entry.Name)
+			}
+			if m.Item(locales.ViewUploadFile()).Disabled(!canUpload).Chosen() {
 				a.uploadTo(t, entry.Path, path.Join(t.dir, entry.Name))
 			}
 		}
@@ -299,20 +553,57 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 			a.askDeleteLocalFile(entry.Path, entry.Name, entry.IsDir)
 		}
 	}
-	// 标签带上“本地”，和远端同名文件同时出现时，点击和读屏不会撞在一起。
-	row := ui.ButtonBase(c.Key("local:"+entry.Path)).Label("本地 "+entry.Name).Height(28).Padding(0, 8).Gap(8).
-		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
-	row.Drag(paneDrag{local: true, path: entry.Path, name: entry.Name, dir: entry.IsDir})
-	if entry.IsDir {
-		if item, ok := ui.Drop[paneDrag](row); ok {
-			a.acceptPaneDrop(t, true, entry.Path, item)
+	line := ui.Row(c.Key("localLine:"+entry.Path)).AlignItems(ui.Center).Radius(design.RadiusRow-2).Padding(0, 2, 0, 0)
+	hovered := line.Hovered()
+	if hovered {
+		line.Background(colors.Hover)
+	}
+	line.Children(func() {
+		// 标签带上“本地”，和远端同名文件同时出现时，点击和读屏不会撞在一起。
+		row := ui.ButtonBase(c.Key("local:"+entry.Path)).Label("本地 "+entry.Name).Height(28).Grow(1).MinWidth(0).
+			Padding(0, 6, 0, 8).Gap(6).Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
+		row.Drag(paneDrag{local: true, path: entry.Path, name: entry.Name, dir: entry.IsDir})
+		if entry.IsDir {
+			if item, ok := ui.Drop[paneDrag](row); ok {
+				a.acceptPaneDrop(t, true, entry.Path, item)
+			}
+			row.OnClick(func() { a.openLocal(entry.Path) })
+		} else if row.DoubleClicked() {
+			a.openLocalEditor(entry.Path, entry.Name)
 		}
-		row.OnClick(func() { a.openLocal(entry.Path) })
+		row.Children(func() {
+			icon := "file"
+			color := colors.TextFaint
+			if entry.IsDir {
+				icon, color = "folder", theme.Accent
+			}
+			ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color).Shrink(0)
+			ui.Text(c, entry.Name).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+			if !entry.IsDir {
+				ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+			}
+			if a.effectiveFilesWidth() >= 480 && !entry.ModTime.IsZero() {
+				ui.Text(c, formatShortTime(entry.ModTime)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+			}
+		})
+		if hovered {
+			more := ui.ButtonBase(c.Key("localFileMore:"+entry.Path)).Label("更多本地操作 "+entry.Name).
+				Size(22, 22).Center().Radius(4).Shrink(0)
+			if more.Hovered() {
+				more.Background(colors.Hover)
+			}
+			more.Children(func() {
+				ui.Icon(c, design.Icon("ellipsis")).FontSize(13).TextColor(theme.TextMuted)
+			}).PopoverMenuButton(menu, menuButtonOptions(colors))
+		}
+	})
+}
+
+func (a *app) effectiveFilesWidth() float32 {
+	if a.filesWidth <= 0 {
+		return 560
 	}
-	if row.Hovered() {
-		row.Background(colors.Hover)
-	}
-	row.Children(content)
+	return a.filesWidth
 }
 
 func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
@@ -333,11 +624,47 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 	}
 	col.Children(func() {
 		ui.Row(c).Height(32).Shrink(0).Padding(4, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "远程").FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
-			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
-			iconButton(c, colors, "folder-up", "上传文件夹", func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
-			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "" || t.local)
-			bmBtn := ui.ButtonBase(c.Key("remoteBookmarks")).Size(28, 28).Center().Radius(design.RadiusRow).
+			ui.Text(c, locales.ViewRemote()).FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
+			fileToolIconButton(c, colors, "plus", locales.ViewUploadFile(), func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
+			fileToolIconButton(c, colors, "folder-up", locales.ViewUploadFolder(), func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
+			fileToolIconButton(c.Key("remoteNewFile"), colors, "file-plus", locales.NewFile(), func() { a.openNewFile(t) }).Disabled(t.dir == "" || t.local)
+			fileToolIconButton(c, colors, "folder-plus", locales.NewFolder(), func() { a.openNewFolder(t) }).Disabled(t.dir == "" || t.local)
+			fileToolIconButton(c, colors, "arrow-up", locales.ViewParentDirectory(), func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
+			fileToolIconButton(c, colors, "refresh-cw", locales.ViewRefresh(), func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
+		})
+		ui.Row(c).Height(26).Shrink(0).Padding(0, 6, 2, 14).Gap(2).AlignItems(ui.Center).Children(func() {
+			if a.editingRemotePath && !t.local && t.files != nil {
+				c.Key("remotePathInput")
+				in := ui.TextInput(c, &a.remotePathDraft).Height(22).Grow(1).MinWidth(0).
+					FontSize(design.TextSmall).AutoFocus()
+				in.OnShortcut(0, ui.KeyEscape, func() { a.editingRemotePath = false })
+				if in.Submitted() {
+					target := strings.TrimSpace(a.remotePathDraft)
+					a.editingRemotePath = false
+					if target != "" {
+						a.openDir(t, target)
+					}
+				}
+				return
+			}
+			title := drawerPath(t.dir)
+			if t.dir == "" {
+				title = locales.ViewFiles()
+			}
+			b := ui.ButtonBase(c.Key("editRemotePath")).Label(locales.RemoteEditPath()).Tooltip(t.dir).
+				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
+				Disabled(t.dir == "" || t.local || t.files == nil)
+			if b.Hovered() {
+				b.Background(colors.Hover)
+			}
+			b.Children(func() {
+				ui.Text(c.Key("filesTitle"), title).FontSize(design.TextSmall).FontWeight(600).
+					Grow(1).MinWidth(0).SingleLine().TruncateStart().Ellipsis("…")
+			}).OnClick(func() {
+				a.editingRemotePath = true
+				a.remotePathDraft = t.dir
+			})
+			bmBtn := ui.ButtonBase(c.Key("remoteBookmarks")).Size(22, 22).Center().Radius(4).
 				Label("远程目录书签").Tooltip("远程目录书签").Shrink(0).Disabled(t.dir == "" || t.local || !saved)
 			if bmBtn.Hovered() {
 				bmBtn.Background(colors.Hover)
@@ -346,7 +673,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 				bmBtn.Background(theme.Accent.Alpha(0.14))
 			}
 			bmBtn.Children(func() {
-				ui.Icon(c, design.Icon("bookmark")).FontSize(15).TextColor(theme.TextMuted)
+				ui.Icon(c, design.Icon("bookmark")).FontSize(13).TextColor(theme.TextMuted)
 			}).PopoverMenuButton(func(m *ui.Menu) {
 				curDir := path.Clean(t.dir)
 				toggleLabel := "收藏当前目录"
@@ -375,59 +702,54 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 					})
 				}
 			}, menuButtonOptions(colors))
-			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
-			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
-		})
-		ui.Row(c).Height(26).Shrink(0).Padding(0, 10, 4, 14).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
-			if a.editingRemotePath && !t.local && t.files != nil {
-				c.Key("remotePathInput")
-				in := ui.TextInput(c, &a.remotePathDraft).Height(22).Grow(1).MinWidth(0).
-					FontSize(design.TextSmall).AutoFocus()
-				in.OnShortcut(0, ui.KeyEscape, func() { a.editingRemotePath = false })
-				if in.Submitted() {
-					target := strings.TrimSpace(a.remotePathDraft)
-					a.editingRemotePath = false
-					if target != "" {
-						a.openDir(t, target)
-					}
-				}
-				return
+
+			pinIcon, pinLabel := "pin", locales.RemotePinDir()
+			if t.filesPinned {
+				pinIcon, pinLabel = "pin-off", locales.RemoteUnpinDir()
 			}
-			title := drawerPath(t.dir)
-			if t.dir == "" {
-				title = "文件"
+			pinBtn := ui.ButtonBase(c.Key("remotePin")).Size(22, 22).Center().Radius(4).
+				Label(pinLabel).Tooltip(pinLabel).Shrink(0).Disabled(t.local || t.files == nil)
+			if pinBtn.Hovered() {
+				pinBtn.Background(colors.Hover)
 			}
-			b := ui.ButtonBase(c.Key("editRemotePath")).Label("编辑远程路径").Tooltip(t.dir).
-				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
-				Disabled(t.dir == "" || t.local || t.files == nil)
-			if b.Hovered() {
-				b.Background(colors.Hover)
+			if t.filesPinned {
+				pinBtn.Background(theme.Accent.Alpha(0.14))
 			}
-			b.Children(func() {
-				ui.Text(c.Key("filesTitle"), title).FontSize(design.TextSmall).FontWeight(600).
-					Grow(1).MinWidth(0).SingleLine().TruncateStart().Ellipsis("…")
+			pinBtn.Children(func() {
+				ui.Icon(c, design.Icon(pinIcon)).FontSize(13).TextColor(theme.TextMuted)
 			}).OnClick(func() {
-				a.editingRemotePath = true
-				a.remotePathDraft = t.dir
+				t.filesPinned = !t.filesPinned
+				if !t.filesPinned {
+					a.followCwd(t)
+				}
 			})
+
+			fileToolIconButton(c.Key("remoteCdTerm"), colors, "terminal", locales.RemoteCdTerminal(), func() {
+				a.cdTerminalToRemoteDir(t)
+			}).Size(22, 22).Disabled(t.local || t.dir == "" || t.focus == nil || t.focus.ended)
 		})
+		fileFilterSubbar(c, colors, "remote", &t.filesFilter, "筛选远程文件", "清除远程筛选", "远程隐藏文件", "远程排序方式",
+			&t.filesSortBy, &t.filesSortDesc, &t.filesHideHidden, t.local || t.dir == "")
 		if t.filesError != "" {
 			ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
 		}
 		if t.filesBusy {
-			ui.Text(c, "正在打开文件…").TextColor(theme.TextMuted).Padding(10, 14)
+			ui.Text(c, locales.ViewOpeningFiles()).TextColor(theme.TextMuted).Padding(10, 14)
 		}
 		if t.local {
-			ui.Text(c, "文件抽屉用于浏览远程主机的文件。本机的文件请在访达或资源管理器里查看。").
+			ui.Text(c, locales.ViewLocalFilesHint()).
 				TextColor(theme.TextMuted).FontSize(design.TextSmall).Padding(10, 14)
 		}
-		entries := t.entries
+		entries := filterRemoteEntries(t.entries, t.filesFilter, t.filesSortBy, t.filesSortDesc, t.filesHideHidden)
 		ui.List(c, nil, len(entries), func(i int) {
 			a.fileRow(c, colors, t, entries[i])
 		}).Grow(1).MinHeight(0).Padding(6, 6, 8, 6).Children(func() {
 			if len(entries) == 0 && t.files != nil && t.filesError == "" && !t.local {
-				ui.Text(c, "这个目录是空的").TextColor(theme.TextMuted).Padding(8, 8)
+				msg := locales.ViewEmptyDirectory()
+				if len(t.entries) > 0 {
+					msg = locales.FileNoMatches()
+				}
+				ui.Text(c, msg).TextColor(theme.TextMuted).Padding(8, 8)
 			}
 		})
 	})

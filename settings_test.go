@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"serval/core/hosts"
+	"serval/core/keys"
 	"serval/core/vault"
 
 	"github.com/egoist/mygo/plugins/terminal"
@@ -1006,5 +1008,238 @@ func TestDeviceSecretsCachedAcrossSession(t *testing.T) {
 	}
 	if h.a.syncPassCached || h.a.syncPassValue != "" {
 		t.Fatal("锁定保险库后应清空内存中的同步密码缓存")
+	}
+}
+
+func TestVaultBackupExportRequiresProtectionAndWritesEncryptedFile(t *testing.T) {
+	h := newBareHarness(t)
+	outPath := filepath.Join(t.TempDir(), "nested", "serval-backup.json")
+	h.a.chooseSavePath = func(defaultName string) (string, error) {
+		if !strings.HasPrefix(defaultName, "serval-backup-") || !strings.HasSuffix(defaultName, ".json") {
+			t.Fatalf("默认备份文件名格式不对: %q", defaultName)
+		}
+		return outPath, nil
+	}
+
+	h.click("设置")
+	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("自动锁定"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 500)
+		h.tt.Frame()
+	}
+	h.click("导出加密备份")
+	h.tt.Frame()
+	if !h.a.setup.open {
+		t.Fatal("未加密保险库导出备份前应先要求设置主密码")
+	}
+
+	h.a.setup.password = "backup-master-pw"
+	h.a.setup.confirm = "backup-master-pw"
+	h.tt.Frame()
+	h.click("设置并继续")
+	h.pump("设置主密码并导出备份", func() bool {
+		_, err := os.Stat(outPath)
+		return !h.a.setup.open && err == nil
+	})
+
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("导出备份文件权限 = %o，期望 0600", perm)
+	}
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "127.0.0.1") || !strings.Contains(string(raw), `"protected": true`) {
+		t.Fatalf("导出的备份应已加密且不含明文地址: %s", string(raw))
+	}
+}
+
+func TestVaultBackupAdoptAndSameVaultMerge(t *testing.T) {
+	h1 := newHarness(t)
+	if err := h1.a.apply(
+		hostChange(hosts.Host{ID: "h-alpha", Name: "alpha", Address: "10.1.1.1", Port: 22, User: "ops", Password: "pw-alpha", Group: defaultGroup}),
+		snippetChange(snippet{ID: "s-dep", Name: "部署", Body: "echo deploy-ok"}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	backup1 := filepath.Join(t.TempDir(), "b1.json")
+	data1, err := h1.a.vault.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup1, data1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 在空保险库整份恢复加密备份：恢复后进入锁定态，输入主密码解锁。
+	h2 := newBareHarness(t)
+	emptyVault, err := vault.Open(filepath.Join(t.TempDir(), "empty-vault.json"), "dev-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2.a.vault = emptyVault
+	h2.a.hosts, h2.a.keys, h2.a.proxies, h2.a.snippets, h2.a.forwards = nil, nil, nil, nil, nil
+	h2.a.chooseBackupFile = func() (string, error) { return backup1, nil }
+	h2.tt.Frame()
+
+	h2.click("设置")
+	h2.tt.Frame()
+	h2.click("安全")
+	h2.tt.Frame()
+	if box, ok := h2.tt.Find("自动锁定"); ok {
+		h2.tt.Scroll(box.X+50, box.Y+50, 0, 500)
+		h2.tt.Frame()
+	}
+	h2.click("从备份恢复或合并")
+	h2.tt.Frame()
+	if h2.a.vault.State() != vault.Locked || !h2.tt.HasText("Serval 已锁定") {
+		t.Fatalf("空保险库导入加密备份后应进入锁定状态: state=%v err=%q", h2.a.vault.State(), h2.a.settingsPanel.err)
+	}
+
+	h2.a.unlock.password = masterPassword
+	h2.tt.Frame()
+	h2.click("解锁")
+	h2.pump("解锁恢复后的保险库", func() bool { return h2.a.vault.State() == vault.Unlocked })
+	if got, ok := h2.a.hostByID("h-alpha"); !ok || got.Password != "pw-alpha" {
+		t.Fatalf("恢复后缺少 alpha 主机: ok=%v host=%+v", ok, got)
+	}
+	if got, ok := h2.a.snippetByID("s-dep"); !ok || got.Body != "echo deploy-ok" {
+		t.Fatalf("恢复后缺少片段: ok=%v", ok)
+	}
+
+	// 2. 同保险库后续备份再合入 h2：无需输入备份主密码，直接按 rev 合并新增记录。
+	if err := h1.a.apply(
+		hostChange(hosts.Host{ID: "h-beta", Name: "beta", Address: "10.2.2.2", Port: 22, User: "ops", Group: defaultGroup}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	backup2 := filepath.Join(t.TempDir(), "b2.json")
+	data2, err := h1.a.vault.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup2, data2, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h2.a.chooseBackupFile = func() (string, error) { return backup2, nil }
+	h2.click("设置")
+	h2.tt.Frame()
+	h2.click("安全")
+	h2.tt.Frame()
+	if box, ok := h2.tt.Find("自动锁定"); ok {
+		h2.tt.Scroll(box.X+50, box.Y+50, 0, 500)
+		h2.tt.Frame()
+	}
+	h2.click("从备份恢复或合并")
+	h2.tt.Frame()
+	if h2.a.settingsPanel.backupPromptOpen {
+		t.Fatal("同 ID 保险库合并应使用当前密钥直接合并，不应再问密码")
+	}
+	if got, ok := h2.a.hostByID("h-beta"); !ok || got.Address != "10.2.2.2" {
+		t.Fatalf("同库备份合并后应包含 beta: ok=%v host=%+v", ok, got)
+	}
+}
+
+func TestVaultBackupCrossVaultEncryptedUnlockAndMerge(t *testing.T) {
+	h := newHarness(t)
+
+	// 创建另一个独立保险库（不同 VaultID、不同主密码）的备份文件
+	otherDir := t.TempDir()
+	ov, err := vault.Open(filepath.Join(otherDir, "other.json"), "other-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ov.Protect("other-vault-pw"); err != nil {
+		t.Fatal(err)
+	}
+	kCh := keyChange(keys.Key{ID: "k-cross", Name: "cross-key", PrivateKey: "PEM-DATA", Passphrase: "kp"})
+	pCh := proxyChange(hosts.Proxy{ID: "p-cross", Name: "cross-proxy", Kind: hosts.ProxySOCKS5, Address: "127.0.0.1", Port: 1080, Password: "pxpw"})
+	hCh := hostChange(hosts.Host{ID: "h-cross", Name: "cross-host", Address: "10.9.9.9", Port: 22, User: "root", Password: "cross-secret", KeyID: "k-cross", ProxyID: "p-cross", Group: defaultGroup})
+	fCh := forwardChange(hosts.Forward{ID: "f-cross", HostID: "h-cross", Name: "cross-fw", Kind: hosts.ForwardLocal, BindHost: "127.0.0.1", BindPort: 18080, TargetHost: "127.0.0.1", TargetPort: 80})
+	sCh := snippetChange(snippet{ID: "s-cross", Name: "cross-snip", Body: "echo cross"})
+	khCh, err := vault.JSONChange(kindKnownHost, knownHostID("10.9.9.9"), knownHost{Host: "10.9.9.9", Keys: []string{"ssh-ed25519 AAAA"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ov.Apply([]vault.Change{kCh, pCh, hCh, fCh, sCh, khCh}); err != nil {
+		t.Fatal(err)
+	}
+	otherRaw, err := ov.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPath := filepath.Join(t.TempDir(), "other-backup.json")
+	if err := os.WriteFile(otherPath, otherRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h.a.chooseBackupFile = func() (string, error) { return otherPath, nil }
+	h.click("设置")
+	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("自动锁定"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 500)
+		h.tt.Frame()
+	}
+	h.click("从备份恢复或合并")
+	h.tt.Frame()
+	if !h.a.settingsPanel.backupPromptOpen || !h.tt.HasText("输入备份主密码") {
+		t.Fatalf("跨库加密备份应提示输入备份主密码: open=%v err=%q texts=%q",
+			h.a.settingsPanel.backupPromptOpen, h.a.settingsPanel.err, h.tt.Texts())
+	}
+
+	// 先输错密码
+	h.a.settingsPanel.backupPassword = "wrong-password"
+	h.tt.Frame()
+	h.click("解锁并合并")
+	h.pump("错误密码反馈", func() bool { return !h.a.settingsPanel.backupBusy && h.a.settingsPanel.backupErr != "" })
+	if !strings.Contains(h.a.settingsPanel.backupErr, "备份主密码不正确") {
+		t.Fatalf("密码错误应提示备份主密码不正确: %q", h.a.settingsPanel.backupErr)
+	}
+
+	// 再输对密码，在后台解锁并合并所有缺失记录
+	h.a.settingsPanel.backupPassword = "other-vault-pw"
+	h.tt.Frame()
+	h.click("解锁并合并")
+	h.pump("跨库备份合并完成", func() bool { return !h.a.settingsPanel.backupPromptOpen && !h.a.settingsPanel.backupBusy })
+
+	if got, ok := h.a.hostByID("h-cross"); !ok || got.Password != "cross-secret" {
+		t.Fatalf("跨库合并缺少主机或密码: ok=%v host=%+v", ok, got)
+	}
+	if got, ok := h.a.keyByID("k-cross"); !ok || got.PrivateKey != "PEM-DATA" {
+		t.Fatalf("跨库合并缺少私钥: ok=%v", ok)
+	}
+	if got, ok := h.a.proxyByID("p-cross"); !ok || got.Password != "pxpw" {
+		t.Fatalf("跨库合并缺少代理: ok=%v", ok)
+	}
+	if len(h.a.forwards) != 1 || h.a.forwards[0].ID != "f-cross" {
+		t.Fatalf("跨库合并缺少端口转发: %+v", h.a.forwards)
+	}
+	if got, ok := h.a.snippetByID("s-cross"); !ok || got.Body != "echo cross" {
+		t.Fatalf("跨库合并缺少代码片段: ok=%v", ok)
+	}
+	known, err := h.a.knownHostsList()
+	if err != nil || len(known) != 1 || known[0].Host != "10.9.9.9" {
+		t.Fatalf("跨库合并缺少已知主机: err=%v known=%+v", err, known)
+	}
+
+	// 再次导入同一份跨库备份应幂等，不重复创建记录
+	hostCount := len(h.a.hosts)
+	h.click("从备份恢复或合并")
+	h.tt.Frame()
+	h.a.settingsPanel.backupPassword = "other-vault-pw"
+	h.tt.Frame()
+	h.click("解锁并合并")
+	h.pump("重复合并校验", func() bool { return !h.a.settingsPanel.backupPromptOpen && !h.a.settingsPanel.backupBusy })
+	if len(h.a.hosts) != hostCount {
+		t.Fatalf("重复导入同一备份不应增加主机数量: %d -> %d", hostCount, len(h.a.hosts))
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -50,12 +51,30 @@ func TestDualPaneDragsBothWays(t *testing.T) {
 		return err == nil && string(got) == "from-remote"
 	})
 
-	// 本机已有同名文件时不覆盖。
-	dragOnto(t, h, name, "刷新本地")
-	h.tt.Frame()
-	if !h.tt.HasText("本地已经有同名的文件或文件夹") {
-		t.Fatalf("应拒绝覆盖: %q", h.tt.Texts())
+	// 本机已有同名普通文件时弹窗确认：取消不覆盖，确认替换则覆盖。
+	localTarget := filepath.Join(h.a.localDir, name)
+	if err := os.WriteFile(localTarget, []byte("keep-local"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	dragOnto(t, h, name, "刷新本地")
+	h.pump("等待替换本地文件确认", func() bool {
+		return len(h.a.pendingDownloads) == 1 && h.tt.HasText("替换 "+name+"？")
+	})
+	h.click("取消")
+	h.tt.Frame()
+	if got := readFile(t, localTarget); got != "keep-local" {
+		t.Fatalf("取消替换后应保留本地文件，got=%q", got)
+	}
+
+	dragOnto(t, h, name, "刷新本地")
+	h.pump("再次确认替换", func() bool {
+		return len(h.a.pendingDownloads) == 1 && h.tt.HasText("替换 "+name+"？")
+	})
+	h.click("替换")
+	h.pump("确认替换后写回远程内容", func() bool {
+		got, err := os.ReadFile(localTarget)
+		return err == nil && string(got) == "from-remote"
+	})
 }
 
 // 回归：拖放下载承诺“本地已有同名文件不覆盖”。目标在下载开始之后才出现
@@ -199,6 +218,7 @@ func TestDualPaneColumnsStretchAndScroll(t *testing.T) {
 // dragOnto 把一个文件行拖到另一个元素上松开。移动要超过拖动阈值，否则只算点击。
 func dragOnto(t *testing.T, h *harness, from, to string) {
 	t.Helper()
+	h.tt.Advance(600 * time.Millisecond)
 	src, ok := h.tt.Find(from)
 	if !ok {
 		t.Fatalf("找不到 %s: %q", from, h.tt.Texts())
@@ -384,4 +404,138 @@ func TestLocalNewFolderRenameUploadAndDelete(t *testing.T) {
 		_, err := os.Stat(filepath.Join(h.a.localDir, "local-renamed"))
 		return os.IsNotExist(err)
 	})
+}
+
+func TestDualPaneNewFileFilterSortHiddenRecursiveDeleteAndPin(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+
+	if err := os.WriteFile(filepath.Join(h.a.localDir, ".hidden-local"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.a.localDir, "small.txt"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.a.localDir, "large.txt"), []byte("1234567890"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("两栏列出文件", func() bool {
+		return tb.dir != "" && h.tt.HasText("本地 .hidden-local") && h.tt.HasText("go.mod")
+	})
+
+	// 1. 新建本地和远程空文件
+	h.click("新建本地文件")
+	h.tt.Frame()
+	h.a.fileOp.input = "created-local.txt"
+	h.tt.Frame()
+	h.click("创建")
+	h.pump("本地空文件已创建", func() bool {
+		info, err := os.Stat(filepath.Join(h.a.localDir, "created-local.txt"))
+		return err == nil && !info.IsDir() && h.tt.HasText("本地 created-local.txt")
+	})
+
+	h.click("新建文件")
+	h.tt.Frame()
+	h.a.fileOp.input = "created-remote.txt"
+	h.tt.Frame()
+	h.click("创建")
+	h.pump("远程空文件已创建", func() bool {
+		info, err := os.Stat(filepath.Join(tb.dir, "created-remote.txt"))
+		return err == nil && !info.IsDir() && h.tt.HasText("created-remote.txt")
+	})
+
+	// 2. 隐藏以 . 开头的文件 + 筛选 + 按大小降序
+	h.click("本地隐藏文件")
+	h.tt.Frame()
+	if h.tt.HasText("本地 .hidden-local") {
+		t.Fatal("开启隐藏点文件后不应显示 .hidden-local")
+	}
+	h.click("本地隐藏文件")
+	h.tt.Frame()
+	if !h.tt.HasText("本地 .hidden-local") {
+		t.Fatal("关闭隐藏点文件后应恢复显示 .hidden-local")
+	}
+
+	h.a.localFilter = "large"
+	h.tt.Frame()
+	if !h.tt.HasText("本地 large.txt") || h.tt.HasText("本地 small.txt") {
+		t.Fatalf("本地筛选结果不对: %q", h.tt.Texts())
+	}
+	h.click("清除本地筛选")
+	h.tt.Frame()
+	if !h.tt.HasText("本地 small.txt") {
+		t.Fatal("清除筛选后应恢复显示 small.txt")
+	}
+
+	h.click("本地排序方式")
+	if err := h.tt.ChooseMenuItem("按大小"); err != nil {
+		t.Fatalf("选择按大小排序失败: %v", err)
+	}
+	h.tt.Frame()
+	h.click("本地排序方式")
+	if err := h.tt.ChooseMenuItem("降序排列"); err != nil {
+		t.Fatalf("选择降序失败: %v", err)
+	}
+	h.tt.Frame()
+	largeBox, ok1 := h.tt.Find("本地 large.txt")
+	smallBox, ok2 := h.tt.Find("本地 small.txt")
+	if !ok1 || !ok2 || largeBox.Y >= smallBox.Y {
+		t.Fatalf("按大小降序后 large 应排在 small 前面: large=%+v small=%+v", largeBox, smallBox)
+	}
+
+	// 3. 非空远程目录递归删除
+	nonEmpty := filepath.Join(tb.dir, "nonempty-dir")
+	if err := os.MkdirAll(filepath.Join(nonEmpty, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonEmpty, "sub", "inner.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.click("刷新")
+	h.pump("出现 nonEmpty 目录", func() bool { return h.tt.HasText("nonempty-dir") })
+	if err := h.tt.RightClick("nonempty-dir"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.tt.ChooseMenuItem("删除"); err != nil {
+		t.Fatal(err)
+	}
+	h.tt.Frame()
+	if !h.tt.HasText("将一并删除其中的所有文件和子文件夹") {
+		t.Fatalf("删除目录确认应提示递归删除风险: %q", h.tt.Texts())
+	}
+	h.click("删除")
+	h.pump("非空远程目录已递归删除", func() bool {
+		_, err := os.Stat(nonEmpty)
+		return os.IsNotExist(err)
+	})
+
+	// 4. 固定远程目录防止随终端目录切换；解除固定并触发“在终端进入此目录”
+	subDir := filepath.Join(tb.dir, "pin-sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origDir := tb.dir
+	h.click("固定远程目录（不跟随终端切换）")
+	h.tt.Frame()
+	if !tb.filesPinned {
+		t.Fatal("点击 Pin 后 filesPinned 应为 true")
+	}
+	// 模拟终端切换到另一个目录，因为已固定，tb.dir 应保持 origDir
+	tb.focus.term.Feed([]byte("\x1b]7;file://localhost" + filepath.ToSlash(subDir) + "\x07"))
+	h.tt.Frame()
+	if tb.dir != origDir {
+		t.Fatalf("固定远程目录时不应跟随终端变化: got=%q want=%q", tb.dir, origDir)
+	}
+	h.click("取消固定（恢复跟随终端目录）")
+	h.pump("解除固定后跟随终端目录", func() bool {
+		return tb.dir == filepath.ToSlash(subDir)
+	})
+
+	h.click("在终端进入此目录")
+	h.tt.Frame()
+	if !h.tt.HasText("终端已进入 pin-sub") {
+		t.Fatalf("应提示终端已进入目录: %q", h.tt.Texts())
+	}
 }

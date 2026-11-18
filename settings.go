@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"serval/core/ai"
+	"serval/core/hosts"
+	"serval/core/keys"
 	"serval/core/syncer"
 	"serval/core/vault"
 	"serval/design"
@@ -285,6 +289,15 @@ type settingsPanel struct {
 	syncURL      string
 	syncUser     string
 	syncPassword string
+
+	// 加密备份与恢复（跨库解锁合并状态）
+	backupPromptOpen   bool
+	revealBackupPrompt bool
+	backupPassword     string
+	showBackupPw       bool
+	backupBusy         bool
+	backupErr          string
+	backupVault        *vault.Vault
 }
 
 // restorePanel 是空设备“从同步恢复”的面板。
@@ -801,16 +814,29 @@ func (a *app) closeSettings() {
 			}
 			if a.settingsPanel.err == "" {
 				a.aiFetchSeq++
+				a.clearBackupState()
 				a.settingsPanel = settingsPanel{}
 			}
 		}
 		return
 	}
 	a.aiFetchSeq++
+	a.clearBackupState()
 	a.settingsPanel = settingsPanel{}
 }
 
-// settingsSecuritySection 是设置里的“安全”页：自动锁定、设备记住密钥、修改主密码、已知主机。
+func (a *app) clearBackupState() {
+	p := &a.settingsPanel
+	p.backupPromptOpen = false
+	p.revealBackupPrompt = false
+	p.backupPassword = ""
+	p.showBackupPw = false
+	p.backupBusy = false
+	p.backupErr = ""
+	p.backupVault = nil
+}
+
+// settingsSecuritySection 是设置里的“安全”页：自动锁定、设备记住密钥、修改主密码、已知主机、加密备份与恢复。
 func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
 	autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
@@ -897,6 +923,378 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 
 	ui.Divider(c)
 	a.knownHostsSection(c, colors)
+	ui.Divider(c)
+	a.vaultBackupSection(c, colors)
+}
+
+func (a *app) vaultBackupSection(c *ui.Context, colors design.Colors) {
+	p := &a.settingsPanel
+	t := c.Theme()
+	ui.Field(c, locales.SetBackupTitle(), func() {
+		ui.Row(c).Gap(8).Children(func() {
+			ui.Button(c.Key("settingsBackupExport"), locales.SetBackupExport()).Disabled(p.backupBusy).OnClick(a.exportVaultBackup)
+			ui.Button(c.Key("settingsBackupRestore"), locales.SetBackupRestore()).Disabled(p.backupBusy).OnClick(a.startRestoreBackup)
+		})
+	}).Description(locales.SetBackupDesc())
+
+	if !p.backupPromptOpen {
+		return
+	}
+	form := ui.Column(c.Key("settingsBackupPrompt")).Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
+	if p.revealBackupPrompt {
+		p.revealBackupPrompt = false
+		form.ScrollIntoView()
+	}
+	form.Children(func() {
+		ui.Text(c, locales.SetBackupEnterPassword()).FontWeight(600)
+		ui.Text(c, locales.SetBackupOtherVaultHint()).
+			FontSize(design.TextSmall).TextColor(t.TextMuted)
+		ui.Field(c, locales.SetBackupPassword(), func() {
+			passwordInput(c, colors, "settingsBackupPw", locales.SetBackupPassword(), &p.backupPassword, &p.showBackupPw, func(el ui.Element) {
+				el.AutoFocus().OnSubmit(a.submitBackupPassword)
+			})
+		})
+		if p.backupErr != "" {
+			ui.Text(c.Key("settingsBackupError"), p.backupErr).TextColor(colors.Danger).FontSize(design.TextSmall)
+		}
+		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+			ui.Button(c.Key("settingsBackupCancel"), locales.Cancel()).Disabled(p.backupBusy).OnClick(a.clearBackupState)
+			label := locales.SetBackupUnlockMerge()
+			if p.backupBusy {
+				label = locales.SheetUnlocking()
+			}
+			ui.PrimaryButton(c.Key("settingsBackupSubmit"), label).Disabled(p.backupBusy).OnClick(a.submitBackupPassword)
+		})
+	})
+}
+
+func (a *app) exportVaultBackup() {
+	if a.vault == nil {
+		return
+	}
+	if a.vault.State() == vault.Unprotected {
+		a.requireProtection(a.exportVaultBackup)
+		return
+	}
+	if a.vault.State() == vault.Locked || a.chooseSavePath == nil {
+		return
+	}
+	p := &a.settingsPanel
+	p.err = ""
+	defaultName := fmt.Sprintf("serval-backup-%s.json", time.Now().Format("20060102"))
+	savePath, err := a.chooseSavePath(defaultName)
+	if err != nil {
+		p.err = "无法打开保存对话框：" + err.Error()
+		return
+	}
+	if savePath == "" {
+		return
+	}
+	data, err := a.vault.Bytes()
+	if err != nil {
+		p.err = "导出备份失败：" + err.Error()
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(savePath), 0o700); err != nil {
+		p.err = "导出备份失败：" + err.Error()
+		return
+	}
+	if err := writePrivateFile(savePath, data); err != nil {
+		p.err = "导出备份失败：" + err.Error()
+		return
+	}
+	a.toast(ui.Toast{Title: locales.SetBackupExported(), Description: filepath.Base(savePath)})
+}
+
+func (a *app) startRestoreBackup() {
+	p := &a.settingsPanel
+	if p.backupBusy || a.vault == nil || a.chooseBackupFile == nil {
+		return
+	}
+	p.err = ""
+	backupPath, err := a.chooseBackupFile()
+	if err != nil {
+		p.err = "选择备份文件失败：" + err.Error()
+		return
+	}
+	if backupPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(backupPath)
+	if err != nil {
+		p.err = "读取备份文件失败：" + err.Error()
+		return
+	}
+	bv, err := openVaultBytes(raw)
+	if err != nil {
+		p.err = err.Error()
+		return
+	}
+
+	if a.vault.Empty() {
+		if err := a.vault.Adopt(raw); err != nil {
+			p.err = err.Error()
+			return
+		}
+		a.clearBackupState()
+		a.settingsPanel = settingsPanel{}
+		a.hosts, a.keys, a.proxies, a.snippets, a.forwards = nil, nil, nil, nil, nil
+		a.settings = settings{}
+		if a.vault.State() == vault.Locked {
+			a.unlock = unlockState{remember: a.deviceAvailable()}
+			a.toast(ui.Toast{Title: locales.SetBackupImported(), Description: locales.SetBackupUnlockHint()})
+			return
+		}
+		a.reload()
+		a.noteVaultChanged()
+		a.toast(ui.Toast{Title: locales.SetBackupRestored()})
+		return
+	}
+
+	if bv.ID() == a.vault.ID() {
+		changed, err := a.vault.Merge(raw)
+		if err == nil {
+			a.clearBackupState()
+			if changed {
+				a.reload()
+				a.noteVaultChanged()
+				a.toast(ui.Toast{Title: locales.SetBackupMergedSame()})
+			} else {
+				a.toast(ui.Toast{Title: locales.SetBackupAlreadyUpToDate()})
+			}
+			return
+		}
+		if !strings.Contains(err.Error(), "不是同一把保险库密钥") {
+			p.err = err.Error()
+			return
+		}
+	}
+
+	if bv.State() == vault.Unlocked {
+		a.applyBackupRecords(bv)
+		return
+	}
+
+	p.backupPromptOpen = true
+	p.revealBackupPrompt = true
+	p.backupPassword = ""
+	p.showBackupPw = false
+	p.backupBusy = false
+	p.backupErr = ""
+	p.backupVault = bv
+}
+
+// submitBackupPassword 在后台用 Argon2id 解锁另一个保险库的备份文件，避免阻塞主线程。
+func (a *app) submitBackupPassword() {
+	p := &a.settingsPanel
+	if p.backupBusy || p.backupVault == nil {
+		return
+	}
+	pw := p.backupPassword
+	bv := p.backupVault
+	p.backupBusy = true
+	p.backupErr = ""
+	go func() {
+		err := bv.Unlock(pw)
+		a.post(func() {
+			p := &a.settingsPanel
+			if !p.open || !p.backupPromptOpen || p.backupVault != bv {
+				return
+			}
+			p.backupBusy = false
+			if err != nil {
+				if errors.Is(err, vault.ErrWrongPassword) {
+					p.backupErr = locales.SetBackupWrongPassword()
+				} else {
+					p.backupErr = err.Error()
+				}
+				return
+			}
+			p.backupPassword = ""
+			p.showBackupPw = false
+			a.applyBackupRecords(bv)
+		})
+	}()
+}
+
+func (a *app) applyBackupRecords(bv *vault.Vault) {
+	if bv == nil || a.vault == nil {
+		return
+	}
+	var (
+		bHosts      []hosts.Host
+		bKeys       []keys.Key
+		bProxies    []hosts.Proxy
+		bForwards   []hosts.Forward
+		bSnippets   []snippet
+		bKnownHosts []knownHost
+	)
+	for _, fn := range []func() error{
+		func() error { return decodeAll(bv, kindHost, &bHosts) },
+		func() error { return decodeAll(bv, kindKey, &bKeys) },
+		func() error { return decodeAll(bv, kindProxy, &bProxies) },
+		func() error { return decodeAll(bv, kindForward, &bForwards) },
+		func() error { return decodeAll(bv, kindSnippet, &bSnippets) },
+		func() error { return decodeAll(bv, kindKnownHost, &bKnownHosts) },
+	} {
+		if err := fn(); err != nil {
+			a.settingsPanel.backupErr = err.Error()
+			a.settingsPanel.err = err.Error()
+			return
+		}
+	}
+
+	var changes []vault.Change
+	hasSecrets := false
+
+	usedKeyNames := make(map[string]bool, len(a.keys))
+	for _, k := range a.keys {
+		usedKeyNames[k.Name] = true
+	}
+	for _, k := range bKeys {
+		if _, exists := a.keyByID(k.ID); exists {
+			continue
+		}
+		k.Name = uniqueImportedName(k.Name, usedKeyNames)
+		if k.PrivateKey != "" || k.Passphrase != "" {
+			hasSecrets = true
+		}
+		changes = append(changes, keyChange(k))
+	}
+
+	usedProxyNames := make(map[string]bool, len(a.proxies))
+	for _, px := range a.proxies {
+		usedProxyNames[px.Name] = true
+	}
+	for _, px := range bProxies {
+		if _, exists := a.proxyByID(px.ID); exists {
+			continue
+		}
+		px.Name = uniqueImportedName(px.Name, usedProxyNames)
+		if px.Password != "" {
+			hasSecrets = true
+		}
+		changes = append(changes, proxyChange(px))
+	}
+
+	usedHostNames := make(map[string]bool, len(a.hosts))
+	for _, h := range a.hosts {
+		usedHostNames[h.Name] = true
+	}
+	for _, h := range bHosts {
+		if _, exists := a.hostByID(h.ID); exists {
+			continue
+		}
+		h.Name = uniqueImportedName(h.Name, usedHostNames)
+		if h.Password != "" || h.TOTPSecret != "" {
+			hasSecrets = true
+		}
+		changes = append(changes, hostChange(h))
+	}
+
+	for _, fw := range bForwards {
+		if slices.ContainsFunc(a.forwards, func(x hosts.Forward) bool { return x.ID == fw.ID }) {
+			continue
+		}
+		changes = append(changes, forwardChange(fw))
+	}
+
+	usedSnippetNames := make(map[string]bool, len(a.snippets))
+	for _, sn := range a.snippets {
+		usedSnippetNames[sn.Name] = true
+	}
+	for _, sn := range bSnippets {
+		if _, exists := a.snippetByID(sn.ID); exists {
+			continue
+		}
+		sn.Name = uniqueImportedName(sn.Name, usedSnippetNames)
+		hasSecrets = true
+		changes = append(changes, snippetChange(sn))
+	}
+
+	for _, kh := range bKnownHosts {
+		id := knownHostID(kh.Host)
+		if _, ok, _ := a.vault.Get(id); ok {
+			continue
+		}
+		ch, err := vault.JSONChange(kindKnownHost, id, kh)
+		if err != nil {
+			a.settingsPanel.backupErr = err.Error()
+			a.settingsPanel.err = err.Error()
+			return
+		}
+		changes = append(changes, ch)
+	}
+
+	if _, hasSettings, _ := a.vault.Get(settingsID); !hasSettings {
+		var bs settings
+		if err := decodeSettings(bv, &bs); err == nil && hasNonEmptySettings(bs) {
+			if bs.AIKey != "" || slices.ContainsFunc(bs.AIProfiles, func(pr aiProfile) bool { return pr.APIKey != "" }) {
+				hasSecrets = true
+			}
+			changes = append(changes, settingsChange(bs))
+		}
+	}
+
+	if len(changes) == 0 {
+		a.clearBackupState()
+		a.toast(ui.Toast{Title: locales.SetBackupNothingToAdd()})
+		return
+	}
+
+	if hasSecrets && a.vault.State() == vault.Unprotected {
+		a.requireProtection(func() { a.applyBackupRecords(bv) })
+		return
+	}
+
+	if err := a.apply(changes...); err != nil {
+		a.settingsPanel.backupErr = err.Error()
+		a.settingsPanel.err = err.Error()
+		return
+	}
+	a.clearBackupState()
+	a.toast(ui.Toast{Title: locales.SetBackupMergedCount(len(changes))})
+}
+
+func uniqueImportedName(name string, used map[string]bool) string {
+	if name == "" || !used[name] {
+		used[name] = true
+		return name
+	}
+	candidate := name + " (备份)"
+	for i := 2; used[candidate]; i++ {
+		candidate = fmt.Sprintf("%s (备份 %d)", name, i)
+	}
+	used[candidate] = true
+	return candidate
+}
+
+func hasNonEmptySettings(s settings) bool {
+	return s.Appearance != "" || s.TerminalFontFamily != "" || s.TerminalFontSize != 0 ||
+		s.TerminalLineHeight != 0 || s.TerminalCursor != "" || s.TerminalScrollbackMB != 0 ||
+		s.TerminalThemeLight != "" || s.TerminalThemeDark != "" || s.TerminalCopyOnSelect ||
+		s.TerminalRightClick != "" || s.AIBaseURL != "" || s.AIModel != "" || s.AIKey != "" ||
+		len(s.AIProfiles) > 0 || len(s.CustomGroups) > 0
+}
+
+func openVaultBytes(raw []byte) (*vault.Vault, error) {
+	dir, err := os.MkdirTemp("", "serval-backup-*")
+	if err != nil {
+		return nil, fmt.Errorf("无法读取备份文件: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	p := filepath.Join(dir, "vault.json")
+	if err := os.WriteFile(p, raw, 0o600); err != nil {
+		return nil, fmt.Errorf("无法读取备份文件: %w", err)
+	}
+	bv, err := vault.Open(p, "backup")
+	if err != nil {
+		return nil, err
+	}
+	if bv.ID() == "" {
+		return nil, errors.New("备份文件格式无效或已损坏")
+	}
+	return bv, nil
 }
 
 var (

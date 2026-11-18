@@ -55,6 +55,12 @@ type pendingUpload struct {
 	localPath, remotePath, fileName string
 }
 
+// pendingDownload 是本地已有同名普通文件、拖放下载前等用户确认替换的下载。
+type pendingDownload struct {
+	tab                             *tab
+	remotePath, localPath, fileName string
+}
+
 func (a *app) startDownload(t *tab, remotePath, fileName string) {
 	if t.files == nil {
 		return
@@ -230,6 +236,25 @@ func (a *app) uploadConfirmDialog(c *ui.Context) {
 	}
 }
 
+// downloadConfirmDialog 确认替换本机上的同名普通文件。默认按钮是“取消”。
+func (a *app) downloadConfirmDialog(c *ui.Context) {
+	if len(a.pendingDownloads) == 0 {
+		return
+	}
+	d := a.pendingDownloads[0]
+	open := true
+	choice := ui.AlertDialog(c, &open, locales.FileReplaceNamed(d.fileName),
+		locales.FileReplaceLocalExists(filepath.Dir(d.localPath)),
+		locales.FileReplace(), locales.Cancel())
+	if choice == -1 && open {
+		return
+	}
+	a.pendingDownloads = a.pendingDownloads[1:]
+	if choice == 0 && slices.Contains(a.tabs, d.tab) {
+		a.runTransfer(d.tab, transferDownload, d.remotePath, d.localPath, d.fileName, false)
+	}
+}
+
 // runTransfer 在后台执行一次传输，进度通过原子字段给界面读取，结束后回到主线程提示结果。
 // guardLocal 为真时，下载落盘前再检查一次本地同名文件，存在就不覆盖（拖放下载承诺不覆盖）。
 func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, fileName string, guardLocal bool) {
@@ -302,6 +327,8 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 // transferReason 把文件操作的错误说成用户能看懂的原因。
 func transferReason(err error) string {
 	switch {
+	case errors.Is(err, os.ErrExist), errors.Is(err, sshconn.ErrRemoteExists):
+		return locales.FileAlreadyExists()
 	case errors.Is(err, os.ErrPermission):
 		return locales.FileNoPermission()
 	case errors.Is(err, os.ErrNotExist):
@@ -361,6 +388,7 @@ type fileOpKind int
 const (
 	fileOpNone fileOpKind = iota
 	fileOpNewFolder
+	fileOpNewFile
 	fileOpRename
 	fileOpPermissions
 )
@@ -412,6 +440,34 @@ func (a *app) openLocalNewFolder() {
 		local: true,
 		path:  a.localDir,
 		input: locales.NewFolder(),
+	}
+}
+
+func (a *app) openNewFile(t *tab) {
+	if t.files == nil || t.dir == "" {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpNewFile,
+		tab:   t,
+		path:  t.dir,
+		input: "untitled.txt",
+	}
+}
+
+func (a *app) openLocalNewFile() {
+	if a.localDir == "" {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpNewFile,
+		local: true,
+		path:  a.localDir,
+		input: "untitled.txt",
 	}
 }
 
@@ -474,7 +530,7 @@ func validateFileName(name string) error {
 	return nil
 }
 
-// submitFileOp 执行新建文件夹、重命名、修改权限。网络操作或本地磁盘操作放在后台，
+// submitFileOp 执行新建文件夹、新建文件、重命名、修改权限。网络操作或本地磁盘操作放在后台，
 // 期间面板显示处理中，结果回到主线程。
 func (a *app) submitFileOp() {
 	op := &a.fileOp
@@ -490,16 +546,26 @@ func (a *app) submitFileOp() {
 	var run func() error
 	var done string
 	switch op.kind {
-	case fileOpNewFolder, fileOpRename:
+	case fileOpNewFolder, fileOpNewFile, fileOpRename:
 		if err := validateFileName(input); err != nil {
 			op.err = err.Error()
 			return
 		}
 		if isLocal {
-			if op.kind == fileOpNewFolder {
+			switch op.kind {
+			case fileOpNewFolder:
 				dir := filepath.Join(op.path, input)
 				run, done = func() error { return os.Mkdir(dir, 0o755) }, locales.FileFolderCreatedNamed(input)
-			} else {
+			case fileOpNewFile:
+				target := filepath.Join(op.path, input)
+				run, done = func() error {
+					f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+					if err != nil {
+						return err
+					}
+					return f.Close()
+				}, locales.FileCreatedNamed(input)
+			default:
 				from, to := op.path, filepath.Join(filepath.Dir(op.path), input)
 				run, done = func() error {
 					if from == to {
@@ -513,10 +579,14 @@ func (a *app) submitFileOp() {
 			}
 		} else {
 			files := t.files
-			if op.kind == fileOpNewFolder {
+			switch op.kind {
+			case fileOpNewFolder:
 				dir := path.Join(op.path, input)
 				run, done = func() error { return files.Mkdir(dir) }, locales.FileFolderCreatedNamed(input)
-			} else {
+			case fileOpNewFile:
+				target := path.Join(op.path, input)
+				run, done = func() error { return files.CreateEmpty(target) }, locales.FileCreatedNamed(input)
+			default:
 				from, to := op.path, path.Join(path.Dir(op.path), input)
 				run, done = func() error { return files.Rename(from, to) }, locales.FileRenamedNamed(input)
 			}
@@ -569,7 +639,26 @@ func (a *app) askDeleteLocalFile(fullPath, name string, isDir bool) {
 	a.fileDelete = &fileDeleteState{local: true, path: fullPath, name: name, isDir: isDir}
 }
 
-// confirmDeleteFile 在后台删除文件或空目录（支持本地与远程）。
+func removeLocalPath(target string, isDir bool) error {
+	cleaned := filepath.Clean(target)
+	base := filepath.Base(cleaned)
+	if cleaned == "" || cleaned == "." || cleaned == ".." || base == "." || base == ".." || cleaned == filepath.Dir(cleaned) {
+		return errors.New("无法删除根目录或相对保留路径")
+	}
+	if !isDir {
+		return os.Remove(cleaned)
+	}
+	info, err := os.Lstat(cleaned)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+		return os.Remove(cleaned)
+	}
+	return os.RemoveAll(cleaned)
+}
+
+// confirmDeleteFile 在后台安全删除文件或递归删除目录（支持本地与远程，不跟随符号链接）。
 func (a *app) confirmDeleteFile() {
 	del := a.fileDelete
 	a.fileDelete = nil
@@ -581,22 +670,18 @@ func (a *app) confirmDeleteFile() {
 	go func() {
 		var err error
 		if isLocal {
-			err = os.Remove(del.path)
+			err = removeLocalPath(del.path, del.isDir)
 		} else {
 			files := t.files
 			if del.isDir {
-				err = files.RemoveDirectory(del.path)
+				err = files.RemoveAll(context.Background(), del.path)
 			} else {
 				err = files.Remove(del.path)
 			}
 		}
 		a.post(func() {
 			if err != nil {
-				reason := transferReason(err)
-				if del.isDir && !errors.Is(err, os.ErrPermission) && !errors.Is(err, os.ErrNotExist) {
-					reason = locales.FileDeleteNotEmpty()
-				}
-				a.toast(ui.Toast{Title: locales.FileNotDeletedNamed(del.name), Description: reason, Type: "error"})
+				a.toast(ui.Toast{Title: locales.FileNotDeletedNamed(del.name), Description: transferReason(err), Type: "error"})
 				return
 			}
 			a.toast(ui.Toast{Title: locales.FileDeletedNamed(del.name)})

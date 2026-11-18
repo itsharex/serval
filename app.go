@@ -201,6 +201,8 @@ type app struct {
 	chooseSavePath       func(defaultName string) (string, error)
 	// chooseLogDir 选会话日志存放的文件夹。和 sz 的选择框分开，标题不能混用。
 	chooseLogDir func() (string, error)
+	// chooseBackupFile 选要恢复或合并的保险库备份文件。
+	chooseBackupFile func() (string, error)
 	// openURL 打开外部链接。正式运行时由 installSystemDialogs 设置为 mygo.Shell.OpenExternal，测试里替换掉。
 	openURL func(url string) error
 	// testTitleBar 仅用于测试覆盖窗口标题栏安全区（例如模拟 Windows 右上角原生控制按钮宽度）。
@@ -214,12 +216,18 @@ type app struct {
 	dragRoot   string
 	dragCopies map[dragKey]*dragCopy
 	// localDir 是文件抽屉左侧列出的本机目录。localGen 用来丢掉过期的列举结果。
-	localDir     string
-	localEntries []localEntry
-	localErr     string
-	localGen     int
+	localDir        string
+	localEntries    []localEntry
+	localErr        string
+	localGen        int
+	localFilter     string
+	localSortBy     int
+	localSortDesc   bool
+	localHideHidden bool
 	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
 	pendingUploads []*pendingUpload
+	// pendingDownloads 是拖放下载到本地已有同名普通文件时等待确认替换的队列。
+	pendingDownloads []*pendingDownload
 	// pendingFolders 是等用户决定如何处理同名文件的文件夹上传。
 	pendingFolders []*folderPlan
 	// challenges 是等待用户回答的多步验证（keyboard-interactive）询问，依次显示。
@@ -324,7 +332,12 @@ type tab struct {
 	entries      []sshconn.Entry
 	followed     string
 	// listGen 用来丢弃过期的目录结果：用户连续切换目录时，只有最后一次请求生效。
-	listGen int
+	listGen         int
+	filesFilter     string
+	filesSortBy     int
+	filesSortDesc   bool
+	filesHideHidden bool
+	filesPinned     bool
 
 	transfers []*fileTransfer
 
@@ -454,6 +467,9 @@ func (a *app) lockVault() {
 	a.editingLocalPath, a.localPathDraft = false, ""
 	a.openFilesOnHostID = ""
 	a.auth = authSheet{}
+	if a.form.testCancel != nil {
+		a.form.testCancel()
+	}
 	a.form = hostForm{}
 	a.deleting = nil
 	a.prompts, a.asking = nil, false
@@ -464,6 +480,7 @@ func (a *app) lockVault() {
 	a.challenges = nil
 	a.keyPanel = keyPanel{}
 	a.setup = setupSheet{}
+	a.clearBackupState()
 	a.settingsPanel = settingsPanel{}
 	a.restore = restorePanel{}
 	a.pal = palette{}
@@ -482,6 +499,10 @@ func (a *app) lockVault() {
 	a.editor = editorState{}
 	a.fileOp = fileOpState{}
 	a.fileDelete = nil
+	a.pendingUploads = nil
+	a.pendingDownloads = nil
+	a.pendingFolders = nil
+	a.localFilter = ""
 	a.lastDrawer = ""
 	a.sidebarResizing = false
 	a.toast(ui.Toast{Title: locales.AppVaultLocked()})
@@ -747,9 +768,16 @@ func (a *app) probeDistroAsync(h hosts.Host, client *sshconn.Client) {
 
 // prepareDialConfig 准备连接一台主机所需的全部跳板机和认证配置。必须在主线程调用。
 func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int]credential) (sshconn.Config, []hosts.Host, map[int]credential, []hosts.Host, error) {
-	// 调用方手里的可能是旧副本（例如标签里的主机，之后又保存了密码），以保险库里的为准。
-	if fresh, ok := a.hostByID(h.ID); ok {
-		h = fresh
+	return a.prepareDialConfigForHost(ctx, h, creds, true)
+}
+
+func (a *app) prepareDialConfigForHost(ctx context.Context, h hosts.Host, creds map[int]credential, refreshSaved bool) (sshconn.Config, []hosts.Host, map[int]credential, []hosts.Host, error) {
+	// 调用方手里的可能是旧副本（例如标签里的主机，之后又保存了密码），以保险库里的为准；
+	// 表单“测试连接”则直接使用表单当前未保存的候选配置。
+	if refreshSaved {
+		if fresh, ok := a.hostByID(h.ID); ok {
+			h = fresh
+		}
 	}
 	route, err := hosts.ResolveRoute(h, a.hosts, a.localUser)
 	if err != nil {
@@ -1676,6 +1704,38 @@ func (a *app) closeFocused(t *tab) {
 	go term.Close()
 }
 
+// countTunnelsForTab 返回指定标签页上当前正在运行的端口转发数量。
+func (a *app) countTunnelsForTab(tabID int) int {
+	n := 0
+	for _, live := range a.tunnels {
+		if live.tabID == tabID {
+			n++
+		}
+	}
+	return n
+}
+
+// focusPaneStep 在当前标签页的分屏叶子窗格之间按前后顺序切换焦点。
+func (a *app) focusPaneStep(t *tab, delta int) {
+	if t == nil || t.root == nil {
+		return
+	}
+	var leaves []*pane
+	t.root.each(func(p *pane) { leaves = append(leaves, p) })
+	if len(leaves) < 2 {
+		return
+	}
+	cur := slices.Index(leaves, t.focus)
+	if cur < 0 {
+		cur = 0
+	}
+	next := leaves[(cur+delta%len(leaves)+len(leaves))%len(leaves)]
+	t.focus = next
+	next.termHandle.Focus()
+	a.syncBroadcastSource()
+	a.saveSessionLayout()
+}
+
 // duplicateTab 复制标签页：若为本地终端则新建本地终端，若为远程主机则开启新的连接会话。
 func (a *app) duplicateTab(t *tab) {
 	if t == nil {
@@ -2309,7 +2369,7 @@ func (a *app) openDir(t *tab, dir string) {
 
 // followCwd 让文件抽屉跟随终端的工作目录（远端 shell 通过 OSC 7 上报）。
 func (a *app) followCwd(t *tab) {
-	if t.files == nil || t.focus == nil || t.focus.term == nil {
+	if t.filesPinned || t.files == nil || t.focus == nil || t.focus.term == nil {
 		return
 	}
 	cwd := t.focus.term.Dir()

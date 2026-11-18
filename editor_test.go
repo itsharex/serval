@@ -223,4 +223,76 @@ func TestEditorAdaptiveSizeAndHeader(t *testing.T) {
 	if !h.tt.HasText(shortcutText("S") + " 保存") {
 		t.Fatalf("编辑器副标题行应展示保存快捷键提示: %q", h.tt.Texts())
 	}
+	if !h.tt.HasText("2 行 · 11 B · UTF-8 · LF") {
+		t.Fatalf("编辑器底部应显示行数、大小、编码与换行符状态: %q", h.tt.Texts())
+	}
+}
+
+func TestEditorLocalFileAndConflict(t *testing.T) {
+	h := newHarness(t)
+	h.connectDev()
+	localPath := filepath.Join(h.a.localDir, "local-note.txt")
+	if err := os.WriteFile(localPath, []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("本地文件出现", func() bool { return h.tt.HasText("本地 local-note.txt") })
+
+	if err := h.tt.RightClick("本地 local-note.txt"); err != nil {
+		t.Fatalf("右键本地文件失败: %v", err)
+	}
+	if err := h.tt.ChooseMenuItem("编辑"); err != nil {
+		t.Fatalf("选择编辑失败: %v menu=%q", err, h.tt.Menu())
+	}
+	h.pump("打开本地编辑器", func() bool {
+		return h.a.editor.open && h.a.editor.local && h.a.editor.buf != nil
+	})
+	h.a.editor.buf.Set("local-updated")
+	h.tt.Frame()
+	h.click("保存")
+	h.pump("本地保存完成", func() bool {
+		got, err := os.ReadFile(localPath)
+		return err == nil && string(got) == "local-updated" && !h.a.editor.busy && !h.a.editor.dirty
+	})
+
+	future := time.Now().Add(5 * time.Second)
+	if err := os.WriteFile(localPath, []byte("disk-new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(localPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	h.a.editor.buf.Set("local-force")
+	h.tt.Frame()
+	h.click("保存")
+	h.pump("本地冲突弹窗", func() bool { return h.a.editor.askOverwrite && h.tt.HasText("本地文件已变化") })
+	h.click("仍然保存")
+	h.pump("本地强制覆盖", func() bool {
+		got, err := os.ReadFile(localPath)
+		return err == nil && string(got) == "local-force" && !h.a.editor.busy
+	})
+}
+
+func TestEditorDoubleClickOpensFile(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("打开文件抽屉", func() bool { return tb.dir != "" })
+
+	remotePath := filepath.Join(tb.dir, "dbl.txt")
+	if err := os.WriteFile(remotePath, []byte("from-dbl"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refreshUntil(t, h, tb, "dbl.txt")
+	box, ok := h.tt.Find("dbl.txt")
+	if !ok {
+		t.Fatalf("找不到 dbl.txt")
+	}
+	cx, cy := box.X+box.W/2, box.Y+box.H/2
+	h.tt.ClickAt(cx, cy)
+	h.tt.Advance(50 * time.Millisecond)
+	h.tt.ClickAt(cx, cy)
+	h.pump("双击打开远程编辑器", func() bool {
+		return h.a.editor.open && !h.a.editor.local && h.a.editor.name == "dbl.txt"
+	})
 }

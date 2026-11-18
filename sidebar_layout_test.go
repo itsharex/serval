@@ -183,3 +183,71 @@ func TestDismissNoticeCollapsedSidebarAndClearFilter(t *testing.T) {
 		t.Fatalf("点清除过滤后应清空搜索关键字，实际 %q", h.a.hostFilter)
 	}
 }
+
+func TestSidebarTagsCollapsedGroupAndShortcutNavigation(t *testing.T) {
+	h := newHarness(t)
+	dev := h.devHost()
+	dev.Tags = []string{"prod", "web", "edge", "db"}
+	if err := h.a.apply(hostChange(dev)); err != nil {
+		t.Fatal(err)
+	}
+	h.tt.Frame()
+	for _, want := range []string{"#prod", "#web", "#edge", "+1"} {
+		if !h.tt.HasText(want) {
+			t.Fatalf("侧栏主机行应展示标签微徽章 %q: %q", want, h.tt.Texts())
+		}
+	}
+
+	// 折叠分组后显示数量并隐藏分组内主机行
+	h.click("折叠 " + defaultGroup)
+	h.tt.Frame()
+	if !h.tt.HasText("1") || h.tt.HasText("+1") || h.tt.HasText("dev") {
+		t.Fatalf("折叠分组后应显示主机计数并隐藏主机行: %q", h.tt.Texts())
+	}
+	h.click("展开 " + defaultGroup)
+	h.tt.Frame()
+
+	tb := h.connectDev()
+	mods := chromeShortcut()
+
+	// Ctrl+Shift+T / Cmd+T 新建本地终端，Ctrl+Shift+1/2 / Cmd+1/2 切标签
+	h.tt.Key(mods, ui.KeyT)
+	h.pump("快捷键新建本地终端", func() bool { return len(h.a.tabs) == 2 && h.a.active == 1 })
+
+	h.tt.Key(mods, ui.Key1)
+	h.tt.Frame()
+	if h.a.active != 0 {
+		t.Fatalf("快捷键 1 应切回第一个标签，实际 active=%d", h.a.active)
+	}
+	h.tt.Key(mods, ui.Key9)
+	h.tt.Frame()
+	if h.a.active != 1 {
+		t.Fatalf("快捷键 9 应切到最后一个标签，实际 active=%d", h.a.active)
+	}
+
+	// 切回 SSH 标签拆分窗格并用 Alt+左右方向键在窗格间切换焦点
+	h.tt.Key(mods, ui.Key1)
+	h.tt.Frame()
+	firstPane := tb.focus
+	h.a.split(tb, false)
+	h.pump("拆出第二个窗格", func() bool { return tb.root.leaves() == 2 && tb.focus != firstPane })
+	secondPane := tb.focus
+
+	h.tt.Key(mods|ui.Alt, ui.KeyLeft)
+	h.tt.Frame()
+	if tb.focus != firstPane {
+		t.Fatalf("Alt+Left 应切回第一个窗格: got=%v want=%v", tb.focus.id, firstPane.id)
+	}
+	h.tt.Key(mods|ui.Alt, ui.KeyRight)
+	h.tt.Frame()
+	if tb.focus != secondPane {
+		t.Fatalf("Alt+Right 应切回第二个窗格: got=%v want=%v", tb.focus.id, secondPane.id)
+	}
+
+	// Ctrl+Shift+N / Cmd+N 打开新建主机表单
+	h.tt.Key(mods, ui.KeyN)
+	h.tt.Frame()
+	if !h.a.form.open {
+		t.Fatal("快捷键 N 应打开新建主机表单")
+	}
+}
