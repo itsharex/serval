@@ -2,6 +2,19 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-18
+
+### Added
+
+- **Dual-Pane SFTP Polish & Built-In Local/Remote Text Editor (`core/sshconn/sftp.go`, `dualpane.go`, `files.go`, `editor.go`, `sheets.go`)**: Added local/remote empty-file creation with conflict detection (`ErrRemoteExists`), symlink-safe recursive directory deletion (`Files.RemoveAll` and `removeLocalPath`), download overwrite confirmation, symmetric filter/hide-dotfiles/sort subbars, local directory quick-jump presets, remote path pinning (`filesPinned`), `"Open in Terminal"` navigation, double-click regular file editing in both panes, local file text editing with mtime/hash conflict detection and atomic writes, and an editor status bar (`lines · bytes · UTF-8 · EOL`).
+- **Host Form Test Connection & Auto-Auth Password (`hostform.go`, `app.go`)**: Added optional password entry for `Auto` authentication and a `"Test Connection"` probe action (`testHostConnection`) that validates jump hosts, proxies, and host keys before cleaning up the test session.
+- **Navigation Shortcuts, Monitor Bars & Sidebar Clarity (`view.go`, `app.go`, `palette.go`, `hostorder.go`)**: Added `⌘N` (New Host), `⌘T` (New Local Terminal), `⌘1`–`⌘9` (switch tabs), and `⌘⌥←`/`→` (step split-pane focus, also exposed in Command Palette); displayed `#tag` chips (up to 3 + `+N`) on host rows, live indicator dots & host counts on collapsed groups, clickable active tunnel badges (`paneTunnels`) on pane headers, and 3px `ui.Progress` resource bars in the Server Monitor strip.
+- **Snippet Variable Defaults & Encrypted Vault Backup/Restore (`snippet.go`, `settings.go`, `dialogs.go`)**: Added `{{var:default}}` placeholder prefill and search filtering in the Snippets panel, plus encrypted vault backup export and backup restore/merge (supporting same-vault HLC merge, cross-vault password-unlocked merge, and empty-vault adoption) in Settings.
+
+### Fixed
+
+- **Nested Row Buttons & Missing Palette Arrow Icons (`dualpane.go`, `design/icons/`)**: Refactored file/bookmark rows into side-by-side non-nested buttons for accessibility and automation, and added missing Lucide `arrow-left` and `arrow-right` SVG icons alongside `file-plus`, `radar`, `arrow-up-down`, `pin`, and `pin-off`.
+
 ## [0.5.2] - 2026-11-18
 
 ### Changed
