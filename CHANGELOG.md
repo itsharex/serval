@@ -2,6 +2,15 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-11-18
+
+### Changed
+
+- **MyGo v0.10.0 Upgrade & UI Lifecycle Migration (`go.mod`, `*.go`)**: Upgraded `github.com/egoist/mygo` from `0.9.0` to `0.10.0`, migrated UI keys to `Context.Key`, replaced per-frame focus polling (`focusSearch`/`focusTerm`) with persistent `ui.Handle` bindings (`searchHandle`/`termHandle` with `SelectAll` on find reopen), and updated UI scroll tests for tighter scroll clipping.
+- **Glass Popover & Context Menus (`sheets.go`, `view.go`, `dualpane.go`, `aipanel.go`, `keyspanel.go`, `proxypanel.go`, `snippet.go`, `settings.go`)**: Styled all in-window context menus and dropdown menus with `glass.Glass` panels, card borders, and concentric corners matching modal sheets.
+- **Start-Truncated Path Ellipsis (`view.go`, `dualpane.go`, `editor.go`, `settings.go`)**: Added `.TruncateStart()` to pane header paths, dual-pane SFTP titles, remote editor subtitles, session log directories, and local sync folder paths so trailing directory/file names remain visible when space is tight.
+- **Cleaner Terminal Exit & Leaner Windows Builds (`app.go`, `.github/workflows/`)**: Enabled `terminal.Options.NoExitMessage` so ended sessions use Serval's header chip and reconnect banner without injecting `[Process exited]` into the terminal screen, and added `-tags=mygo_nowebview` to Windows CI and release builds to omit unused WebView2 loader code.
+
 ## [0.5.1] - 2026-11-17
 
 ### Fixed
