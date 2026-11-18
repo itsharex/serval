@@ -246,6 +246,78 @@ func (f *Files) Chmod(remotePath string, mode fs.FileMode) error {
 	return f.client.Chmod(remotePath, mode)
 }
 
+// ErrRemoteExists 表示远程路径已经存在同名文件或目录。
+var ErrRemoteExists = errors.New("远程已存在同名文件或文件夹")
+
+// CreateEmpty 在远程新建一个空普通文件；如果目标已存在则返回 ErrRemoteExists。
+func (f *Files) CreateEmpty(remotePath string) error {
+	if _, err := f.client.Lstat(remotePath); err == nil {
+		return ErrRemoteExists
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查远程文件失败: %w", err)
+	}
+	file, err := f.client.OpenFile(remotePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return ErrRemoteExists
+		}
+		return fmt.Errorf("创建远程文件失败: %w", err)
+	}
+	return file.Close()
+}
+
+// RemoveAll 递归删除远程文件、符号链接或目录。
+// 对符号链接只删除链接本身，绝不跟随进入链接指向的目录，防止误删外部目录内容。
+func (f *Files) RemoveAll(ctx context.Context, remotePath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if remotePath == "" || strings.ContainsRune(remotePath, 0) ||
+		strings.HasSuffix(remotePath, "/.") || strings.HasSuffix(remotePath, "/..") {
+		return errors.New("无法删除该远程路径")
+	}
+	cleaned := path.Clean(remotePath)
+	base := path.Base(cleaned)
+	if cleaned == "/" || cleaned == "." || cleaned == ".." || base == "." || base == ".." {
+		return errors.New("无法删除根目录或相对保留路径")
+	}
+	info, err := f.client.Lstat(cleaned)
+	if err != nil {
+		return fmt.Errorf("读取 %s 失败: %w", cleaned, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+		return f.client.Remove(cleaned)
+	}
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		infos, err := f.client.ReadDir(dir)
+		if err != nil {
+			return fmt.Errorf("读取目录 %s 失败: %w", dir, err)
+		}
+		for _, child := range infos {
+			name := child.Name()
+			if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+				return errors.New("远程文件名不安全，已停止删除")
+			}
+			childPath := path.Join(dir, name)
+			if child.Mode()&fs.ModeSymlink != 0 || !child.IsDir() {
+				if err := f.client.Remove(childPath); err != nil {
+					return fmt.Errorf("删除 %s 失败: %w", childPath, err)
+				}
+				continue
+			}
+			if err := walk(childPath); err != nil {
+				return err
+			}
+		}
+		return f.client.RemoveDirectory(dir)
+	}
+	return walk(cleaned)
+}
+
 // 编辑器读写文本时用的哨兵错误。界面负责把它们说成用户能照做的话。
 var (
 	// ErrFileTooLarge 表示文件比调用方给的上限大，没有把内容读进内存。

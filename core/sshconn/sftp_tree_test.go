@@ -197,3 +197,67 @@ func TestDownloadIfAbsentRefusesExisting(t *testing.T) {
 		t.Fatalf("应清掉临时文件: %v", matches)
 	}
 }
+
+func TestCreateEmptyAndRemoveAll(t *testing.T) {
+	remote := t.TempDir()
+	outside := t.TempDir()
+	keepFile := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(keepFile, []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := startServer(t, devsshd.Options{})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+	files, err := client.OpenFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+
+	// 1. CreateEmpty 创建新文件，已存在时返回 ErrRemoteExists
+	newFile := filepath.Join(remote, "empty.txt")
+	if err := files.CreateEmpty(filepath.ToSlash(newFile)); err != nil {
+		t.Fatalf("CreateEmpty 失败: %v", err)
+	}
+	if got := readLocal(t, newFile); got != "" {
+		t.Fatalf("新建文件应为空，got=%q", got)
+	}
+	if err := os.WriteFile(newFile, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.CreateEmpty(filepath.ToSlash(newFile)); !errors.Is(err, ErrRemoteExists) {
+		t.Fatalf("已存在文件应返回 ErrRemoteExists，err=%v", err)
+	}
+	if got := readLocal(t, newFile); got != "keep" {
+		t.Fatalf("CreateEmpty 不应覆盖已有文件，got=%q", got)
+	}
+
+	// 2. RemoveAll 递归删除非空目录，但不跟随符号链接删除外部目录内容
+	targetDir := filepath.Join(remote, "nested")
+	if err := os.MkdirAll(filepath.Join(targetDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "sub", "child.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(targetDir, "ext-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.RemoveAll(context.Background(), filepath.ToSlash(targetDir)); err != nil {
+		t.Fatalf("RemoveAll 失败: %v", err)
+	}
+	if _, err := os.Lstat(targetDir); !os.IsNotExist(err) {
+		t.Fatalf("目录应被删除，err=%v", err)
+	}
+	if got := readLocal(t, keepFile); got != "precious" {
+		t.Fatalf("符号链接指向的外部目录内容不应被删除，got=%q", got)
+	}
+
+	// 3. 边界条件：根目录 / 不存在路径拒绝
+	if err := files.RemoveAll(context.Background(), "/"); err == nil {
+		t.Fatal("不应允许删除根目录")
+	}
+	if err := files.RemoveAll(context.Background(), filepath.ToSlash(filepath.Join(remote, "missing"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("不存在路径应返回 os.ErrNotExist，err=%v", err)
+	}
+}

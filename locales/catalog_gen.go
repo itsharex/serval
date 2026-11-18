@@ -904,11 +904,11 @@ func (msgs Messages) SheetCreate() string {
 	return Catalog.Format(msgs.locale, "sheetCreate", nil)
 }
 
-// SheetDeleteDirectory says "删除后无法恢复。确定要删除该目录吗？"
+// SheetDeleteDirectory says "将一并删除其中的所有文件和子文件夹，删除后无法恢复。确定要删除该目录吗？"
 // in the language the app shows.
 func SheetDeleteDirectory() string { return In(i18n.Locale()).SheetDeleteDirectory() }
 
-// SheetDeleteDirectory says "删除后无法恢复。确定要删除该目录吗？"
+// SheetDeleteDirectory says "将一并删除其中的所有文件和子文件夹，删除后无法恢复。确定要删除该目录吗？"
 // in the language of msgs.
 func (msgs Messages) SheetDeleteDirectory() string {
 	return Catalog.Format(msgs.locale, "sheetDeleteDirectory", nil)
@@ -4534,4 +4534,784 @@ func PortForward() string { return In(i18n.Locale()).PortForward() }
 // in the language of msgs.
 func (msgs Messages) PortForward() string {
 	return Catalog.Format(msgs.locale, "portForward", nil)
+}
+
+// PaletteFocusPrevPane says "切换到上一个窗格"
+// in the language the app shows.
+func PaletteFocusPrevPane() string { return In(i18n.Locale()).PaletteFocusPrevPane() }
+
+// PaletteFocusPrevPane says "切换到上一个窗格"
+// in the language of msgs.
+func (msgs Messages) PaletteFocusPrevPane() string {
+	return Catalog.Format(msgs.locale, "paletteFocusPrevPane", nil)
+}
+
+// PaletteFocusNextPane says "切换到下一个窗格"
+// in the language the app shows.
+func PaletteFocusNextPane() string { return In(i18n.Locale()).PaletteFocusNextPane() }
+
+// PaletteFocusNextPane says "切换到下一个窗格"
+// in the language of msgs.
+func (msgs Messages) PaletteFocusNextPane() string {
+	return Catalog.Format(msgs.locale, "paletteFocusNextPane", nil)
+}
+
+// HostTestConn says "测试连接"
+// in the language the app shows.
+func HostTestConn() string { return In(i18n.Locale()).HostTestConn() }
+
+// HostTestConn says "测试连接"
+// in the language of msgs.
+func (msgs Messages) HostTestConn() string {
+	return Catalog.Format(msgs.locale, "hostTestConn", nil)
+}
+
+// HostTestingConn says "测试中…"
+// in the language the app shows.
+func HostTestingConn() string { return In(i18n.Locale()).HostTestingConn() }
+
+// HostTestingConn says "测试中…"
+// in the language of msgs.
+func (msgs Messages) HostTestingConn() string {
+	return Catalog.Format(msgs.locale, "hostTestingConn", nil)
+}
+
+// HostTestSerialOK says "串口设备可打开"
+// in the language the app shows.
+func HostTestSerialOK() string { return In(i18n.Locale()).HostTestSerialOK() }
+
+// HostTestSerialOK says "串口设备可打开"
+// in the language of msgs.
+func (msgs Messages) HostTestSerialOK() string {
+	return Catalog.Format(msgs.locale, "hostTestSerialOK", nil)
+}
+
+// HostTestTelnetTimeout says "Telnet 连接超时，请检查地址与端口"
+// in the language the app shows.
+func HostTestTelnetTimeout() string { return In(i18n.Locale()).HostTestTelnetTimeout() }
+
+// HostTestTelnetTimeout says "Telnet 连接超时，请检查地址与端口"
+// in the language of msgs.
+func (msgs Messages) HostTestTelnetTimeout() string {
+	return Catalog.Format(msgs.locale, "hostTestTelnetTimeout", nil)
+}
+
+// HostTestTelnetOK says "Telnet 端口可达 · {latency}"
+// in the language the app shows.
+func HostTestTelnetOK(latency string) string { return In(i18n.Locale()).HostTestTelnetOK(latency) }
+
+// HostTestTelnetOK says "Telnet 端口可达 · {latency}"
+// in the language of msgs.
+func (msgs Messages) HostTestTelnetOK(latency string) string {
+	return Catalog.Format(msgs.locale, "hostTestTelnetOK", map[string]any{"latency": latency})
+}
+
+// HostTestSSHOK says "连接并认证成功 · {latency}"
+// in the language the app shows.
+func HostTestSSHOK(latency string) string { return In(i18n.Locale()).HostTestSSHOK(latency) }
+
+// HostTestSSHOK says "连接并认证成功 · {latency}"
+// in the language of msgs.
+func (msgs Messages) HostTestSSHOK(latency string) string {
+	return Catalog.Format(msgs.locale, "hostTestSSHOK", map[string]any{"latency": latency})
+}
+
+// HostTestSSHNoAuth says "{name} SSH 端口与密钥校验通过 · {latency}（未填凭据，连接时将询问）"
+// in the language the app shows.
+func HostTestSSHNoAuth(name string, latency string) string {
+	return In(i18n.Locale()).HostTestSSHNoAuth(name, latency)
+}
+
+// HostTestSSHNoAuth says "{name} SSH 端口与密钥校验通过 · {latency}（未填凭据，连接时将询问）"
+// in the language of msgs.
+func (msgs Messages) HostTestSSHNoAuth(name string, latency string) string {
+	return Catalog.Format(msgs.locale, "hostTestSSHNoAuth", map[string]any{"name": name, "latency": latency})
+}
+
+// HostTestSSHAuthFailed says "{name} SSH 服务可达，但认证未通过，请检查用户名、密码或私钥。"
+// in the language the app shows.
+func HostTestSSHAuthFailed(name string) string { return In(i18n.Locale()).HostTestSSHAuthFailed(name) }
+
+// HostTestSSHAuthFailed says "{name} SSH 服务可达，但认证未通过，请检查用户名、密码或私钥。"
+// in the language of msgs.
+func (msgs Messages) HostTestSSHAuthFailed(name string) string {
+	return Catalog.Format(msgs.locale, "hostTestSSHAuthFailed", map[string]any{"name": name})
+}
+
+// HostTestAgentUnavailable says "{name} 启用了转发 ssh-agent，但本机没有可用的 ssh-agent。"
+// in the language the app shows.
+func HostTestAgentUnavailable(name string) string {
+	return In(i18n.Locale()).HostTestAgentUnavailable(name)
+}
+
+// HostTestAgentUnavailable says "{name} 启用了转发 ssh-agent，但本机没有可用的 ssh-agent。"
+// in the language of msgs.
+func (msgs Messages) HostTestAgentUnavailable(name string) string {
+	return Catalog.Format(msgs.locale, "hostTestAgentUnavailable", map[string]any{"name": name})
+}
+
+// ViewPaneTunnelsTooltip says "查看当前标签的端口转发"
+// in the language the app shows.
+func ViewPaneTunnelsTooltip() string { return In(i18n.Locale()).ViewPaneTunnelsTooltip() }
+
+// ViewPaneTunnelsTooltip says "查看当前标签的端口转发"
+// in the language of msgs.
+func (msgs Messages) ViewPaneTunnelsTooltip() string {
+	return Catalog.Format(msgs.locale, "viewPaneTunnelsTooltip", nil)
+}
+
+// ViewPaneTunnelsBadge says "{count, number} 转发"
+// in the language the app shows.
+func ViewPaneTunnelsBadge(count int) string { return In(i18n.Locale()).ViewPaneTunnelsBadge(count) }
+
+// ViewPaneTunnelsBadge says "{count, number} 转发"
+// in the language of msgs.
+func (msgs Messages) ViewPaneTunnelsBadge(count int) string {
+	return Catalog.Format(msgs.locale, "viewPaneTunnelsBadge", map[string]any{"count": count})
+}
+
+// ViewPaneTunnelsLabel says "窗格 {index, number}：{badge}"
+// in the language the app shows.
+func ViewPaneTunnelsLabel(index int, badge string) string {
+	return In(i18n.Locale()).ViewPaneTunnelsLabel(index, badge)
+}
+
+// ViewPaneTunnelsLabel says "窗格 {index, number}：{badge}"
+// in the language of msgs.
+func (msgs Messages) ViewPaneTunnelsLabel(index int, badge string) string {
+	return Catalog.Format(msgs.locale, "viewPaneTunnelsLabel", map[string]any{"index": index, "badge": badge})
+}
+
+// ViewForwardsRunningTooltip says "{title}（{count, number} 条运行中）"
+// in the language the app shows.
+func ViewForwardsRunningTooltip(title string, count int) string {
+	return In(i18n.Locale()).ViewForwardsRunningTooltip(title, count)
+}
+
+// ViewForwardsRunningTooltip says "{title}（{count, number} 条运行中）"
+// in the language of msgs.
+func (msgs Messages) ViewForwardsRunningTooltip(title string, count int) string {
+	return Catalog.Format(msgs.locale, "viewForwardsRunningTooltip", map[string]any{"title": title, "count": count})
+}
+
+// NewFile says "新建文件"
+// in the language the app shows.
+func NewFile() string { return In(i18n.Locale()).NewFile() }
+
+// NewFile says "新建文件"
+// in the language of msgs.
+func (msgs Messages) NewFile() string {
+	return Catalog.Format(msgs.locale, "newFile", nil)
+}
+
+// SheetFileName says "文件名称"
+// in the language the app shows.
+func SheetFileName() string { return In(i18n.Locale()).SheetFileName() }
+
+// SheetFileName says "文件名称"
+// in the language of msgs.
+func (msgs Messages) SheetFileName() string {
+	return Catalog.Format(msgs.locale, "sheetFileName", nil)
+}
+
+// FileCreatedNamed says "已创建文件 {name}"
+// in the language the app shows.
+func FileCreatedNamed(name string) string { return In(i18n.Locale()).FileCreatedNamed(name) }
+
+// FileCreatedNamed says "已创建文件 {name}"
+// in the language of msgs.
+func (msgs Messages) FileCreatedNamed(name string) string {
+	return Catalog.Format(msgs.locale, "fileCreatedNamed", map[string]any{"name": name})
+}
+
+// FileAlreadyExists says "已存在同名的文件或文件夹。"
+// in the language the app shows.
+func FileAlreadyExists() string { return In(i18n.Locale()).FileAlreadyExists() }
+
+// FileAlreadyExists says "已存在同名的文件或文件夹。"
+// in the language of msgs.
+func (msgs Messages) FileAlreadyExists() string {
+	return Catalog.Format(msgs.locale, "fileAlreadyExists", nil)
+}
+
+// ViewRemote says "远程"
+// in the language the app shows.
+func ViewRemote() string { return In(i18n.Locale()).ViewRemote() }
+
+// ViewRemote says "远程"
+// in the language of msgs.
+func (msgs Messages) ViewRemote() string {
+	return Catalog.Format(msgs.locale, "viewRemote", nil)
+}
+
+// ViewUploadFolder says "上传文件夹"
+// in the language the app shows.
+func ViewUploadFolder() string { return In(i18n.Locale()).ViewUploadFolder() }
+
+// ViewUploadFolder says "上传文件夹"
+// in the language of msgs.
+func (msgs Messages) ViewUploadFolder() string {
+	return Catalog.Format(msgs.locale, "viewUploadFolder", nil)
+}
+
+// LocalParentDirectory says "本地上一级"
+// in the language the app shows.
+func LocalParentDirectory() string { return In(i18n.Locale()).LocalParentDirectory() }
+
+// LocalParentDirectory says "本地上一级"
+// in the language of msgs.
+func (msgs Messages) LocalParentDirectory() string {
+	return Catalog.Format(msgs.locale, "localParentDirectory", nil)
+}
+
+// LocalRefresh says "刷新本地"
+// in the language the app shows.
+func LocalRefresh() string { return In(i18n.Locale()).LocalRefresh() }
+
+// LocalRefresh says "刷新本地"
+// in the language of msgs.
+func (msgs Messages) LocalRefresh() string {
+	return Catalog.Format(msgs.locale, "localRefresh", nil)
+}
+
+// LocalNewFile says "新建本地文件"
+// in the language the app shows.
+func LocalNewFile() string { return In(i18n.Locale()).LocalNewFile() }
+
+// LocalNewFile says "新建本地文件"
+// in the language of msgs.
+func (msgs Messages) LocalNewFile() string {
+	return Catalog.Format(msgs.locale, "localNewFile", nil)
+}
+
+// LocalNewFolder says "新建本地文件夹"
+// in the language the app shows.
+func LocalNewFolder() string { return In(i18n.Locale()).LocalNewFolder() }
+
+// LocalNewFolder says "新建本地文件夹"
+// in the language of msgs.
+func (msgs Messages) LocalNewFolder() string {
+	return Catalog.Format(msgs.locale, "localNewFolder", nil)
+}
+
+// LocalEmptyDirectory says "本地目录是空的"
+// in the language the app shows.
+func LocalEmptyDirectory() string { return In(i18n.Locale()).LocalEmptyDirectory() }
+
+// LocalEmptyDirectory says "本地目录是空的"
+// in the language of msgs.
+func (msgs Messages) LocalEmptyDirectory() string {
+	return Catalog.Format(msgs.locale, "localEmptyDirectory", nil)
+}
+
+// FileNoMatches says "没有匹配的文件"
+// in the language the app shows.
+func FileNoMatches() string { return In(i18n.Locale()).FileNoMatches() }
+
+// FileNoMatches says "没有匹配的文件"
+// in the language of msgs.
+func (msgs Messages) FileNoMatches() string {
+	return Catalog.Format(msgs.locale, "fileNoMatches", nil)
+}
+
+// LocalEditPath says "编辑本地路径"
+// in the language the app shows.
+func LocalEditPath() string { return In(i18n.Locale()).LocalEditPath() }
+
+// LocalEditPath says "编辑本地路径"
+// in the language of msgs.
+func (msgs Messages) LocalEditPath() string {
+	return Catalog.Format(msgs.locale, "localEditPath", nil)
+}
+
+// RemoteEditPath says "编辑远程路径"
+// in the language the app shows.
+func RemoteEditPath() string { return In(i18n.Locale()).RemoteEditPath() }
+
+// RemoteEditPath says "编辑远程路径"
+// in the language of msgs.
+func (msgs Messages) RemoteEditPath() string {
+	return Catalog.Format(msgs.locale, "remoteEditPath", nil)
+}
+
+// LocalQuickDirs says "常用本地目录"
+// in the language the app shows.
+func LocalQuickDirs() string { return In(i18n.Locale()).LocalQuickDirs() }
+
+// LocalQuickDirs says "常用本地目录"
+// in the language of msgs.
+func (msgs Messages) LocalQuickDirs() string {
+	return Catalog.Format(msgs.locale, "localQuickDirs", nil)
+}
+
+// LocalQuickDirsTooltip says "快速跳转到常用本地目录"
+// in the language the app shows.
+func LocalQuickDirsTooltip() string { return In(i18n.Locale()).LocalQuickDirsTooltip() }
+
+// LocalQuickDirsTooltip says "快速跳转到常用本地目录"
+// in the language of msgs.
+func (msgs Messages) LocalQuickDirsTooltip() string {
+	return Catalog.Format(msgs.locale, "localQuickDirsTooltip", nil)
+}
+
+// LocalQuickHome says "主目录"
+// in the language the app shows.
+func LocalQuickHome() string { return In(i18n.Locale()).LocalQuickHome() }
+
+// LocalQuickHome says "主目录"
+// in the language of msgs.
+func (msgs Messages) LocalQuickHome() string {
+	return Catalog.Format(msgs.locale, "localQuickHome", nil)
+}
+
+// LocalQuickDownloads says "下载"
+// in the language the app shows.
+func LocalQuickDownloads() string { return In(i18n.Locale()).LocalQuickDownloads() }
+
+// LocalQuickDownloads says "下载"
+// in the language of msgs.
+func (msgs Messages) LocalQuickDownloads() string {
+	return Catalog.Format(msgs.locale, "localQuickDownloads", nil)
+}
+
+// LocalQuickDesktop says "桌面"
+// in the language the app shows.
+func LocalQuickDesktop() string { return In(i18n.Locale()).LocalQuickDesktop() }
+
+// LocalQuickDesktop says "桌面"
+// in the language of msgs.
+func (msgs Messages) LocalQuickDesktop() string {
+	return Catalog.Format(msgs.locale, "localQuickDesktop", nil)
+}
+
+// LocalQuickDocuments says "文稿"
+// in the language the app shows.
+func LocalQuickDocuments() string { return In(i18n.Locale()).LocalQuickDocuments() }
+
+// LocalQuickDocuments says "文稿"
+// in the language of msgs.
+func (msgs Messages) LocalQuickDocuments() string {
+	return Catalog.Format(msgs.locale, "localQuickDocuments", nil)
+}
+
+// LocalQuickTermDir says "当前终端目录"
+// in the language the app shows.
+func LocalQuickTermDir() string { return In(i18n.Locale()).LocalQuickTermDir() }
+
+// LocalQuickTermDir says "当前终端目录"
+// in the language of msgs.
+func (msgs Messages) LocalQuickTermDir() string {
+	return Catalog.Format(msgs.locale, "localQuickTermDir", nil)
+}
+
+// FileFilterPlaceholder says "筛选文件…"
+// in the language the app shows.
+func FileFilterPlaceholder() string { return In(i18n.Locale()).FileFilterPlaceholder() }
+
+// FileFilterPlaceholder says "筛选文件…"
+// in the language of msgs.
+func (msgs Messages) FileFilterPlaceholder() string {
+	return Catalog.Format(msgs.locale, "fileFilterPlaceholder", nil)
+}
+
+// FileHideDotfiles says "隐藏以 . 开头的文件"
+// in the language the app shows.
+func FileHideDotfiles() string { return In(i18n.Locale()).FileHideDotfiles() }
+
+// FileHideDotfiles says "隐藏以 . 开头的文件"
+// in the language of msgs.
+func (msgs Messages) FileHideDotfiles() string {
+	return Catalog.Format(msgs.locale, "fileHideDotfiles", nil)
+}
+
+// FileShowDotfiles says "显示以 . 开头的文件"
+// in the language the app shows.
+func FileShowDotfiles() string { return In(i18n.Locale()).FileShowDotfiles() }
+
+// FileShowDotfiles says "显示以 . 开头的文件"
+// in the language of msgs.
+func (msgs Messages) FileShowDotfiles() string {
+	return Catalog.Format(msgs.locale, "fileShowDotfiles", nil)
+}
+
+// FileSortName says "按名称"
+// in the language the app shows.
+func FileSortName() string { return In(i18n.Locale()).FileSortName() }
+
+// FileSortName says "按名称"
+// in the language of msgs.
+func (msgs Messages) FileSortName() string {
+	return Catalog.Format(msgs.locale, "fileSortName", nil)
+}
+
+// FileSortSize says "按大小"
+// in the language the app shows.
+func FileSortSize() string { return In(i18n.Locale()).FileSortSize() }
+
+// FileSortSize says "按大小"
+// in the language of msgs.
+func (msgs Messages) FileSortSize() string {
+	return Catalog.Format(msgs.locale, "fileSortSize", nil)
+}
+
+// FileSortTime says "按修改时间"
+// in the language the app shows.
+func FileSortTime() string { return In(i18n.Locale()).FileSortTime() }
+
+// FileSortTime says "按修改时间"
+// in the language of msgs.
+func (msgs Messages) FileSortTime() string {
+	return Catalog.Format(msgs.locale, "fileSortTime", nil)
+}
+
+// FileSortDescending says "降序排列"
+// in the language the app shows.
+func FileSortDescending() string { return In(i18n.Locale()).FileSortDescending() }
+
+// FileSortDescending says "降序排列"
+// in the language of msgs.
+func (msgs Messages) FileSortDescending() string {
+	return Catalog.Format(msgs.locale, "fileSortDescending", nil)
+}
+
+// RemotePinDir says "固定远程目录（不跟随终端切换）"
+// in the language the app shows.
+func RemotePinDir() string { return In(i18n.Locale()).RemotePinDir() }
+
+// RemotePinDir says "固定远程目录（不跟随终端切换）"
+// in the language of msgs.
+func (msgs Messages) RemotePinDir() string {
+	return Catalog.Format(msgs.locale, "remotePinDir", nil)
+}
+
+// RemoteUnpinDir says "取消固定（恢复跟随终端目录）"
+// in the language the app shows.
+func RemoteUnpinDir() string { return In(i18n.Locale()).RemoteUnpinDir() }
+
+// RemoteUnpinDir says "取消固定（恢复跟随终端目录）"
+// in the language of msgs.
+func (msgs Messages) RemoteUnpinDir() string {
+	return Catalog.Format(msgs.locale, "remoteUnpinDir", nil)
+}
+
+// RemoteCdTerminal says "在终端进入此目录"
+// in the language the app shows.
+func RemoteCdTerminal() string { return In(i18n.Locale()).RemoteCdTerminal() }
+
+// RemoteCdTerminal says "在终端进入此目录"
+// in the language of msgs.
+func (msgs Messages) RemoteCdTerminal() string {
+	return Catalog.Format(msgs.locale, "remoteCdTerminal", nil)
+}
+
+// RemoteCdDisconnected says "当前终端未连接，无法切换目录"
+// in the language the app shows.
+func RemoteCdDisconnected() string { return In(i18n.Locale()).RemoteCdDisconnected() }
+
+// RemoteCdDisconnected says "当前终端未连接，无法切换目录"
+// in the language of msgs.
+func (msgs Messages) RemoteCdDisconnected() string {
+	return Catalog.Format(msgs.locale, "remoteCdDisconnected", nil)
+}
+
+// RemoteCdDone says "终端已进入 {name}"
+// in the language the app shows.
+func RemoteCdDone(name string) string { return In(i18n.Locale()).RemoteCdDone(name) }
+
+// RemoteCdDone says "终端已进入 {name}"
+// in the language of msgs.
+func (msgs Messages) RemoteCdDone(name string) string {
+	return Catalog.Format(msgs.locale, "remoteCdDone", map[string]any{"name": name})
+}
+
+// FileReplaceLocalExists says "本机的 {dir} 里已经有同名文件，下载会替换它。"
+// in the language the app shows.
+func FileReplaceLocalExists(dir string) string { return In(i18n.Locale()).FileReplaceLocalExists(dir) }
+
+// FileReplaceLocalExists says "本机的 {dir} 里已经有同名文件，下载会替换它。"
+// in the language of msgs.
+func (msgs Messages) FileReplaceLocalExists(dir string) string {
+	return Catalog.Format(msgs.locale, "fileReplaceLocalExists", map[string]any{"dir": dir})
+}
+
+// EditorStatusSummary says "{lines, number} 行 · {size} · UTF-8 · {eol}"
+// in the language the app shows.
+func EditorStatusSummary(lines int, size string, eol string) string {
+	return In(i18n.Locale()).EditorStatusSummary(lines, size, eol)
+}
+
+// EditorStatusSummary says "{lines, number} 行 · {size} · UTF-8 · {eol}"
+// in the language of msgs.
+func (msgs Messages) EditorStatusSummary(lines int, size string, eol string) string {
+	return Catalog.Format(msgs.locale, "editorStatusSummary", map[string]any{"lines": lines, "size": size, "eol": eol})
+}
+
+// EditorEolMixed says "混合换行"
+// in the language the app shows.
+func EditorEolMixed() string { return In(i18n.Locale()).EditorEolMixed() }
+
+// EditorEolMixed says "混合换行"
+// in the language of msgs.
+func (msgs Messages) EditorEolMixed() string {
+	return Catalog.Format(msgs.locale, "editorEolMixed", nil)
+}
+
+// EditorLocalChanged says "本地文件已变化"
+// in the language the app shows.
+func EditorLocalChanged() string { return In(i18n.Locale()).EditorLocalChanged() }
+
+// EditorLocalChanged says "本地文件已变化"
+// in the language of msgs.
+func (msgs Messages) EditorLocalChanged() string {
+	return Catalog.Format(msgs.locale, "editorLocalChanged", nil)
+}
+
+// EditorLocalChangedBody says "保存会覆盖本地磁盘上的新内容。"
+// in the language the app shows.
+func EditorLocalChangedBody() string { return In(i18n.Locale()).EditorLocalChangedBody() }
+
+// EditorLocalChangedBody says "保存会覆盖本地磁盘上的新内容。"
+// in the language of msgs.
+func (msgs Messages) EditorLocalChangedBody() string {
+	return Catalog.Format(msgs.locale, "editorLocalChangedBody", nil)
+}
+
+// EditorSavedNamed says "已保存 {name}"
+// in the language the app shows.
+func EditorSavedNamed(name string) string { return In(i18n.Locale()).EditorSavedNamed(name) }
+
+// EditorSavedNamed says "已保存 {name}"
+// in the language of msgs.
+func (msgs Messages) EditorSavedNamed(name string) string {
+	return Catalog.Format(msgs.locale, "editorSavedNamed", map[string]any{"name": name})
+}
+
+// SnippetSearchLabel says "搜索代码片段"
+// in the language the app shows.
+func SnippetSearchLabel() string { return In(i18n.Locale()).SnippetSearchLabel() }
+
+// SnippetSearchLabel says "搜索代码片段"
+// in the language of msgs.
+func (msgs Messages) SnippetSearchLabel() string {
+	return Catalog.Format(msgs.locale, "snippetSearchLabel", nil)
+}
+
+// SnippetSearchPlaceholder says "搜索片段名称或命令"
+// in the language the app shows.
+func SnippetSearchPlaceholder() string { return In(i18n.Locale()).SnippetSearchPlaceholder() }
+
+// SnippetSearchPlaceholder says "搜索片段名称或命令"
+// in the language of msgs.
+func (msgs Messages) SnippetSearchPlaceholder() string {
+	return Catalog.Format(msgs.locale, "snippetSearchPlaceholder", nil)
+}
+
+// SnippetClearFilter says "清空"
+// in the language the app shows.
+func SnippetClearFilter() string { return In(i18n.Locale()).SnippetClearFilter() }
+
+// SnippetClearFilter says "清空"
+// in the language of msgs.
+func (msgs Messages) SnippetClearFilter() string {
+	return Catalog.Format(msgs.locale, "snippetClearFilter", nil)
+}
+
+// SnippetNoMatches says "没有匹配的代码片段"
+// in the language the app shows.
+func SnippetNoMatches() string { return In(i18n.Locale()).SnippetNoMatches() }
+
+// SnippetNoMatches says "没有匹配的代码片段"
+// in the language of msgs.
+func (msgs Messages) SnippetNoMatches() string {
+	return Catalog.Format(msgs.locale, "snippetNoMatches", nil)
+}
+
+// SetBackupTitle says "加密备份与恢复"
+// in the language the app shows.
+func SetBackupTitle() string { return In(i18n.Locale()).SetBackupTitle() }
+
+// SetBackupTitle says "加密备份与恢复"
+// in the language of msgs.
+func (msgs Messages) SetBackupTitle() string {
+	return Catalog.Format(msgs.locale, "setBackupTitle", nil)
+}
+
+// SetBackupExport says "导出加密备份"
+// in the language the app shows.
+func SetBackupExport() string { return In(i18n.Locale()).SetBackupExport() }
+
+// SetBackupExport says "导出加密备份"
+// in the language of msgs.
+func (msgs Messages) SetBackupExport() string {
+	return Catalog.Format(msgs.locale, "setBackupExport", nil)
+}
+
+// SetBackupRestore says "从备份恢复或合并"
+// in the language the app shows.
+func SetBackupRestore() string { return In(i18n.Locale()).SetBackupRestore() }
+
+// SetBackupRestore says "从备份恢复或合并"
+// in the language of msgs.
+func (msgs Messages) SetBackupRestore() string {
+	return Catalog.Format(msgs.locale, "setBackupRestore", nil)
+}
+
+// SetBackupDesc says "导出完整的加密保险库副本（vault.json …"
+// in the language the app shows.
+func SetBackupDesc() string { return In(i18n.Locale()).SetBackupDesc() }
+
+// SetBackupDesc says "导出完整的加密保险库副本（vault.json …"
+// in the language of msgs.
+func (msgs Messages) SetBackupDesc() string {
+	return Catalog.Format(msgs.locale, "setBackupDesc", nil)
+}
+
+// SetBackupEnterPassword says "输入备份主密码"
+// in the language the app shows.
+func SetBackupEnterPassword() string { return In(i18n.Locale()).SetBackupEnterPassword() }
+
+// SetBackupEnterPassword says "输入备份主密码"
+// in the language of msgs.
+func (msgs Messages) SetBackupEnterPassword() string {
+	return Catalog.Format(msgs.locale, "setBackupEnterPassword", nil)
+}
+
+// SetBackupOtherVaultHint says "这份备份属于另一个保险库，输入它的主密码即可解密并把记录合并到当前保险库。"
+// in the language the app shows.
+func SetBackupOtherVaultHint() string { return In(i18n.Locale()).SetBackupOtherVaultHint() }
+
+// SetBackupOtherVaultHint says "这份备份属于另一个保险库，输入它的主密码即可解密并把记录合并到当前保险库。"
+// in the language of msgs.
+func (msgs Messages) SetBackupOtherVaultHint() string {
+	return Catalog.Format(msgs.locale, "setBackupOtherVaultHint", nil)
+}
+
+// SetBackupPassword says "备份主密码"
+// in the language the app shows.
+func SetBackupPassword() string { return In(i18n.Locale()).SetBackupPassword() }
+
+// SetBackupPassword says "备份主密码"
+// in the language of msgs.
+func (msgs Messages) SetBackupPassword() string {
+	return Catalog.Format(msgs.locale, "setBackupPassword", nil)
+}
+
+// SetBackupUnlockMerge says "解锁并合并"
+// in the language the app shows.
+func SetBackupUnlockMerge() string { return In(i18n.Locale()).SetBackupUnlockMerge() }
+
+// SetBackupUnlockMerge says "解锁并合并"
+// in the language of msgs.
+func (msgs Messages) SetBackupUnlockMerge() string {
+	return Catalog.Format(msgs.locale, "setBackupUnlockMerge", nil)
+}
+
+// SetBackupWrongPassword says "备份主密码不正确，请重新输入。"
+// in the language the app shows.
+func SetBackupWrongPassword() string { return In(i18n.Locale()).SetBackupWrongPassword() }
+
+// SetBackupWrongPassword says "备份主密码不正确，请重新输入。"
+// in the language of msgs.
+func (msgs Messages) SetBackupWrongPassword() string {
+	return Catalog.Format(msgs.locale, "setBackupWrongPassword", nil)
+}
+
+// SetBackupExported says "已导出加密备份"
+// in the language the app shows.
+func SetBackupExported() string { return In(i18n.Locale()).SetBackupExported() }
+
+// SetBackupExported says "已导出加密备份"
+// in the language of msgs.
+func (msgs Messages) SetBackupExported() string {
+	return Catalog.Format(msgs.locale, "setBackupExported", nil)
+}
+
+// SetBackupImported says "已导入加密备份"
+// in the language the app shows.
+func SetBackupImported() string { return In(i18n.Locale()).SetBackupImported() }
+
+// SetBackupImported says "已导入加密备份"
+// in the language of msgs.
+func (msgs Messages) SetBackupImported() string {
+	return Catalog.Format(msgs.locale, "setBackupImported", nil)
+}
+
+// SetBackupUnlockHint says "请输入备份的主密码解锁。"
+// in the language the app shows.
+func SetBackupUnlockHint() string { return In(i18n.Locale()).SetBackupUnlockHint() }
+
+// SetBackupUnlockHint says "请输入备份的主密码解锁。"
+// in the language of msgs.
+func (msgs Messages) SetBackupUnlockHint() string {
+	return Catalog.Format(msgs.locale, "setBackupUnlockHint", nil)
+}
+
+// SetBackupRestored says "已从备份恢复数据"
+// in the language the app shows.
+func SetBackupRestored() string { return In(i18n.Locale()).SetBackupRestored() }
+
+// SetBackupRestored says "已从备份恢复数据"
+// in the language of msgs.
+func (msgs Messages) SetBackupRestored() string {
+	return Catalog.Format(msgs.locale, "setBackupRestored", nil)
+}
+
+// SetBackupMergedSame says "已从备份合并更新数据"
+// in the language the app shows.
+func SetBackupMergedSame() string { return In(i18n.Locale()).SetBackupMergedSame() }
+
+// SetBackupMergedSame says "已从备份合并更新数据"
+// in the language of msgs.
+func (msgs Messages) SetBackupMergedSame() string {
+	return Catalog.Format(msgs.locale, "setBackupMergedSame", nil)
+}
+
+// SetBackupAlreadyUpToDate says "备份中的数据已是最新，无需合并"
+// in the language the app shows.
+func SetBackupAlreadyUpToDate() string { return In(i18n.Locale()).SetBackupAlreadyUpToDate() }
+
+// SetBackupAlreadyUpToDate says "备份中的数据已是最新，无需合并"
+// in the language of msgs.
+func (msgs Messages) SetBackupAlreadyUpToDate() string {
+	return Catalog.Format(msgs.locale, "setBackupAlreadyUpToDate", nil)
+}
+
+// SetBackupNothingToAdd says "备份中的数据已全部存在，无需新增"
+// in the language the app shows.
+func SetBackupNothingToAdd() string { return In(i18n.Locale()).SetBackupNothingToAdd() }
+
+// SetBackupNothingToAdd says "备份中的数据已全部存在，无需新增"
+// in the language of msgs.
+func (msgs Messages) SetBackupNothingToAdd() string {
+	return Catalog.Format(msgs.locale, "setBackupNothingToAdd", nil)
+}
+
+// SetBackupMergedCount says "已从备份合并 {count, number} 条记录"
+// in the language the app shows.
+func SetBackupMergedCount(count int) string { return In(i18n.Locale()).SetBackupMergedCount(count) }
+
+// SetBackupMergedCount says "已从备份合并 {count, number} 条记录"
+// in the language of msgs.
+func (msgs Messages) SetBackupMergedCount(count int) string {
+	return Catalog.Format(msgs.locale, "setBackupMergedCount", map[string]any{"count": count})
+}
+
+// DialogChooseBackupFile says "选择备份文件"
+// in the language the app shows.
+func DialogChooseBackupFile() string { return In(i18n.Locale()).DialogChooseBackupFile() }
+
+// DialogChooseBackupFile says "选择备份文件"
+// in the language of msgs.
+func (msgs Messages) DialogChooseBackupFile() string {
+	return Catalog.Format(msgs.locale, "dialogChooseBackupFile", nil)
+}
+
+// DialogChooseBackupBtn says "选择备份"
+// in the language the app shows.
+func DialogChooseBackupBtn() string { return In(i18n.Locale()).DialogChooseBackupBtn() }
+
+// DialogChooseBackupBtn says "选择备份"
+// in the language of msgs.
+func (msgs Messages) DialogChooseBackupBtn() string {
+	return Catalog.Format(msgs.locale, "dialogChooseBackupBtn", nil)
 }
