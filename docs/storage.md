@@ -102,8 +102,8 @@
 ## 平台支持
 
 - 格式和算法都是标准的（JSON、Argon2id、XChaCha20-Poly1305），五个平台都能实现；libsodium 在 Swift 和 Kotlin 上都有成熟绑定。
-- `core/vault`、`core/keys`、`core/hosts`、`core/sshconn` 是纯 Go、不依赖 MyGo、不用 cgo，可以用 gomobile 编进 iOS 和安卓客户端直接复用。
-- MyGo v0.8.1 只支持 macOS、Windows、Linux 和浏览器；移动端的界面需要另做。
+- `core/vault`、`core/keys`、`core/hosts`、`core/sshconn` 是纯 Go、不依赖 MyGo、不用 cgo，可以直接复用在 iOS 和安卓客户端中（可通过 MyGo 移动端原生界面或 gomobile 集成）。
+- MyGo v0.10.0 已支持 macOS、Windows、Linux、浏览器以及 iOS / Android 原生 UI（`ui/mobile`），但桌面端与移动端的屏幕形态及交互不同，且 `plugins/terminal` 暂未提供移动端构建，移动端界面仍需专门适配。
 - “在这台设备上记住”在各平台用各自的安全存储（iOS Keychain、Android Keystore 等），不参与同步。
 
 ## 何时设置主密码、怎么解锁

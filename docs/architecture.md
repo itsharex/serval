@@ -190,10 +190,10 @@ hostKeyDialog → authDialog → challengeDialog → hostDialog → proxiesDialo
 
 | 依赖 | 用途 | 协议 |
 |---|---|---|
-| `github.com/egoist/mygo` v0.8.1 | 原生 UI、窗口、终端插件（libghostty-vt）、玻璃插件、系统安全存储、自动化插件 | MIT |
+| `github.com/egoist/mygo` v0.10.0 | 原生 UI、窗口、终端插件（libghostty-vt）、玻璃插件、系统安全存储、自动化插件 | MIT |
 | `golang.org/x/crypto` | SSH、Argon2id、XChaCha20-Poly1305、knownhosts、agent | BSD-3 |
 | `golang.org/x/net/proxy` | SOCKS5 | BSD-3 |
 | `github.com/pkg/sftp` | SFTP 客户端，以及测试服务器的 SFTP 子系统 | BSD-2 |
 | `github.com/creack/pty` | 只给开发服务器用（真实 shell） | MIT |
 
-MyGo v0.8.1 支持 macOS、Windows、Linux 和浏览器，不支持 iOS 和安卓；移动端要另做界面，复用 `core/`。
+MyGo v0.10.0 支持 macOS、Windows、Linux、浏览器以及 iOS / Android 原生 UI（`ui/mobile`），但终端插件（`plugins/terminal` / `libghostty-vt`）目前仅支持桌面端；移动端需另做适配界面并复用 `core/`（且需解决移动端 VT 仿真方案）。
