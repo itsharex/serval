@@ -384,7 +384,7 @@ func (a *app) snippetRow(c *ui.Context, colors design.Colors, s snippet) {
 				}
 			})
 		}).OnClick(func() { a.editSnippet(s) })
-		row.PopoverMenu(menu)
+		row.PopoverMenu(menu, menuOptions(colors))
 		ui.Button(c.Key("snippetSendRow:"+s.ID), "执行").Label("发送片段 " + s.Name).
 			Tooltip("发送到当前终端").Disabled(!canSend).OnClick(func() { a.sendSnippet(s) })
 		more := ui.ButtonBase(c.Key("snippetMore:"+s.ID)).Label("片段更多 "+s.Name).Tooltip("更多操作").
@@ -394,7 +394,7 @@ func (a *app) snippetRow(c *ui.Context, colors design.Colors, s snippet) {
 		}
 		more.Children(func() {
 			ui.Icon(c, design.Icon("ellipsis")).FontSize(14).TextColor(t.TextMuted)
-		}).PopoverMenuButton(menu)
+		}).PopoverMenuButton(menu, menuButtonOptions(colors))
 	})
 }
 

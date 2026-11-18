@@ -158,7 +158,7 @@ func TestEnterReconnectsEndedTerminal(t *testing.T) {
 		t.Fatal("焦点在查找栏时按 Enter 不应触发终端重连")
 	}
 	tb.focus.searchOpen = false
-	tb.focus.focusTerm = true
+	tb.focus.termHandle.Focus()
 	h.tt.Frame()
 
 	// 焦点回到已断连的终端后按 Enter 应触发重连并恢复为新的可用会话

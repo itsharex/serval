@@ -75,6 +75,8 @@ jobs:
           rm resources/installer.nsh.bak
           cat resources/installer.nsh
       - name: Build
+        env:
+          GOFLAGS: ${{ runner.os == 'Windows' && '-tags=mygo_nowebview' || '' }}
         run: go tool mygo build -platform "${{ matrix.platforms }}" -o dist
       - name: Collect installers
         run: |

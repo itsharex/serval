@@ -1811,7 +1811,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 					if m.Item("配置模型与密钥…").ID("openAISettings").Chosen() {
 						a.openAISettings()
 					}
-				}).Height(24).Padding(0, 8).Shrink(1).MinWidth(0).Tooltip(modelLabel)
+				}, menuButtonOptions(colors)).Height(24).Padding(0, 8).Shrink(1).MinWidth(0).Tooltip(modelLabel)
 
 				ui.Box(c).Grow(1)
 
@@ -1823,7 +1823,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 							p.mode = modeVal
 						}
 					}
-				}).Height(24).Padding(0, 8).Shrink(0)
+				}, menuButtonOptions(colors)).Height(24).Padding(0, 8).Shrink(0)
 
 				if p.loading {
 					ui.Button(c.Key("aiStopBtn"), locales.AiStop()).Height(26).Padding(0, 10).OnClick(a.stopAIRequest)

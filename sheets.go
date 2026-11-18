@@ -32,6 +32,23 @@ func sheet(c *ui.Context, colors design.Colors, open, fresh *bool, width, paddin
 	})
 }
 
+// glassMenuPanel 为窗口内绘制的右键菜单和下拉菜单统一玻璃外观，与 sheet 浮层保持一致。
+func glassMenuPanel(colors design.Colors) func(ui.Element) {
+	return func(panel ui.Element) {
+		panel.Radius(design.RadiusCard).Material(glass.Glass{}).
+			Border(1, colors.CardBorder).
+			NoShadow().Shadow(0, 10, 30, -8, colors.CardShadow)
+	}
+}
+
+func menuOptions(colors design.Colors) ui.PopoverMenuOptions {
+	return ui.PopoverMenuOptions{Panel: glassMenuPanel(colors)}
+}
+
+func menuButtonOptions(colors design.Colors) ui.PopoverMenuButtonOptions {
+	return ui.PopoverMenuButtonOptions{Panel: glassMenuPanel(colors)}
+}
+
 func (a *app) hostKeyDialog(c *ui.Context) {
 	if len(a.prompts) == 0 {
 		a.asking = false

@@ -230,14 +230,14 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 		}).OnClick(func() { a.editProxy(px) })
-		row.PopoverMenu(menu)
+		row.PopoverMenu(menu, menuOptions(colors))
 		more := ui.ButtonBase(c.Key("proxyMore:"+px.ID)).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
 		if more.Hovered() {
 			more.Background(colors.Hover)
 		}
 		more.Children(func() {
 			ui.Icon(c, design.Icon("ellipsis")).FontSize(14).TextColor(t.TextMuted)
-		}).PopoverMenuButton(menu)
+		}).PopoverMenuButton(menu, menuButtonOptions(colors))
 	})
 }
 

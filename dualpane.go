@@ -239,7 +239,7 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 			}
 			b.Children(func() {
 				ui.Text(c.Key("localTitle"), title).FontSize(design.TextSmall).FontWeight(600).
-					Grow(1).MinWidth(0).SingleLine()
+					Grow(1).MinWidth(0).SingleLine().TruncateStart().Ellipsis("…")
 			}).OnClick(func() {
 				a.editingLocalPath = true
 				a.localPathDraft = a.localDir
@@ -301,7 +301,7 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 	}
 	// 标签带上“本地”，和远端同名文件同时出现时，点击和读屏不会撞在一起。
 	row := ui.ButtonBase(c.Key("local:"+entry.Path)).Label("本地 "+entry.Name).Height(28).Padding(0, 8).Gap(8).
-		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
+		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
 	row.Drag(paneDrag{local: true, path: entry.Path, name: entry.Name, dir: entry.IsDir})
 	if entry.IsDir {
 		if item, ok := ui.Drop[paneDrag](row); ok {
@@ -374,7 +374,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 						}
 					})
 				}
-			})
+			}, menuButtonOptions(colors))
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
 			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
 		})
@@ -406,7 +406,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			}
 			b.Children(func() {
 				ui.Text(c.Key("filesTitle"), title).FontSize(design.TextSmall).FontWeight(600).
-					Grow(1).MinWidth(0).SingleLine()
+					Grow(1).MinWidth(0).SingleLine().TruncateStart().Ellipsis("…")
 			}).OnClick(func() {
 				a.editingRemotePath = true
 				a.remotePathDraft = t.dir

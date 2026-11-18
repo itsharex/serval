@@ -354,10 +354,10 @@ type pane struct {
 
 	searchOpen  bool
 	searchQuery string
-	// focusSearch、focusTerm 让下一帧把键盘焦点交给查找框或终端：打开查找后要立刻能输入搜索词，
-	// 否则按 ⌘F 之后打的字会落进终端、发给远端 shell；关闭查找后焦点回到终端。
-	focusSearch, focusTerm bool
-	searchStatus           terminal.SearchStatus
+	// searchHandle、termHandle 跨帧持有持久身份，打开查找或关闭查找/取消重连时请求焦点，
+	// 即使控件下一帧才出现也会自动落焦（且 searchHandle.SelectAll 会全选已有查询词）。
+	searchHandle, termHandle ui.Handle
+	searchStatus             terminal.SearchStatus
 	// fileDrag 表示上一帧有文件从别的程序拖到这个窗格上方，这时铺一层接收拖放的透明层。
 	fileDrag bool
 
@@ -1141,14 +1141,16 @@ func (a *app) openSearch(t *tab) {
 		return
 	}
 	p := t.focus
-	p.searchOpen, p.focusSearch = true, true
+	p.searchOpen = true
+	p.searchHandle.SelectAll()
 	if p.searchQuery != "" {
 		p.term.Search(p.searchQuery)
 	}
 }
 
 func (a *app) closeSearch(p *pane) {
-	p.searchOpen, p.focusTerm = false, true
+	p.searchOpen = false
+	p.termHandle.Focus()
 	p.term.EndSearch()
 }
 
@@ -1323,14 +1325,15 @@ func (a *app) openLocalTerminal() {
 // createTerminal 创建终端控件。conn 为 nil 时是本地终端：插件在伪终端里运行本机 shell。
 func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.Shell) (*terminal.Terminal, error) {
 	opts := terminal.Options{
-		Font:         a.terminalFont(),
-		Theme:        a.terminalTheme(false),
-		DarkTheme:    a.terminalTheme(true),
-		Cursor:       a.terminalCursor(),
-		Scrollback:   a.terminalScrollback(),
-		CopyOnSelect: a.terminalCopyOnSelect(),
-		RightClick:   a.terminalRightClick(),
-		Padding:      terminal.Padding{X: 10, Y: 8},
+		Font:          a.terminalFont(),
+		Theme:         a.terminalTheme(false),
+		DarkTheme:     a.terminalTheme(true),
+		Cursor:        a.terminalCursor(),
+		Scrollback:    a.terminalScrollback(),
+		CopyOnSelect:  a.terminalCopyOnSelect(),
+		RightClick:    a.terminalRightClick(),
+		Padding:       terminal.Padding{X: 10, Y: 8},
+		NoExitMessage: true, // Serval 已在顶栏和断开横幅显示会话结束并支持回车重连
 		OnExit: func(int) {
 			a.post(func() { a.paneEnded(t, p, shell) })
 		},
@@ -1864,7 +1867,7 @@ func (a *app) cancelReconnect(t *tab) {
 		p.ended = true
 	})
 	if t.focus != nil {
-		t.focus.focusTerm = true
+		t.focus.termHandle.Focus()
 	}
 }
 

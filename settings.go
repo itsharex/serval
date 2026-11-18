@@ -667,7 +667,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 								if pathText == "" {
 									pathText = "还没有选择"
 								}
-								ui.Text(c, pathText).TextColor(t.TextMuted).FontSize(design.TextSmall).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+								ui.Text(c, pathText).TextColor(t.TextMuted).FontSize(design.TextSmall).SingleLine().TruncateStart().Ellipsis("…").Grow(1).MinWidth(0)
 							})
 						}).Description("默认关闭。只记录远程会话的输出，存成纯文本并去掉颜色和控制字符。文件在所选文件夹里，不进保险库。本机终端不记录。")
 
@@ -1015,7 +1015,7 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		dirLabel = a.local.SyncDir
 	}
 	ui.Field(c, "本地同步文件夹", func() {
-		ui.Text(c.Key("syncDirPath"), dirLabel).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
+		ui.Text(c.Key("syncDirPath"), dirLabel).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine().TruncateStart().Ellipsis("…")
 	}).Description("将加密的保险库镜像保存至 iCloud Drive、Dropbox 或 Syncthing 文件夹。与云同步独立运作。")
 	ui.Row(c).Gap(8).Children(func() {
 		ui.Button(c.Key("syncDirChoose"), "选择同步文件夹").OnClick(a.chooseSyncDir)
@@ -1821,7 +1821,7 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 					a.addOrEditAIProvider(preset)
 				}
 			}
-		}).Height(28).Padding(0, 12)
+		}, menuButtonOptions(colors)).Height(28).Padding(0, 12)
 	})
 
 	draftOnly := len(profiles) == 0 && (p.editingProfileID != "" || strings.TrimSpace(p.aiBaseURL) != "" || strings.TrimSpace(p.aiModel) != "" || strings.TrimSpace(p.aiKey) != "")

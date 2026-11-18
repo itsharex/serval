@@ -398,7 +398,7 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 		}).OnClick(func() { a.showKey(k.ID) })
-		row.PopoverMenu(menu)
+		row.PopoverMenu(menu, menuOptions(colors))
 		ui.Button(c.Key("keyCopy:"+k.ID), locales.CopyPublicKey()).OnClick(func() { a.copyPublicKey(c, k) })
 		more := ui.ButtonBase(c.Key("keyMore:"+k.ID)).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
 		if more.Hovered() {
@@ -406,7 +406,7 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 		}
 		more.Children(func() {
 			ui.Icon(c, design.Icon("ellipsis")).FontSize(14).TextColor(t.TextMuted)
-		}).PopoverMenuButton(menu)
+		}).PopoverMenuButton(menu, menuButtonOptions(colors))
 	})
 }
 
@@ -513,7 +513,7 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 										a.deployKeyToHost(host, k)
 									}
 								}
-							})
+							}, menuButtonOptions(colors))
 						}
 					}
 				})

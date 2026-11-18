@@ -217,7 +217,7 @@ func (a *app) editorDialog(c *ui.Context, colors design.Colors) {
 				})
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, ed.path).FontSize(design.TextSmall).TextColor(t.TextMuted).
-						SingleLine().Ellipsis("…").MinWidth(0).Grow(1).Tooltip(ed.path)
+						SingleLine().TruncateStart().Ellipsis("…").MinWidth(0).Grow(1).Tooltip(ed.path)
 					ui.Text(c, shortcutText("S")+" 保存").FontSize(design.TextSmall).TextColor(colors.TextFaint).NoWrap().Shrink(0)
 				})
 			})

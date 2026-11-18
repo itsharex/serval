@@ -53,6 +53,7 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: '0'
+          GOFLAGS: ${{ matrix.os == 'windows' && '-tags=mygo_nowebview' || '' }}
         run: |
           mkdir -p build
           go build -o build/ .

@@ -314,7 +314,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					if m.Item(locales.GroupNew()).Chosen() {
 						a.openNewGroup()
 					}
-				})
+				}, menuButtonOptions(colors))
 				if len(a.hosts) > 0 {
 					probeBtn := ui.ButtonBase(c.Key("probeHosts")).Label("检测连通性").Tooltip("检测全部主机连通性").
 						Size(30, 30).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
@@ -406,7 +406,7 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						}
 						header := ui.ButtonBase(c.Key("groupToggle:"+group)).Label(action+" "+group).
 							Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
-							Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.groupMenu(group))
+							Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.groupMenu(group), menuOptions(colors))
 						var groupInsertLine bool
 						if !filtering {
 							if dragged, ok := ui.DragOver[hostDrag](header); ok {
@@ -714,7 +714,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		if row.DoubleClicked() {
 			a.doubleClickHost(h)
 		}
-		row.PopoverMenu(menu)
+		row.PopoverMenu(menu, menuOptions(colors))
 
 		// “更多”按钮只在悬停或选中时出现，打开和右键相同的菜单：
 		// 不知道可以右键的人也能找到编辑和删除。键盘用户在行上按菜单键或 Shift+F10。
@@ -725,7 +725,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 			}
 			more.Children(func() {
 				ui.Icon(c, design.Icon("ellipsis")).FontSize(14).TextColor(t.TextMuted)
-			}).PopoverMenuButton(menu)
+			}).PopoverMenuButton(menu, menuButtonOptions(colors))
 		}
 	})
 }
@@ -888,7 +888,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
 	item := ui.ButtonBase(c.Key(fmt.Sprintf("tab:%d", t.id))).Label(title).AccessSelected(selected).
 		Height(28).MinWidth(88).MaxWidth(200).Shrink(0).Padding(0, 10).Gap(8).AlignItems(ui.Center).
-		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t)).Drag(tabDrag{ID: t.id})
+		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t), menuOptions(colors)).Drag(tabDrag{ID: t.id})
 	if selected && t.id != a.lastScrolledTabID {
 		a.lastScrolledTabID = t.id
 		item.ScrollIntoView(ui.ScrollIntoViewOptions{Inline: ui.ScrollNearest})
@@ -1187,13 +1187,7 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		// 固定的 Key：查找栏插在终端前面时，终端控件按位置识别会被当成新元素重新挂载，
 		// AutoFocus 随之再次生效，把刚交给查找框的焦点抢回去。
 		c.Key(fmt.Sprintf("terminal:%d", p.id))
-		view := terminal.View(c, p.term).Grow(1).MinHeight(0)
-		if p.focusTerm {
-			view.Focus()
-			if view.FocusWithin() {
-				p.focusTerm = false
-			}
-		}
+		view := terminal.View(c, p.term).Bind(&p.termHandle).Grow(1).MinHeight(0)
 		if focused {
 			view.AutoFocus()
 		}
@@ -1255,7 +1249,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
 		ui.Row(c).Basis(0).Grow(1).MinWidth(0).Clip().Children(func() {
 			if dir != "" {
-				ui.Text(c, shortPath(dir)).TextColor(theme.TextMuted).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				ui.Text(c, shortPath(dir)).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…").MinWidth(0).Shrink(1)
 			}
 		})
 		switch {
@@ -1368,7 +1362,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				t.focus = p
 				a.closeFocused(t)
 			}
-		})
+		}, menuButtonOptions(colors))
 	})
 }
 
@@ -1450,7 +1444,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 					Background(theme.Accent.Alpha(0.10)).Border(1.5, theme.Accent.Alpha(0.6)).
 					Justify(ui.Center).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, "上传到当前目录").FontWeight(600)
-					ui.Text(c, shortPath(t.dir)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine()
+					ui.Text(c, shortPath(t.dir)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…")
 				})
 			}
 		}
@@ -1617,7 +1611,7 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 		}
 	}
 	row := ui.ButtonBase(c.Key(entry.Path)).Label(entry.Name).Height(28).Padding(0, 8).Gap(8).
-		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
+		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
 	// 窗口内拖动交给另一栏。拖到桌面要等副本下好：准备好之后才声明系统拖放，
 	// 否则这次手势会变成系统拖动，本机栏收不到。松手在窗口外才开始下那份副本。
 	row.Drag(paneDrag{path: entry.Path, name: entry.Name, dir: entry.IsDir})
@@ -1652,15 +1646,8 @@ func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Background(colors.Hover).Children(func() {
 		ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(theme.TextMuted)
 		c.Key(fmt.Sprintf("searchInput:%d", p.id))
-		input := ui.TextInput(c, &p.searchQuery).Placeholder(locales.ViewFindPlaceholder()).Label(locales.ViewFindField()).
+		input := ui.TextInput(c, &p.searchQuery).Bind(&p.searchHandle).Placeholder(locales.ViewFindPlaceholder()).Label(locales.ViewFindField()).
 			Grow(1).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
-		// 查找框刚出现的那一帧焦点请求可能还落不了地，确认拿到焦点后才停止请求。
-		if p.focusSearch {
-			input.Focus()
-			if input.FocusWithin() {
-				p.focusSearch = false
-			}
-		}
 		input.OnShortcut(0, ui.KeyEscape, func() { a.closeSearch(p) })
 		input.OnShortcut(0, ui.KeyEnter, func() { p.term.SearchNext() })
 		input.OnShortcut(ui.Shift, ui.KeyEnter, func() { p.term.SearchPrevious() })
