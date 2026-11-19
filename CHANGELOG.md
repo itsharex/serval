@@ -2,6 +2,12 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.3] - 2026-11-19
+
+### Added
+
+- **Cross-Platform About Sheet (`about.go`, `about_test.go`, `view.go`, `palette.go`, `update.go`, `main.go`)**: Added a unified "关于 Serval" sheet across macOS, Windows, and Linux displaying author attribution (`jhzhang09`), GitHub repository link, MIT License, dynamic MyGo engine version, and integrated update check, accessible from the sidebar footer, Command Palette, Settings, and macOS app menu.
+
 ## [0.6.2] - 2026-11-19
 
 ### Fixed
