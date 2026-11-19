@@ -866,7 +866,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 								ui.Field(c, "设备路径", func() {
 									c.Key("addAddress")
-									if ui.TextInput(c, &f.address).Placeholder("/dev/ttyUSB0 或 COM1").AutoFocus().Changed() {
+									if ui.TextInput(c, &f.address).Placeholder("/dev/ttyUSB0 或 COM1").AutoFocus().OnSubmit(a.saveForm).Changed() {
 										f.err, f.testMsg = "", ""
 									}
 								})
@@ -917,7 +917,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 								ui.Field(c, locales.Address(), func() {
 									c.Key("addAddress")
-									if ui.TextInput(c, &f.address).Placeholder("example.com 或 user@host:port").AutoFocus().Changed() {
+									if ui.TextInput(c, &f.address).Placeholder("example.com 或 user@host:port").AutoFocus().OnSubmit(a.saveForm).Changed() {
 										f.err, f.testMsg = "", ""
 										if user, addr, portStr, ok := parseHostAddressPaste(f.address); ok {
 											f.address = addr
@@ -932,7 +932,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Column(c).Width(76).Children(func() {
 								ui.Field(c, locales.Port(), func() {
 									c.Key("addPort")
-									if ui.TextInput(c, &f.port).Placeholder(defaultPort).Changed() {
+									if ui.TextInput(c, &f.port).Placeholder(defaultPort).OnSubmit(a.saveForm).Changed() {
 										f.err, f.testMsg = "", ""
 									}
 								})
@@ -944,7 +944,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							if f.protoIdx == 1 {
 								placeholder = "可选"
 							}
-							ui.TextInput(c, &f.user).Placeholder(placeholder)
+							ui.TextInput(c, &f.user).Placeholder(placeholder).OnSubmit(a.saveForm)
 						})
 					}
 
@@ -952,7 +952,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 						half(func() {
 							nameField := ui.Field(c, locales.Name(), func() {
 								c.Key("addName")
-								ui.TextInput(c, &f.name).Placeholder(locales.HostNamePlaceholder())
+								ui.TextInput(c, &f.name).Placeholder(locales.HostNamePlaceholder()).OnSubmit(a.saveForm)
 							})
 							if n := a.renamingJumpCount(f); n > 0 {
 								nameField.Description(locales.HostRenameJumps(n))
@@ -961,7 +961,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 						half(func() {
 							ui.Field(c, locales.HostGroup(), func() {
 								c.Key("addGroup")
-								ui.TextInput(c, &f.group).Placeholder(defaultGroup)
+								ui.TextInput(c, &f.group).Placeholder(defaultGroup).OnSubmit(a.saveForm)
 							})
 						})
 					})
@@ -982,7 +982,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 					}
 					ui.Field(c, "标签", func() {
 						c.Key("addTags")
-						ui.TextInput(c, &f.tagsText).Placeholder("多个标签用逗号分隔，如 prod, web")
+						ui.TextInput(c, &f.tagsText).Placeholder("多个标签用逗号分隔，如 prod, web").OnSubmit(a.saveForm)
 					}).Description("用于在侧栏按标签快速筛选主机。")
 					if allTags := a.allTags(); len(allTags) > 0 {
 						curTags := parseTags(f.tagsText)
@@ -1135,7 +1135,7 @@ func (a *app) totpField(c *ui.Context, colors design.Colors, f *hostForm) {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Field(c, "验证码", func() {
 				in := passwordInput(c, colors, "addTOTP", "验证码", &f.totp, &f.showTOTP, func(el ui.Element) {
-					el.Placeholder(placeholder)
+					el.Placeholder(placeholder).OnSubmit(a.saveForm)
 				})
 				if in.Changed() && f.totp != "" {
 					f.clearTOTP = false
@@ -1170,7 +1170,7 @@ func (a *app) passwordField(c *ui.Context, colors design.Colors, f *hostForm) {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Field(c, locales.Password(), func() {
 				in := passwordInput(c, colors, "addPassword", locales.Password(), &f.password, &f.showPassword, func(el ui.Element) {
-					el.Placeholder(placeholder)
+					el.Placeholder(placeholder).OnSubmit(a.saveForm)
 				})
 				if in.Changed() && f.password != "" {
 					f.clearPassword = false

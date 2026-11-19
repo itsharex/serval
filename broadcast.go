@@ -310,25 +310,84 @@ func (a *app) joinAllBroadcastInTab(t *tab) {
 	}
 }
 
+// leaveAllBroadcastInTab 将当前标签页的所有窗格移出广播；若已无其他广播窗格则关闭广播。
+func (a *app) leaveAllBroadcastInTab(t *tab) {
+	if t == nil || t.root == nil {
+		return
+	}
+	t.root.each(func(p *pane) {
+		delete(a.broadcast, p.id)
+	})
+	if a.broadcastAsk != nil && a.broadcastAsk.tab == t {
+		a.broadcastAsk = nil
+	}
+	if len(a.broadcast) == 0 {
+		a.broadcast = nil
+		if a.broadcastAsk == nil {
+			a.broadcastOn = false
+			a.toast(ui.Toast{Title: "已关闭广播"})
+		}
+	}
+	a.syncBroadcastSource()
+}
+
 // broadcastBar 在广播开启时置于工作区上方，可一眼看到并逐个开关当前标签页的窗格。
 func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 	theme := c.Theme()
 	t := a.current()
+	var totalBroadcast, inCurrentTab int
+	hasProd := false
+	for _, tb := range a.tabs {
+		if tb.root == nil {
+			continue
+		}
+		tb.root.each(func(p *pane) {
+			if a.broadcast[p.id] {
+				totalBroadcast++
+				if tb == t {
+					inCurrentTab++
+				}
+				if tb.host.Production {
+					hasProd = true
+				}
+			}
+		})
+	}
+	if totalBroadcast == 0 {
+		totalBroadcast = len(a.broadcast)
+	}
+	otherTabs := max(0, totalBroadcast-inCurrentTab)
+	barBg, barAccent := theme.Accent.Alpha(0.08), theme.Accent
+	if hasProd {
+		barBg, barAccent = colors.DangerSoft, colors.Danger
+	}
 	ui.Row(c.Key("broadcastBar")).Height(34).Shrink(0).Padding(0, design.Gap+4).Gap(8).
-		AlignItems(ui.Center).Background(theme.Accent.Alpha(0.08)).
+		AlignItems(ui.Center).Background(barBg).
 		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
-		ui.Icon(c, design.Icon("radio")).FontSize(13).TextColor(theme.Accent)
-		ui.Textf(c, "广播中 · %d 个窗格", len(a.broadcast)).FontWeight(600).
+		ui.Icon(c, design.Icon("radio")).FontSize(13).TextColor(barAccent)
+		ui.Textf(c, "广播中 · %d 个窗格", totalBroadcast).FontWeight(600).
 			FontSize(design.TextSmall).TextColor(theme.Text).NoWrap().Shrink(0)
+		if otherTabs > 0 {
+			ui.Textf(c, "（含其他标签 %d 个）", otherTabs).FontSize(design.TextSmall - 0.5).
+				TextColor(theme.TextMuted).NoWrap().Shrink(0)
+		}
 
 		if t != nil && t.root != nil {
 			var panes []*pane
 			t.root.each(func(p *pane) { panes = append(panes, p) })
+			liveCount := 0
+			allJoined := true
 			ui.ScrollHorizontal(c.Key("broadcastChipsScroll")).Grow(1).MinWidth(0).Height(26).
 				Scrollbars(false).AlignItems(ui.Center).Gap(6).Children(func() {
 				for i, p := range panes {
 					ord := i + 1
 					member := a.broadcast[p.id]
+					if p.term != nil && !p.ended {
+						liveCount++
+						if !member {
+							allJoined = false
+						}
+					}
 					disabled := p.ended && !member
 					fg, bg := theme.TextMuted, colors.Card
 					if member {
@@ -361,13 +420,25 @@ func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 					})
 				}
 			})
-			ui.ButtonBase(c.Key("broadcastSelectAll")).Label("全选当前窗格").
+			allJoined = allJoined && liveCount > 0
+			selectLabel := "全选当前窗格"
+			if allJoined {
+				selectLabel = "取消全选本标签"
+			}
+			selectBtn := ui.ButtonBase(c.Key("broadcastSelectAll")).Label(selectLabel).
 				Height(24).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
-				Background(colors.Card).Border(1, colors.CardBorder).Transition(design.Hover).
-				Children(func() {
-					ui.Text(c, "全选当前窗格").FontSize(design.TextSmall).FontWeight(500).TextColor(theme.Text).NoWrap()
-				}).OnClick(func() {
-				a.joinAllBroadcastInTab(t)
+				Background(colors.Card).Border(1, colors.CardBorder).Disabled(liveCount == 0).Transition(design.Hover)
+			if selectBtn.Hovered() {
+				selectBtn.Background(colors.Hover)
+			}
+			selectBtn.Children(func() {
+				ui.Text(c, selectLabel).FontSize(design.TextSmall).FontWeight(500).TextColor(theme.Text).NoWrap()
+			}).OnClick(func() {
+				if allJoined {
+					a.leaveAllBroadcastInTab(t)
+				} else {
+					a.joinAllBroadcastInTab(t)
+				}
 			})
 		} else {
 			ui.Spacer(c)
@@ -375,14 +446,14 @@ func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
 
 		exitBtn := ui.ButtonBase(c.Key("exitAllBroadcast")).Label("退出广播").Tooltip("退出全部广播").
 			Height(24).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
-			Background(theme.Accent.Alpha(0.14)).Transition(design.Hover)
+			Background(barAccent.Alpha(0.14)).Transition(design.Hover)
 		if exitBtn.Hovered() {
-			exitBtn.Background(theme.Accent.Alpha(0.22))
+			exitBtn.Background(barAccent.Alpha(0.22))
 		}
 		exitBtn.Children(func() {
-			ui.Icon(c, design.Icon("radio")).FontSize(12).TextColor(theme.Accent)
-			ui.Text(c, "退出广播").TextColor(theme.Accent).FontWeight(600).FontSize(design.TextSmall).NoWrap()
-			ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(theme.Accent)
+			ui.Icon(c, design.Icon("radio")).FontSize(12).TextColor(barAccent)
+			ui.Text(c, "退出广播").TextColor(barAccent).FontWeight(600).FontSize(design.TextSmall).NoWrap()
+			ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(barAccent)
 		}).OnClick(func() {
 			a.clearBroadcast()
 			a.toast(ui.Toast{Title: "已关闭广播"})

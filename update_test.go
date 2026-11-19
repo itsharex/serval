@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -177,11 +179,24 @@ func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 		t.Fatalf("更新浮层未展示更新日志: texts=%q", h.tt.Texts())
 	}
 
-	// 复制 Homebrew 命令
-	h.click("复制升级命令")
-	h.tt.Frame()
-	if h.tt.Clipboard() != "brew upgrade serval" {
-		t.Fatalf("剪贴板内容不正确: got %q, want %q", h.tt.Clipboard(), "brew upgrade serval")
+	if !h.tt.HasText("当前 v" + appVersion) {
+		t.Fatalf("更新浮层未显示当前版本号: texts=%q", h.tt.Texts())
+	}
+
+	// 按平台复制升级命令或下载链接
+	if runtime.GOOS == "darwin" {
+		h.click("复制升级命令")
+		h.tt.Frame()
+		if h.tt.Clipboard() != "brew upgrade serval" {
+			t.Fatalf("剪贴板内容不正确: got %q, want %q", h.tt.Clipboard(), "brew upgrade serval")
+		}
+	} else {
+		h.click("复制下载链接")
+		h.tt.Frame()
+		wantURL := "https://github.com/jhzhang09/serval/releases/tag/v99.0.0"
+		if h.tt.Clipboard() != wantURL {
+			t.Fatalf("剪贴板内容不正确: got %q, want %q", h.tt.Clipboard(), wantURL)
+		}
 	}
 
 	// 点击前往 GitHub 下载
@@ -333,5 +348,64 @@ func TestUpdateDialogRendersMarkdownNotes(t *testing.T) {
 	}
 	if !h.tt.HasText("• 修复更新日志 Markdown 表格渲染") {
 		t.Fatalf("未渲染 Markdown 列表项: texts=%q", texts)
+	}
+}
+
+func TestUpdateSkipVersionAndOpenURLFallback(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(githubReleaseResponse{
+			TagName: "v99.1.0",
+			Name:    "Serval v99.1.0",
+			Body:    "- 跳过版本与浏览器回退测试",
+			HTMLURL: "https://github.com/jhzhang09/serval/releases/tag/v99.1.0",
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.updateURL = ts.URL
+	h.a.httpClient = ts.Client()
+
+	// 1. 首次自动检查弹出更新浮层，点击“跳过此版本”
+	h.a.checkForUpdates(false)
+	h.pump("首次自动检查弹窗", func() bool { return h.a.update.sheetOpen })
+	h.tt.Frame()
+
+	h.click("跳过此版本")
+	h.tt.Frame()
+	if h.a.update.sheetOpen {
+		t.Fatal("点击跳过此版本后浮层应关闭")
+	}
+	if h.a.local.SkippedVersion != "99.1.0" {
+		t.Fatalf("应记录跳过的版本号 99.1.0，实际=%q", h.a.local.SkippedVersion)
+	}
+
+	// 2. 再次静默检查同一版本不应自动弹窗
+	h.a.update.state = updateIdle
+	h.a.checkForUpdates(false)
+	h.pump("静默检查完成", func() bool { return !h.a.update.checking && h.a.update.state == updateAvailable })
+	h.tt.Frame()
+	if h.a.update.sheetOpen {
+		t.Fatal("已跳过的版本不应在静默检查时自动弹窗")
+	}
+
+	// 3. 用户主动检查仍应弹窗并清除跳过标记
+	h.a.checkForUpdates(true)
+	h.pump("主动检查弹窗", func() bool { return h.a.update.sheetOpen })
+	h.tt.Frame()
+	if h.a.local.SkippedVersion != "" {
+		t.Fatalf("主动检查发现新版本后应清除 SkippedVersion，实际=%q", h.a.local.SkippedVersion)
+	}
+
+	// 4. 打开浏览器失败时回退复制下载链接
+	h.a.openURL = func(string) error { return errors.New("no browser") }
+	h.click("前往 GitHub 下载")
+	h.tt.Frame()
+	wantURL := "https://github.com/jhzhang09/serval/releases/tag/v99.1.0"
+	if h.tt.Clipboard() != wantURL {
+		t.Fatalf("openURL 失败时应复制下载链接，实际=%q want=%q", h.tt.Clipboard(), wantURL)
+	}
+	if !h.tt.HasText("无法打开浏览器，已复制下载链接") {
+		t.Fatalf("openURL 失败时应弹出复制提示: texts=%q", h.tt.Texts())
 	}
 }

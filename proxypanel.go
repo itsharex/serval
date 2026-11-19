@@ -260,23 +260,23 @@ func (a *app) proxyEditPage(c *ui.Context, colors design.Colors) {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				ui.Field(c, locales.Address(), func() {
 					c.Key("proxyAddress")
-					ui.TextInput(c, &p.address).Placeholder("127.0.0.1").AutoFocus()
+					ui.TextInput(c, &p.address).Placeholder("127.0.0.1").AutoFocus().OnSubmit(a.saveProxy)
 				})
 			})
 			ui.Column(c).Width(90).Children(func() {
 				ui.Field(c, locales.Port(), func() {
 					c.Key("proxyPort")
-					ui.TextInput(c, &p.port).Placeholder("1080")
+					ui.TextInput(c, &p.port).Placeholder("1080").OnSubmit(a.saveProxy)
 				})
 			})
 		})
 		ui.Field(c, locales.Name(), func() {
 			c.Key("proxyName")
-			ui.TextInput(c, &p.name).Placeholder(locales.ProxyNamePlaceholder())
+			ui.TextInput(c, &p.name).Placeholder(locales.ProxyNamePlaceholder()).OnSubmit(a.saveProxy)
 		})
 		ui.Field(c, locales.ProxyUserOptional(), func() {
 			c.Key("proxyUser")
-			ui.TextInput(c, &p.user)
+			ui.TextInput(c, &p.user).OnSubmit(a.saveProxy)
 		})
 		if strings.TrimSpace(p.user) != "" {
 			placeholder := ""
@@ -290,7 +290,7 @@ func (a *app) proxyEditPage(c *ui.Context, colors design.Colors) {
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					ui.Field(c, locales.Password(), func() {
 						in := passwordInput(c, colors, "proxyPassword", "代理密码", &p.password, &p.showPassword, func(el ui.Element) {
-							el.Placeholder(placeholder)
+							el.Placeholder(placeholder).OnSubmit(a.saveProxy)
 						})
 						if in.Changed() && p.password != "" {
 							p.clearPassword = false

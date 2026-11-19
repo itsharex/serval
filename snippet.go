@@ -447,7 +447,7 @@ func (a *app) snippetEditPage(c *ui.Context) {
 		ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
 		ui.Field(c, "名称", func() {
 			c.Key("snippetName")
-			ui.TextInput(c, &p.name).Placeholder("例如 查看磁盘").AutoFocus()
+			ui.TextInput(c, &p.name).Placeholder("例如 查看磁盘").AutoFocus().OnSubmit(a.saveSnippet)
 		})
 		ui.Field(c, "内容", func() {
 			c.Key("snippetBody")
@@ -484,7 +484,7 @@ func (a *app) snippetFillPage(c *ui.Context) {
 		for i := range p.vars {
 			ui.Field(c, p.vars[i], func() {
 				c.Key("snippetVar:" + p.vars[i])
-				input := ui.TextInput(c, &p.values[i])
+				input := ui.TextInput(c, &p.values[i]).OnSubmit(a.submitSnippetFill)
 				if i == 0 {
 					input.AutoFocus()
 				}

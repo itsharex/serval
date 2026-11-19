@@ -28,6 +28,7 @@ var errLocalFileChanged = errors.New("本地文件已变化")
 type editorState struct {
 	open, fresh bool
 	loading     bool
+	loadingName string
 	local       bool
 	tab         *tab
 	path, name  string
@@ -36,20 +37,30 @@ type editorState struct {
 	size    int64
 	modUnix int64
 	// version 是上次和磁盘/远端一致时的文本版本。和 buf.Version() 不同就表示还没保存。
-	version uint64
-	dirty   bool
-	busy    bool
-	err     string
+	version       uint64
+	statusVersion uint64
+	statusText    string
+	dirty         bool
+	busy          bool
+	err           string
 
-	askDiscard   bool
-	askOverwrite bool
+	askDiscard        bool
+	askOverwrite      bool
+	closeAfterSave    bool
+	closeTabAfterSave *tab
 	// closeAfterDiscard 是“放弃修改”确认后要一并关闭的标签页。
 	// 从标签页触发确认时记录；取消或从编辑器自己的关闭按钮触发时保持为空。
 	closeAfterDiscard *tab
 }
 
 func (a *app) openEditor(t *tab, remotePath, name string) {
-	if t == nil || t.local || t.files == nil || a.editor.loading {
+	if t == nil || t.local || t.files == nil {
+		return
+	}
+	if a.editor.loading {
+		if a.editor.loadingName != "" {
+			a.toast(ui.Toast{Title: "正在打开 " + a.editor.loadingName + "，请稍候"})
+		}
 		return
 	}
 	if a.editor.open && a.editor.dirty {
@@ -61,16 +72,18 @@ func (a *app) openEditor(t *tab, remotePath, name string) {
 		return
 	}
 	a.editor.loading = true
+	a.editor.loadingName = name
 	files := t.files
 	go func() {
 		data, mod, err := files.ReadLimited(context.Background(), remotePath, maxEditorBytes)
 		a.post(func() {
 			a.editor.loading = false
+			a.editor.loadingName = ""
 			if !slices.Contains(a.tabs, t) {
 				return
 			}
 			if err != nil {
-				a.toast(ui.Toast{Title: "不能编辑 " + name, Description: editorReason(err), Type: "error"})
+				a.toast(ui.Toast{Title: "不能编辑 " + name, Description: editorReason(err, false), Type: "error"})
 				return
 			}
 			buf := ui.NewTextBuffer(string(data))
@@ -84,7 +97,13 @@ func (a *app) openEditor(t *tab, remotePath, name string) {
 
 // openLocalEditor 在后台检查并读取本地文本文件，打开内置编辑器。
 func (a *app) openLocalEditor(localPath, name string) {
-	if localPath == "" || a.editor.loading {
+	if localPath == "" {
+		return
+	}
+	if a.editor.loading {
+		if a.editor.loadingName != "" {
+			a.toast(ui.Toast{Title: "正在打开 " + a.editor.loadingName + "，请稍候"})
+		}
 		return
 	}
 	if a.editor.open && a.editor.dirty {
@@ -96,12 +115,14 @@ func (a *app) openLocalEditor(localPath, name string) {
 		return
 	}
 	a.editor.loading = true
+	a.editor.loadingName = name
 	go func() {
 		data, mod, err := readLocalLimited(localPath, maxEditorBytes)
 		a.post(func() {
 			a.editor.loading = false
+			a.editor.loadingName = ""
 			if err != nil {
-				a.toast(ui.Toast{Title: "不能编辑 " + name, Description: editorReason(err), Type: "error"})
+				a.toast(ui.Toast{Title: "不能编辑 " + name, Description: editorReason(err, true), Type: "error"})
 				return
 			}
 			buf := ui.NewTextBuffer(string(data))
@@ -179,9 +200,12 @@ func writeLocalFile(localPath string, data []byte, expectSize, expectUnix int64,
 	return editorMod{size: after.Size(), unix: after.ModTime().Unix()}, nil
 }
 
-func editorReason(err error) string {
+func editorReason(err error, isLocal bool) string {
 	switch {
 	case errors.Is(err, sshconn.ErrFileTooLarge):
+		if isLocal {
+			return fmt.Sprintf("文件超过 %d MB，编辑器打不开。请用其他本地程序打开。", maxEditorBytes>>20)
+		}
 		return fmt.Sprintf("文件超过 %d MB，编辑器打不开。请下载后再用别的程序编辑。", maxEditorBytes>>20)
 	case errors.Is(err, sshconn.ErrNotText):
 		return "这不是 UTF-8 文本（或含有二进制数据），编辑器打不开。"
@@ -197,6 +221,54 @@ func (a *app) requestCloseEditor() {
 		return
 	}
 	a.editor = editorState{}
+}
+
+func (a *app) reloadEditor() {
+	ed := &a.editor
+	if !ed.open || ed.busy || ed.buf == nil {
+		return
+	}
+	if !ed.local && (ed.tab == nil || ed.tab.files == nil || !slices.Contains(a.tabs, ed.tab)) {
+		return
+	}
+	ed.busy = true
+	ed.err = ""
+	ed.closeAfterSave = false
+	ed.closeTabAfterSave = nil
+	isLocal, targetPath, name := ed.local, ed.path, ed.name
+	var files *sshconn.Files
+	if !isLocal {
+		files = ed.tab.files
+	}
+	go func() {
+		var data []byte
+		var mod interface{ Unix() int64 }
+		var err error
+		if isLocal {
+			data, mod, err = readLocalLimited(targetPath, maxEditorBytes)
+		} else {
+			data, mod, err = files.ReadLimited(context.Background(), targetPath, maxEditorBytes)
+		}
+		a.post(func() {
+			if a.editor.path != targetPath || a.editor.local != isLocal || a.editor.buf == nil {
+				return
+			}
+			a.editor.busy = false
+			if err != nil {
+				a.editor.err = editorReason(err, isLocal)
+				a.toast(ui.Toast{Title: "重新加载失败", Description: a.editor.err, Type: "error"})
+				return
+			}
+			a.editor.buf.Set(string(data))
+			a.editor.size = int64(len(data))
+			a.editor.modUnix = mod.Unix()
+			a.editor.version = a.editor.buf.Version()
+			a.editor.statusVersion = 0
+			a.editor.statusText = ""
+			a.editor.dirty = false
+			a.toast(ui.Toast{Title: "已重新加载 " + name})
+		})
+	}()
 }
 
 func (a *app) saveEditor(force bool) {
@@ -216,6 +288,8 @@ func (a *app) saveEditor(force bool) {
 	text := ed.buf.String()
 	if strings.ContainsRune(text, 0) || !utf8.ValidString(text) {
 		ed.err = "内容不是文本，没有保存。"
+		ed.closeAfterSave = false
+		ed.closeTabAfterSave = nil
 		return
 	}
 	data := []byte(text)
@@ -251,7 +325,9 @@ func (a *app) saveEditor(force bool) {
 				return
 			}
 			if err != nil {
-				a.editor.err = editorReason(err)
+				a.editor.closeAfterSave = false
+				a.editor.closeTabAfterSave = nil
+				a.editor.err = editorReason(err, isLocal)
 				a.toast(ui.Toast{Title: "没有保存 " + name, Description: a.editor.err, Type: "error"})
 				return
 			}
@@ -261,15 +337,23 @@ func (a *app) saveEditor(force bool) {
 				a.editor.version = savedVersion
 				a.editor.dirty = false
 			}
+			closeEd := a.editor.closeAfterSave
+			closeTab := a.editor.closeTabAfterSave
+			a.editor.closeAfterSave = false
+			a.editor.closeTabAfterSave = nil
 			a.toast(ui.Toast{Title: locales.EditorSavedNamed(name)})
 			if isLocal {
 				if a.localDir != "" {
 					a.openLocal(a.localDir)
 				}
-				return
-			}
-			if slices.Contains(a.tabs, t) {
+			} else if slices.Contains(a.tabs, t) {
 				a.openDir(t, t.dir)
+			}
+			if closeEd && a.editor.buf != nil && a.editor.buf.Version() == savedVersion {
+				a.editor = editorState{}
+				if closeTab != nil && slices.Contains(a.tabs, closeTab) {
+					a.closeTab(closeTab)
+				}
 			}
 		})
 	}()
@@ -321,6 +405,10 @@ func (a *app) editorDialog(c *ui.Context, colors design.Colors) {
 	if ed.buf.Version() != ed.version {
 		ed.dirty = true
 	}
+	if ed.statusText == "" || ed.statusVersion != ed.buf.Version() {
+		ed.statusText = editorStatusSummary(ed.buf.String())
+		ed.statusVersion = ed.buf.Version()
+	}
 	t := c.Theme()
 	windowW, windowH := c.Size()
 	panelW := float32(680)
@@ -342,15 +430,19 @@ func (a *app) editorDialog(c *ui.Context, colors design.Colors) {
 	if ed.busy {
 		saveText = "正在保存…"
 	}
+	triggerManualSave := func() {
+		if ed.busy {
+			return
+		}
+		ed.closeAfterSave = false
+		ed.closeTabAfterSave = nil
+		a.saveEditor(false)
+	}
 	panel := sheet(c, colors, &ed.open, &ed.fresh, panelW, 22, func() {
-		ui.Column(c).Gap(10).OnShortcut(chromeShortcut(), ui.KeyS, func() {
-			if !ed.busy {
-				a.saveEditor(false)
-			}
-		}).Children(func() {
+		ui.Column(c).Gap(10).OnShortcut(chromeShortcut(), ui.KeyS, triggerManualSave).Children(func() {
 			ui.Column(c).Gap(3).Children(func() {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600).SingleLine().MinWidth(0).Grow(1)
+					ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600).SingleLine().Ellipsis("…").Tooltip(title).MinWidth(0).Grow(1)
 					if ed.dirty {
 						chip(c, "未保存", t.Accent, t.Accent.Alpha(0.14))
 					}
@@ -369,18 +461,21 @@ func (a *app) editorDialog(c *ui.Context, colors design.Colors) {
 				Font(design.FontTerminal).FontSize(design.TextBody).
 				ReadOnly(ed.busy).AutoFocus()
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c.Key("editorStatus"), editorStatusSummary(ed.buf.String())).
+				ui.Text(c.Key("editorStatus"), ed.statusText).
 					FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").
-					SingleLine().MinWidth(0).Grow(1)
+					SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				ui.Button(c.Key("editorClose"), "关闭").Disabled(ed.busy).OnClick(func() { a.requestCloseEditor() })
-				ui.PrimaryButton(c.Key("editorSave"), saveText).Disabled(ed.busy).OnClick(func() { a.saveEditor(false) })
+				ui.PrimaryButton(c.Key("editorSave"), saveText).Disabled(ed.busy).OnClick(triggerManualSave)
 			})
 		})
 	})
 	if panel.Valid() && panel.Dismissed() {
-		if ed.dirty {
+		if ed.busy {
+			ed.open = true
+		} else if ed.dirty {
 			ed.open = true
 			ed.askDiscard = true
+			ed.closeAfterDiscard = nil
 		} else {
 			a.editor = editorState{}
 		}
@@ -391,19 +486,25 @@ func (a *app) editorConfirm(c *ui.Context) {
 	ed := &a.editor
 	if ed.askDiscard {
 		open := true
-		choice := ui.AlertDialog(c, &open, "放弃修改？", ed.name+" 有未保存的修改。", "放弃修改", "取消")
+		choice := ui.AlertDialog(c, &open, "放弃修改？", ed.name+" 有未保存的修改。", "放弃修改", "保存并关闭", "取消")
 		if choice == -1 && open {
 			return
 		}
 		ed.askDiscard = false
-		if choice == 0 {
+		switch choice {
+		case 0:
 			// 确认来自关标签时，放弃修改后把那个标签也关掉。
 			t := ed.closeAfterDiscard
 			a.editor = editorState{}
 			if t != nil && slices.Contains(a.tabs, t) {
 				a.closeTab(t)
 			}
-		} else {
+		case 1:
+			ed.closeAfterSave = true
+			ed.closeTabAfterSave = ed.closeAfterDiscard
+			ed.closeAfterDiscard = nil
+			a.saveEditor(false)
+		default:
 			ed.closeAfterDiscard = nil
 		}
 		return
@@ -418,12 +519,20 @@ func (a *app) editorConfirm(c *ui.Context) {
 		body = locales.EditorLocalChangedBody()
 	}
 	open := true
-	choice := ui.AlertDialog(c, &open, title, body, "仍然保存", locales.Cancel())
+	choice := ui.AlertDialog(c, &open, title, body, "仍然保存", "重新加载", locales.Cancel())
 	if choice == -1 && open {
 		return
 	}
 	ed.askOverwrite = false
-	if choice == 0 && (ed.local || slices.Contains(a.tabs, ed.tab)) {
-		a.saveEditor(true)
+	switch choice {
+	case 0:
+		if ed.local || slices.Contains(a.tabs, ed.tab) {
+			a.saveEditor(true)
+		}
+	case 1:
+		a.reloadEditor()
+	default:
+		ed.closeAfterSave = false
+		ed.closeTabAfterSave = nil
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -225,12 +226,22 @@ func (a *app) checkForUpdates(manual bool) {
 			}
 
 			if isNewerVersion(info.Version, appVersion) {
+				cleanVer := strings.TrimPrefix(strings.TrimPrefix(info.Version, "v"), "V")
 				a.update.state = updateAvailable
 				a.update.latest = info
-				a.update.sheetOpen = true
-				a.update.sheetFresh = true
 				if manual {
+					// 用户主动检查时若此前跳过了同一版本，恢复提示并清除跳过标记
+					if cleanVer != "" && a.local.SkippedVersion == cleanVer {
+						next := a.local
+						next.SkippedVersion = ""
+						_ = a.saveLocal(next)
+					}
+					a.update.sheetOpen = true
+					a.update.sheetFresh = true
 					a.toast(ui.Toast{Title: fmt.Sprintf("发现新版本 v%s", info.Version)})
+				} else if cleanVer == "" || a.local.SkippedVersion != cleanVer {
+					a.update.sheetOpen = true
+					a.update.sheetFresh = true
 				}
 			} else {
 				a.update.state = updateLatest
@@ -250,21 +261,32 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 	}
 	t := c.Theme()
 	info := a.update.latest
+	cleanVer := strings.TrimPrefix(strings.TrimPrefix(info.Version, "v"), "V")
+	downloadURL := info.URL
+	if downloadURL == "" {
+		downloadURL = "https://github.com/jhzhang09/serval/releases/latest"
+	}
+	_, windowH := c.Size()
+	notesMaxH := float32(220)
+	if windowH > 0 {
+		notesMaxH = min(max(windowH-320, 120), 360)
+	}
 	sheet(c, colors, &a.update.sheetOpen, &a.update.sheetFresh, 540, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Icon(c, design.Icon("sparkles")).FontSize(20).TextColor(t.Accent)
-				verText := fmt.Sprintf("发现新版本 v%s", strings.TrimPrefix(info.Version, "v"))
+				verText := fmt.Sprintf("发现新版本 v%s", cleanVer)
 				ui.Text(c, verText).FontSize(design.TextHeading).FontWeight(600).Grow(1)
+				ui.Text(c, "当前 v"+appVersion).FontSize(design.TextSmall).TextColor(t.TextMuted)
 				if !info.PublishedAt.IsZero() {
-					ui.Text(c, info.PublishedAt.Format("2006-01-02")).FontSize(design.TextSmall).TextColor(t.TextMuted)
+					ui.Text(c, "· "+info.PublishedAt.Format("2006-01-02")).FontSize(design.TextSmall).TextColor(t.TextMuted)
 				}
 			})
 
 			if notes := stripHTMLComments(info.Notes); notes != "" {
 				ui.Column(c).Padding(10).Radius(design.RadiusRow).Background(colors.Chip).Gap(6).Children(func() {
 					ui.Text(c, "更新日志").FontSize(design.TextSmall).TextColor(t.TextMuted).FontWeight(600)
-					ui.Scroll(c.Key("updateNotesScroll")).MaxHeight(220).Children(func() {
+					ui.Scroll(c.Key("updateNotesScroll")).MaxHeight(notesMaxH).Children(func() {
 						renderMarkdownBlocks(c, colors, notes, markdownRenderOptions{
 							bodyFontSize:    design.TextSmall,
 							smallFontSize:   design.TextSmall,
@@ -276,33 +298,58 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 				})
 			}
 
-			// 推荐升级途径提示
-			ui.Column(c).Padding(10).Radius(design.RadiusRow).Background(colors.Hover).Gap(8).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-					ui.Icon(c, design.Icon("terminal")).FontSize(14).TextColor(t.Accent)
-					ui.Text(c, "macOS 推荐使用 Homebrew 升级（自动避开拦截）：").FontSize(design.TextSmall).TextColor(t.Text)
-				})
-				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "brew upgrade serval").FontSize(design.TextSmall).Font(design.FontTerminal).
-						TextColor(t.Accent).Grow(1).SingleLine().Ellipsis("…")
-					ui.Button(c.Key("updateCopyBrew"), "复制升级命令").Height(26).Padding(0, 10).OnClick(func() {
-						c.WriteClipboard("brew upgrade serval")
-						a.toast(ui.Toast{Title: "已复制 Homebrew 升级命令"})
+			// 按平台展示升级指引：macOS 推荐 Homebrew，其余平台提供 Releases 下载链接复制
+			if runtime.GOOS == "darwin" {
+				ui.Column(c).Padding(10).Radius(design.RadiusRow).Background(colors.Hover).Gap(8).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Icon(c, design.Icon("terminal")).FontSize(14).TextColor(t.Accent)
+						ui.Text(c, "macOS 推荐使用 Homebrew 升级（自动避开拦截）：").FontSize(design.TextSmall).TextColor(t.Text)
+					})
+					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+						ui.Text(c, "brew upgrade serval").FontSize(design.TextSmall).Font(design.FontTerminal).
+							TextColor(t.Accent).Grow(1).SingleLine().Ellipsis("…")
+						ui.Button(c.Key("updateCopyBrew"), "复制升级命令").Height(26).Padding(0, 10).OnClick(func() {
+							c.WriteClipboard("brew upgrade serval")
+							a.toast(ui.Toast{Title: "已复制 Homebrew 升级命令"})
+						})
 					})
 				})
-			})
+			} else {
+				ui.Column(c).Padding(10).Radius(design.RadiusRow).Background(colors.Hover).Gap(8).Children(func() {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Icon(c, design.Icon("external-link")).FontSize(14).TextColor(t.Accent)
+						ui.Text(c, "请从 GitHub Releases 下载对应平台的安装包：").FontSize(design.TextSmall).TextColor(t.Text)
+					})
+					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+						ui.Text(c, downloadURL).FontSize(design.TextSmall).Font(design.FontTerminal).
+							TextColor(t.Accent).Grow(1).SingleLine().Ellipsis("…").Tooltip(downloadURL)
+						ui.Button(c.Key("updateCopyURL"), "复制下载链接").Height(26).Padding(0, 10).OnClick(func() {
+							c.WriteClipboard(downloadURL)
+							a.toast(ui.Toast{Title: "已复制下载链接"})
+						})
+					})
+				})
+			}
 
 			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+				ui.Button(c.Key("updateSkipVersion"), "跳过此版本").OnClick(func() {
+					if cleanVer != "" {
+						next := a.local
+						next.SkippedVersion = cleanVer
+						if err := a.saveLocal(next); err != nil {
+							a.toast(ui.Toast{Title: "保存设置失败", Description: err.Error(), Type: "error"})
+							return
+						}
+					}
+					a.update.sheetOpen = false
+				})
 				ui.Button(c.Key("updateDismiss"), "稍后再说").OnClick(func() {
 					a.update.sheetOpen = false
 				})
-				downloadURL := info.URL
-				if downloadURL == "" {
-					downloadURL = "https://github.com/jhzhang09/serval/releases/latest"
-				}
 				ui.PrimaryButton(c.Key("updateOpenDownload"), "前往 GitHub 下载").OnClick(func() {
-					if a.openURL != nil {
-						_ = a.openURL(downloadURL)
+					if a.openURL == nil || a.openURL(downloadURL) != nil {
+						c.WriteClipboard(downloadURL)
+						a.toast(ui.Toast{Title: "无法打开浏览器，已复制下载链接"})
 					}
 					a.update.sheetOpen = false
 				})

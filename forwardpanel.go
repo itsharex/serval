@@ -548,19 +548,19 @@ func (a *app) forwardEditPage(c *ui.Context) {
 		}).Description("本地转发把本机端口接到服务器能访问的地址。远程转发在服务器上监听，接到本机。动态转发是本机的 SOCKS5，流量经这台服务器出去。")
 		ui.Field(c, "名称", func() {
 			c.Key("forwardName")
-			ui.TextInput(c, &p.name).Placeholder("留空时按类型和端口生成")
+			ui.TextInput(c, &p.name).Placeholder("留空时按类型和端口生成").AutoFocus().OnSubmit(a.saveForward)
 		})
 		ui.Row(c).Gap(10).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				ui.Field(c, "监听地址", func() {
 					c.Key("forwardBindHost")
-					ui.TextInput(c, &p.bindHost).Placeholder("127.0.0.1")
+					ui.TextInput(c, &p.bindHost).Placeholder("127.0.0.1").OnSubmit(a.saveForward)
 				})
 			})
 			ui.Column(c).Width(110).Children(func() {
 				ui.Field(c, "监听端口", func() {
 					c.Key("forwardBindPort")
-					ui.TextInput(c, &p.bindPort).Placeholder("8080")
+					ui.TextInput(c, &p.bindPort).Placeholder("8080").OnSubmit(a.saveForward)
 				})
 			})
 		})
@@ -569,13 +569,13 @@ func (a *app) forwardEditPage(c *ui.Context) {
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					ui.Field(c, "目标地址", func() {
 						c.Key("forwardTargetHost")
-						ui.TextInput(c, &p.targetHost).Placeholder("127.0.0.1")
+						ui.TextInput(c, &p.targetHost).Placeholder("127.0.0.1").OnSubmit(a.saveForward)
 					})
 				})
 				ui.Column(c).Width(110).Children(func() {
 					ui.Field(c, "目标端口", func() {
 						c.Key("forwardTargetPort")
-						ui.TextInput(c, &p.targetPort).Placeholder("5432")
+						ui.TextInput(c, &p.targetPort).Placeholder("5432").OnSubmit(a.saveForward)
 					})
 				})
 			})

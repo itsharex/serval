@@ -43,6 +43,7 @@ type folderFile struct {
 func (a *app) planFolderUpload(t *tab, localRoot, remoteParent string) {
 	files := t.files
 	name := filepath.Base(localRoot)
+	t.scanningFolders++
 	go func() {
 		plan, err := scanFolder(localRoot)
 		if err == nil {
@@ -51,6 +52,9 @@ func (a *app) planFolderUpload(t *tab, localRoot, remoteParent string) {
 			err = plan.checkRemote(files)
 		}
 		a.post(func() {
+			if t.scanningFolders > 0 {
+				t.scanningFolders--
+			}
 			if !slices.Contains(a.tabs, t) {
 				return
 			}
@@ -172,10 +176,13 @@ func (a *app) folderConflictDialog(c *ui.Context) {
 	if len(plan.conflicts) > len(names) {
 		list += locales.FolderConflictEtc()
 	}
+	body := locales.FolderConflictsBody(plan.remoteRoot, list)
+	if len(a.pendingFolders) > 1 {
+		body = fmt.Sprintf("%s\n\n还有 %d 个文件夹待确认。", body, len(a.pendingFolders)-1)
+	}
 	open := true
 	choice := ui.AlertDialog(c, &open, locales.FolderConflictsTitle(plan.name, len(plan.conflicts)),
-		locales.FolderConflictsBody(plan.remoteRoot, list),
-		locales.FolderReplaceAll(), locales.FolderSkipAll(), locales.Cancel())
+		body, locales.FolderReplaceAll(), locales.FolderSkipAll(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}

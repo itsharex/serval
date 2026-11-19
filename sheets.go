@@ -253,7 +253,7 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 
 	sheet(c, colors, &op.open, &op.fresh, 360, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
-			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
+			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600).SingleLine().Ellipsis("…").Tooltip(title)
 			var input ui.Element
 			f := ui.Field(c, label, func() {
 				c.Key("fileOpInput")
@@ -273,6 +273,13 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 			})
 		})
 	})
+	if !op.open {
+		if op.busy {
+			op.open = true
+			return
+		}
+		a.fileOp = fileOpState{}
+	}
 }
 
 // fileDeleteDialog 确认删除远程文件或目录。

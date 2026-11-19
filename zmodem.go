@@ -263,21 +263,40 @@ func (z *zmodemConn) finish(s *zmodemSession, leftover []byte) {
 // zmodemTransfer 是窗格上正在进行的 rz/sz，供界面显示进度。进度字段在传输 goroutine 里写、
 // 界面上读，用原子操作。
 type zmodemTransfer struct {
-	kind     zmodem.Kind
-	name     atomic.Pointer[string]
-	done     atomic.Int64
-	total    atomic.Int64
-	cancel   context.CancelFunc
-	app      *app
-	lastWake atomic.Int64
+	kind       zmodem.Kind
+	name       atomic.Pointer[string]
+	done       atomic.Int64
+	total      atomic.Int64
+	filesDone  atomic.Int64
+	filesTotal atomic.Int64
+	speed      atomic.Int64
+	speedMu    sync.Mutex
+	lastBytes  int64
+	lastTime   time.Time
+	cancel     context.CancelFunc
+	app        *app
+	lastWake   atomic.Int64
 }
 
 func (tr *zmodemTransfer) progress(info zmodem.FileInfo, done int64) {
+	now := time.Now()
+	tr.speedMu.Lock()
 	if cur := tr.name.Load(); cur == nil || *cur != info.Name {
 		name := info.Name
 		tr.name.Store(&name)
 		tr.total.Store(info.Size)
+		tr.filesDone.Add(1)
+		tr.lastBytes = done
+		tr.lastTime = now
+		tr.speed.Store(0)
+	} else if elapsed := now.Sub(tr.lastTime); elapsed >= 500*time.Millisecond {
+		if delta := done - tr.lastBytes; delta >= 0 {
+			tr.speed.Store(int64(float64(delta) / elapsed.Seconds()))
+		}
+		tr.lastBytes = done
+		tr.lastTime = now
 	}
+	tr.speedMu.Unlock()
 	tr.done.Store(done)
 	tr.app.wakeUI(&tr.lastWake, 100*time.Millisecond)
 }
@@ -342,6 +361,7 @@ func (a *app) startZmodemUpload(t *tab, p *pane, z *zmodemConn, s *zmodemSession
 
 	ctx, cancel := context.WithCancel(context.Background())
 	tr := &zmodemTransfer{kind: zmodem.Upload, cancel: cancel, app: a}
+	tr.filesTotal.Store(int64(len(files)))
 	p.zmodem = tr
 	z.setCancel(s, cancel)
 	var skipped []string
@@ -415,6 +435,9 @@ func (a *app) startZmodemDownload(t *tab, p *pane, z *zmodemConn, s *zmodemSessi
 				return // 标签已经关了，连接随之断开，不用再提示结果
 			}
 			a.zmodemFinished(zmodem.Download, len(saved), nil, dir, err)
+			if len(saved) > 0 && a.localDir != "" && dir != "" && filepath.Clean(dir) == filepath.Clean(a.localDir) {
+				a.openLocal(a.localDir)
+			}
 		})
 	}()
 }
@@ -555,6 +578,14 @@ func (a *app) zmodemBar(c *ui.Context, colors design.Colors, p *pane) {
 	if n := tr.name.Load(); n != nil {
 		name = *n
 	}
+	displayName := name
+	if displayName == "" {
+		if tr.kind == zmodem.Download {
+			displayName = "等待接收文件…"
+		} else {
+			displayName = "等待对端响应…"
+		}
+	}
 	done, total := tr.done.Load(), tr.total.Load()
 	frac := float32(0)
 	if total > 0 {
@@ -564,12 +595,31 @@ func (a *app) zmodemBar(c *ui.Context, colors design.Colors, p *pane) {
 		ui.Row(c).Height(32).Padding(0, 12).Gap(8).AlignItems(ui.Center).FontSize(design.TextSmall).Children(func() {
 			ui.Icon(c, design.Icon(icon)).FontSize(13).TextColor(theme.Accent)
 			ui.Text(c, verb).NoWrap().Shrink(0)
-			ui.Text(c, name).FontWeight(600).SingleLine().MinWidth(0).Shrink(1)
+			nameEl := ui.Text(c, displayName).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+			if name != "" {
+				nameEl.Tooltip(name)
+			} else {
+				nameEl.TextColor(theme.TextMuted)
+			}
+			filesDone, filesTotal := tr.filesDone.Load(), tr.filesTotal.Load()
+			if filesDone > 0 && (filesTotal > 1 || (filesTotal == 0 && filesDone > 1)) {
+				countLabel := fmt.Sprintf("(#%d)", filesDone)
+				if filesTotal > 1 {
+					countLabel = fmt.Sprintf("(%d/%d)", filesDone, filesTotal)
+				}
+				ui.Text(c, countLabel).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
+			}
 			ui.Box(c).Grow(1)
 			if total > 0 {
-				ui.Text(c, fmt.Sprintf("%s / %s", formatSize(done), formatSize(total))).
+				progressText := fmt.Sprintf("%s / %s", formatSize(done), formatSize(total))
+				if sp := tr.speed.Load(); sp > 0 {
+					progressText += " · " + formatSize(sp) + "/s"
+				}
+				ui.Text(c, progressText).
 					TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 			}
+			ui.Text(c, locales.ZmCancelHint()).TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).
+				SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 			ui.ButtonBase(c.Key("cancelZmodem")).Label(locales.ZmCancelTransfer()).Shrink(0).Tooltip(locales.ZmCancelHint()).Children(func() {
 				ui.Text(c, locales.Cancel()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(tr.cancel)

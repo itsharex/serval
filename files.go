@@ -227,10 +227,34 @@ func (a *app) uploadConfirmDialog(c *ui.Context) {
 	}
 	u := a.pendingUploads[0]
 	open := true
-	choice := ui.AlertDialog(c, &open, locales.FileReplaceNamed(u.fileName),
-		locales.FileReplaceExists(path.Dir(u.remotePath)), locales.FileReplace(), locales.Cancel())
+	body := locales.FileReplaceExists(path.Dir(u.remotePath))
+	var choice int
+	if len(a.pendingUploads) > 1 {
+		body = fmt.Sprintf("%s\n\n还有 %d 个同名文件待确认。", body, len(a.pendingUploads)-1)
+		choice = ui.AlertDialog(c, &open, locales.FileReplaceNamed(u.fileName),
+			body, locales.FileReplace(), locales.FolderReplaceAll(), locales.FolderSkipAll(), locales.Cancel())
+	} else {
+		choice = ui.AlertDialog(c, &open, locales.FileReplaceNamed(u.fileName),
+			body, locales.FileReplace(), locales.Cancel())
+	}
 	if choice == -1 && open {
 		return
+	}
+	if len(a.pendingUploads) > 1 {
+		switch choice {
+		case 1:
+			pending := a.pendingUploads
+			a.pendingUploads = nil
+			for _, item := range pending {
+				if slices.Contains(a.tabs, item.tab) {
+					a.runTransfer(item.tab, transferUpload, item.remotePath, item.localPath, item.fileName, false)
+				}
+			}
+			return
+		case 2:
+			a.pendingUploads = nil
+			return
+		}
 	}
 	a.pendingUploads = a.pendingUploads[1:]
 	if choice == 0 && slices.Contains(a.tabs, u.tab) {
@@ -245,11 +269,34 @@ func (a *app) downloadConfirmDialog(c *ui.Context) {
 	}
 	d := a.pendingDownloads[0]
 	open := true
-	choice := ui.AlertDialog(c, &open, locales.FileReplaceNamed(d.fileName),
-		locales.FileReplaceLocalExists(filepath.Dir(d.localPath)),
-		locales.FileReplace(), locales.Cancel())
+	body := locales.FileReplaceLocalExists(filepath.Dir(d.localPath))
+	var choice int
+	if len(a.pendingDownloads) > 1 {
+		body = fmt.Sprintf("%s\n\n还有 %d 个同名文件待确认。", body, len(a.pendingDownloads)-1)
+		choice = ui.AlertDialog(c, &open, locales.FileReplaceNamed(d.fileName),
+			body, locales.FileReplace(), locales.FolderReplaceAll(), locales.FolderSkipAll(), locales.Cancel())
+	} else {
+		choice = ui.AlertDialog(c, &open, locales.FileReplaceNamed(d.fileName),
+			body, locales.FileReplace(), locales.Cancel())
+	}
 	if choice == -1 && open {
 		return
+	}
+	if len(a.pendingDownloads) > 1 {
+		switch choice {
+		case 1:
+			pending := a.pendingDownloads
+			a.pendingDownloads = nil
+			for _, item := range pending {
+				if slices.Contains(a.tabs, item.tab) {
+					a.runTransfer(item.tab, transferDownload, item.remotePath, item.localPath, item.fileName, false)
+				}
+			}
+			return
+		case 2:
+			a.pendingDownloads = nil
+			return
+		}
 	}
 	a.pendingDownloads = a.pendingDownloads[1:]
 	if choice == 0 && slices.Contains(a.tabs, d.tab) {
@@ -349,6 +396,17 @@ func (a *app) cancelTransfer(tr *fileTransfer) {
 	}
 }
 
+func (a *app) cancelAllTransfers(t *tab) {
+	if t == nil {
+		return
+	}
+	for _, tr := range t.transfers {
+		if !tr.done.Load() && tr.cancel != nil {
+			tr.cancel()
+		}
+	}
+}
+
 func (a *app) dismissTransfer(t *tab, id int) {
 	if t == nil {
 		return
@@ -381,6 +439,18 @@ func (a *app) retryTransfer(t *tab, item *fileTransfer) {
 		return
 	}
 	if item.kind == transferDownload {
+		if item.guardLocal {
+			if info, err := os.Lstat(item.localPath); err == nil {
+				if info.IsDir() {
+					a.toast(ui.Toast{Title: "没有下载 " + item.fileName, Description: "本地已经有同名的文件夹，请先把原来的移走。", Type: "error"})
+					return
+				}
+				a.pendingDownloads = append(a.pendingDownloads, &pendingDownload{
+					tab: t, remotePath: item.remotePath, localPath: item.localPath, fileName: item.fileName,
+				})
+				return
+			}
+		}
 		a.runTransfer(t, transferDownload, item.remotePath, item.localPath, item.fileName, item.guardLocal)
 		return
 	}

@@ -68,11 +68,15 @@ type app struct {
 	health      map[string]hostHealth
 	probeCancel context.CancelFunc
 	// 文件抽屉当前是否处于行内路径编辑模式，以及“仅打开 SFTP”连接完成后待展开的主机 ID。
-	editingRemotePath bool
-	remotePathDraft   string
-	editingLocalPath  bool
-	localPathDraft    string
-	openFilesOnHostID string
+	editingRemotePath  bool
+	remotePathDraft    string
+	remotePathFocused  bool
+	editingLocalPath   bool
+	localPathDraft     string
+	localPathFocused   bool
+	localQuickCacheKey string
+	localQuickCached   []localQuickDir
+	openFilesOnHostID  string
 
 	// syncDelay、syncEvery 用于测试缩短去抖和周期，零值使用 3 秒和 5 分钟。
 	// syncTimer、syncLoopStop、syncing 只在主线程读写；同步本身在后台做。
@@ -217,6 +221,7 @@ type app struct {
 	dragCopies map[dragKey]*dragCopy
 	// localDir 是文件抽屉左侧列出的本机目录。localGen 用来丢掉过期的列举结果。
 	localDir        string
+	localFailedDir  string
 	localEntries    []localEntry
 	localErr        string
 	localGen        int
@@ -323,14 +328,16 @@ type tab struct {
 	reconnectAttempt int
 	reconnectCancel  context.CancelFunc
 
-	files      *sshconn.Files
-	filesBusy  bool
-	filesError string
+	files          *sshconn.Files
+	filesBusy      bool
+	filesError     string
+	filesFailedDir string
 	// filesWaiting 是等文件通道打开后再执行的操作（例如通道还没打开时拖进来的文件）。
-	filesWaiting []func()
-	dir          string
-	entries      []sshconn.Entry
-	followed     string
+	filesWaiting    []func()
+	scanningFolders int
+	dir             string
+	entries         []sshconn.Entry
+	followed        string
 	// listGen 用来丢弃过期的目录结果：用户连续切换目录时，只有最后一次请求生效。
 	listGen         int
 	filesFilter     string
@@ -1812,6 +1819,7 @@ func (a *app) closeTab(t *tab) {
 	a.dropTabBroadcast(t)
 	a.stopTabMonitor(t)
 	a.closeAISessionForTab(t.id)
+	a.clearTabDragOut(t.id)
 	if t.id == a.filesActiveTabID {
 		a.filesOpen = false
 		a.lastDrawer = ""
@@ -2386,10 +2394,14 @@ func (a *app) openDir(t *tab, dir string) {
 				return
 			}
 			if err != nil {
+				t.filesFailedDir = dir
 				t.filesError = transferReason(err)
 				return
 			}
-			t.dir, t.entries, t.filesError = dir, entries, ""
+			if t.dir != "" && dir != t.dir {
+				t.filesFilter = ""
+			}
+			t.dir, t.entries, t.filesError, t.filesFailedDir = dir, entries, "", ""
 		})
 	}()
 }

@@ -14,6 +14,7 @@ import (
 // ServerStats 记录远程服务器的轻量监控指标。
 type ServerStats struct {
 	CPUPercent       float32   // CPU 总使用率 (0.0 ~ 100.0)
+	HasCPU           bool      // 是否已完成至少两次采样以计算出 CPU 利用率
 	Load1            float32   // 1 分钟平均负载
 	Load5            float32   // 5 分钟平均负载
 	MemUsedBytes     uint64    // 内存已用字节数
@@ -22,7 +23,9 @@ type ServerStats struct {
 	DiskTotalBytes   uint64    // 根分区总量字节数
 	NetRxBytesPerSec uint64    // 网络下行瞬时速率 (bytes/s)
 	NetTxBytesPerSec uint64    // 网络上行瞬时速率 (bytes/s)
+	HasNet           bool      // 是否已完成至少两次采样以计算出网络速率
 	UpdatedAt        time.Time // 最后更新时间
+	LastErr          string    // 最近一次探测失败提示
 }
 
 type statSample struct {
@@ -93,6 +96,7 @@ func parseProcMetrics(raw string, prev statSample, now time.Time) (ServerStats, 
 			}
 			cur.cpuTotal, cur.cpuIdle = total, idle
 			if prev.cpuTotal > 0 && total > prev.cpuTotal {
+				stats.HasCPU = true
 				dTotal := total - prev.cpuTotal
 				dIdle := uint64(0)
 				if idle >= prev.cpuIdle {
@@ -180,6 +184,7 @@ func parseProcMetrics(raw string, prev statSample, now time.Time) (ServerStats, 
 	if !prev.at.IsZero() && now.After(prev.at) {
 		durationSec := now.Sub(prev.at).Seconds()
 		if durationSec > 0.1 {
+			stats.HasNet = true
 			if cur.netRx >= prev.netRx {
 				stats.NetRxBytesPerSec = uint64(float64(cur.netRx-prev.netRx) / durationSec)
 			}
@@ -240,11 +245,26 @@ func (a *app) startTabMonitor(t *tab) {
 			now := time.Now()
 			stats, next := parseProcMetrics(string(out), sample, now)
 			sample = next
-			a.post(func() {
-				if t.monitorOpen && t.monitorStop == stop {
-					t.stats = stats
-				}
-			})
+			if a.post != nil {
+				a.post(func() {
+					if t.monitorOpen && t.monitorStop == stop {
+						t.stats = stats
+					}
+				})
+			}
+		} else {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if a.post != nil {
+				a.post(func() {
+					if t.monitorOpen && t.monitorStop == stop {
+						t.stats.LastErr = "监控探测失败"
+					}
+				})
+			}
 		}
 
 		for {
@@ -254,15 +274,24 @@ func (a *app) startTabMonitor(t *tab) {
 			case now := <-ticker.C:
 				out, err := client.Output(monitorScript)
 				if err != nil {
+					if a.post != nil {
+						a.post(func() {
+							if t.monitorOpen && t.monitorStop == stop {
+								t.stats.LastErr = "监控探测失败"
+							}
+						})
+					}
 					continue
 				}
 				stats, next := parseProcMetrics(string(out), sample, now)
 				sample = next
-				a.post(func() {
-					if t.monitorOpen && t.monitorStop == stop {
-						t.stats = stats
-					}
-				})
+				if a.post != nil {
+					a.post(func() {
+						if t.monitorOpen && t.monitorStop == stop {
+							t.stats = stats
+						}
+					})
+				}
 			}
 		}
 	}(t.client)

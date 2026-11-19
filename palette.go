@@ -19,10 +19,12 @@ import (
 
 // palette 是命令面板的状态。它是连接主机和执行操作的主要入口：两三个按键就能到达任何地方。
 type palette struct {
-	open          bool
-	query         string
-	selected      int
-	recentActions []string
+	open           bool
+	query          string
+	selected       int
+	scroll         ui.ScrollState
+	scrollSelected bool
+	recentActions  []string
 	// fresh 表示面板刚打开，这一帧从起始姿态弹出。
 	fresh bool
 }
@@ -331,6 +333,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 					return func() {
 						if len(items) > 0 {
 							a.pal.selected = (a.pal.selected + delta + len(items)) % len(items)
+							a.pal.scrollSelected = true
 						}
 					}
 				}
@@ -341,7 +344,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 				}
 			})
 			ui.Divider(c)
-			ui.Scroll(c).MaxHeight(340).Children(func() {
+			ui.Scroll(c.Key("paletteScroll")).TrackScroll(&a.pal.scroll).MaxHeight(340).Children(func() {
 				ui.Column(c).Gap(1).Children(func() {
 					if len(items) == 0 {
 						ui.Text(c, locales.PaletteNotFound(before)).TextColor(t.TextMuted).Padding(10, 8)
@@ -361,6 +364,8 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 	})
 	if a.pal.query != before {
 		a.pal.selected = 0
+		a.pal.scroll.Y = 0
+		a.pal.scrollSelected = true
 	}
 }
 
@@ -369,6 +374,10 @@ func (a *app) paletteRow(c *ui.Context, colors design.Colors, i int, item palett
 	row := ui.ButtonBase(c.Key(item.key)).Label(item.title).Height(40).Padding(0, 10).Gap(10).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 	selected := i == a.pal.selected
+	if selected && a.pal.scrollSelected {
+		row.ScrollIntoView(ui.ScrollIntoViewOptions{Block: ui.ScrollNearest})
+		a.pal.scrollSelected = false
+	}
 	if !selected && row.Hovered() {
 		row.Background(colors.Hover)
 	}
@@ -384,10 +393,10 @@ func (a *app) paletteRow(c *ui.Context, colors design.Colors, i int, item palett
 				ui.Icon(c, design.Icon(item.icon)).FontSize(15).TextColor(t.TextMuted)
 			})
 		}
-		ui.Text(c, item.title).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+		ui.Text(c, item.title).FontWeight(500).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		if item.subtitle != "" {
 			ui.Spacer(c)
-			ui.Text(c, item.subtitle).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1)
+			ui.Text(c, item.subtitle).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		}
 	}).OnClick(run)
 }

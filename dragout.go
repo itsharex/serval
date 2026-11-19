@@ -155,6 +155,21 @@ func (a *app) ensureDragRoot() (string, error) {
 	return dir, nil
 }
 
+// clearTabDragOut 删除指定标签页在当前会话里缓存的拖出副本及临时目录。
+func (a *app) clearTabDragOut(tabID int) {
+	if tabID == 0 || len(a.dragCopies) == 0 {
+		return
+	}
+	for k, c := range a.dragCopies {
+		if k.tab == tabID {
+			if c != nil && c.local != "" {
+				_ = os.RemoveAll(filepath.Dir(c.local))
+			}
+			delete(a.dragCopies, k)
+		}
+	}
+}
+
 // clearDragOut 删掉为拖出准备的临时文件。窗口关闭时调用。
 func (a *app) clearDragOut() {
 	if a.dragRoot != "" {

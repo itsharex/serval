@@ -164,6 +164,8 @@ type deviceSettings struct {
 	SyncDir string `json:"syncDir,omitempty"`
 	// DisableAutoCheckUpdate 为真时启动时不自动检查更新。默认自动检查（值为 false）。
 	DisableAutoCheckUpdate bool `json:"disableAutoCheckUpdate,omitempty"`
+	// SkippedVersion 记录用户选择“跳过此版本”的更新版本号（不阻止手动检查更新）。
+	SkippedVersion string `json:"skippedVersion,omitempty"`
 	// LegacyAIKey 仅用于将旧版本明文保存在 device.json 的密钥迁移进加密保险库，迁移后即清空。
 	LegacyAIKey string `json:"aiKey,omitempty"`
 	// AIKeyMigrated 标记已完成一次性旧版 AI Key 迁移检查，避免每次启动都读取系统钥匙串。
@@ -568,6 +570,23 @@ func (a *app) submitChangePassword() {
 	}()
 }
 
+func (a *app) switchSettingsTab(nextTab settingsTab) {
+	p := &a.settingsPanel
+	if p.tab == nextTab {
+		return
+	}
+	if p.tab == settingsTabAI {
+		a.commitAISettings()
+	}
+	if p.tab == settingsTabSync {
+		a.commitSyncDraft()
+	}
+	p.tab = nextTab
+	if p.tab == settingsTabAI && p.editingProfileID != "" && len(p.aiModels) == 0 {
+		a.fetchAIModels(false)
+	}
+}
+
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
@@ -607,40 +626,21 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	lightThemeIdx := indexOr(popularLightThemes, a.settings.TerminalThemeLight, 0)
 	rightClickIdx := indexOr(rightClickModes, a.settings.TerminalRightClick, 0)
 
-	sheet(c, colors, &p.open, &p.fresh, 560, 22, func() {
+	sheet(c, colors, &p.open, &p.fresh, 600, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, locales.Settings()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
+			ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+				ui.Text(c, locales.Settings()).FontSize(design.TextHeading).FontWeight(600).Shrink(0)
+				ui.Spacer(c)
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
 				ui.Segmented(c, &tabIdx, locales.SetGeneral(), "安全", locales.SetTerminal(), "同步", "AI").OnChange(func() {
-					nextTab := settingsTab(tabIdx)
-					if p.tab == settingsTabAI && nextTab != settingsTabAI {
-						a.commitAISettings()
-					}
-					if p.tab == settingsTabSync && nextTab != settingsTabSync {
-						a.commitSyncDraft()
-					}
-					p.tab = nextTab
-					if p.tab == settingsTabAI && p.editingProfileID != "" && len(p.aiModels) == 0 {
-						a.fetchAIModels(false)
-					}
+					a.switchSettingsTab(settingsTab(tabIdx))
 				})
 				if int(p.tab) != tabIdx {
-					nextTab := settingsTab(tabIdx)
-					if p.tab == settingsTabAI {
-						a.commitAISettings()
-					}
-					if p.tab == settingsTabSync {
-						a.commitSyncDraft()
-					}
-					p.tab = nextTab
-					if p.tab == settingsTabAI && p.editingProfileID != "" && len(p.aiModels) == 0 {
-						a.fetchAIModels(false)
-					}
+					a.switchSettingsTab(settingsTab(tabIdx))
 				}
 			})
-			ui.Scroll(c.Key("settingsScroll")).MaxHeight(max(windowHeight-165, 120)).Children(func() {
+			ui.Scroll(c.Key(fmt.Sprintf("settingsScroll:%d", p.tab))).MaxHeight(max(windowHeight-165, 120)).Children(func() {
 				ui.Column(c).Gap(11).Padding(0, 4, 0, 0).Children(func() {
 					if p.tab == settingsTabGeneral {
 						ui.Field(c, locales.SetAppearance(), func() {
@@ -891,14 +891,18 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.SetChangeMasterPasswordTitle()).FontWeight(600)
 				ui.Field(c, locales.SetCurrentMasterPassword(), func() {
 					passwordInput(c, colors, "settingsCurrentPw", locales.SetCurrentMasterPassword(), &p.currentPassword, &p.showCurrentPw, func(el ui.Element) {
-						el.AutoFocus()
+						el.AutoFocus().OnSubmit(a.submitChangePassword)
 					})
 				})
 				ui.Field(c, locales.SetNewMasterPassword(), func() {
-					passwordInput(c, colors, "settingsNewPw", locales.SetNewMasterPassword(), &p.newPassword, &p.showNewPw, nil)
+					passwordInput(c, colors, "settingsNewPw", locales.SetNewMasterPassword(), &p.newPassword, &p.showNewPw, func(el ui.Element) {
+						el.OnSubmit(a.submitChangePassword)
+					})
 				}).Description(locales.PasswordMin(vault.MinPasswordLength))
 				ui.Field(c, locales.SetConfirmMasterPassword(), func() {
-					passwordInput(c, colors, "settingsConfirmPw", locales.SetConfirmMasterPassword(), &p.confirmPassword, &p.showConfirmPw, nil)
+					passwordInput(c, colors, "settingsConfirmPw", locales.SetConfirmMasterPassword(), &p.confirmPassword, &p.showConfirmPw, func(el ui.Element) {
+						el.OnSubmit(a.submitChangePassword)
+					})
 				})
 				if p.changePwErr != "" {
 					ui.Text(c.Key("settingsChangePwError"), p.changePwErr).TextColor(colors.Danger).FontSize(design.TextSmall)
@@ -906,6 +910,7 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 				ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
 					ui.Button(c.Key("settingsCancelPw"), locales.Cancel()).OnClick(func() {
 						p.changePwOpen = false
+						p.currentPassword, p.newPassword, p.confirmPassword = "", "", ""
 						p.showCurrentPw, p.showNewPw, p.showConfirmPw = false, false, false
 						p.changePwErr = ""
 					})
@@ -1310,6 +1315,10 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		p.syncKind = "WebDAV"
 	}
 
+	prevKind, prevVendor, prevSubDir := p.syncKind, p.syncVendor, p.syncSubDir
+	prevWDServer, prevWDUser, prevWDPw := p.webdavServer, p.webdavUser, p.webdavPassword
+	prevS3Region, prevS3Bucket, prevS3ID, prevS3Secret, prevS3Ep := p.s3Region, p.s3Bucket, p.s3AccessID, p.s3Secret, p.s3Endpoint
+
 	ui.Field(c, "同步方式", func() {
 		c.Key("syncKind")
 		ui.Select(c, &p.syncKind, syncKindOptions)
@@ -1336,6 +1345,14 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		}, &p.syncVendor, &p.lastS3Vendor, &p.lastS3Endpoint,
 			&p.s3Region, &p.s3Bucket, &p.s3AccessID, &p.s3Secret, &p.showS3Secret, &p.s3Endpoint, &p.syncSubDir,
 			&p.showSyncGuide, "留空则保持现有密钥")
+	}
+
+	if p.syncKind != prevKind || p.syncVendor != prevVendor || p.syncSubDir != prevSubDir ||
+		p.webdavServer != prevWDServer || p.webdavUser != prevWDUser || p.webdavPassword != prevWDPw ||
+		p.s3Region != prevS3Region || p.s3Bucket != prevS3Bucket || p.s3AccessID != prevS3ID ||
+		p.s3Secret != prevS3Secret || p.s3Endpoint != prevS3Ep {
+		p.probeMsg = ""
+		p.probeOK = false
 	}
 
 	c.Key("syncEnabled")
@@ -1368,6 +1385,8 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 				p.s3Endpoint = ""
 				p.showSyncPassword = false
 				p.showS3Secret = false
+				p.probeMsg = ""
+				p.probeOK = false
 				a.configureSync("", "", "", false)
 				a.toast(ui.Toast{Title: "已清除同步配置"})
 			})
@@ -1375,9 +1394,9 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	})
 
 	if p.probeMsg != "" {
-		col := c.Theme().TextMuted
-		if !p.probeOK {
-			col = colors.Danger
+		col := colors.Danger
+		if p.probeOK {
+			col = colors.Live
 		}
 		ui.Text(c.Key("syncProbe"), p.probeMsg).FontSize(design.TextSmall).TextColor(col).Selectable()
 	}
@@ -1440,12 +1459,10 @@ func (a *app) knownHostsSection(c *ui.Context, colors design.Colors) {
 				FontSize(design.TextSmall).TextColor(t.TextMuted)
 			return
 		}
-		ui.Scroll(c).MaxHeight(200).Children(func() {
-			ui.Column(c).Gap(6).Children(func() {
-				for _, k := range known {
-					a.knownHostRow(c, colors, k)
-				}
-			})
+		ui.Column(c).Gap(6).Children(func() {
+			for _, k := range known {
+				a.knownHostRow(c, colors, k)
+			}
 		})
 	}).Description(locales.SetKnownHostsHint())
 }
@@ -1919,9 +1936,12 @@ func (a *app) deleteAIProfileInSettings(id string) {
 	p := &a.settingsPanel
 	profiles, activeID := dedupAIProfiles(a.settings.AIProfiles, a.settings.ActiveAIProfile)
 	var kept []aiProfile
+	deletedName := ""
 	for _, prof := range profiles {
 		if prof.ID != id {
 			kept = append(kept, prof)
+		} else {
+			deletedName = normalizeAIProfile(prof).Name
 		}
 	}
 
@@ -1946,6 +1966,11 @@ func (a *app) deleteAIProfileInSettings(id string) {
 	if err := a.saveSettings(next); err != nil {
 		p.err = err.Error()
 		return
+	}
+	if deletedName != "" {
+		a.toast(ui.Toast{Title: "已删除 AI 配置 " + deletedName})
+	} else {
+		a.toast(ui.Toast{Title: "已删除 AI 配置"})
 	}
 
 	if p.editingProfileID == id || len(kept) == 0 {

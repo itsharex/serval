@@ -1333,25 +1333,32 @@ func boolToFloat(b bool) float32 {
 // paneHeader 是卡片顶部的一行：哪台主机、在哪个目录、连接是否健康。
 func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	theme := c.Theme()
-	ui.Row(c).Height(32).Shrink(0).Padding(0, 12).Gap(8).AlignItems(ui.Center).
-		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).FontSize(design.TextSmall).Children(func() {
-		// 按终端列数估计窗格宽度，窄的时候逐级收起次要信息，而不是让文字互相挤压重叠。
-		cols, rows := p.term.Size()
-		if cols != p.lastCols || rows != p.lastRows {
-			if p.lastCols != 0 || p.lastRows != 0 {
-				p.sizeChangedAt = time.Now()
-			}
-			p.lastCols, p.lastRows = cols, rows
+	// 按终端列数估计窗格宽度，窄的时候逐级收起次要信息，而不是让文字互相挤压重叠。
+	cols, rows := p.term.Size()
+	if cols != p.lastCols || rows != p.lastRows {
+		if p.lastCols != 0 || p.lastRows != 0 {
+			p.sizeChangedAt = time.Now()
 		}
-		compact, tiny := cols < 70, cols < 50
+		p.lastCols, p.lastRows = cols, rows
+	}
+	compact, tiny := cols < 70, cols < 50
+	headerGap := float32(8)
+	if compact {
+		headerGap = 6
+	}
 
+	ui.Row(c).Height(32).Shrink(0).Padding(0, 12).Gap(headerGap).AlignItems(ui.Center).
+		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).FontSize(design.TextSmall).Children(func() {
 		multiPane := t.root.leaves() > 1
 		if multiPane {
 			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
-			ui.Text(c, tabLabel(t)).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
+			ui.Text(c, tabLabel(t)).FontWeight(600).FontSize(design.TextBody).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		} else {
 			// 单窗格时主机名已在上方标签页清晰显示，此处仅展示主机专属斑纹，避免信息冗余
 			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
+		}
+		if multiPane || a.broadcastOn {
+			chip(c.Key(fmt.Sprintf("paneOrd:%d", p.id)), fmt.Sprintf("#%d", paneOrdinal(t.root, p)), theme.TextMuted, colors.Chip)
 		}
 		user, dir := paneUserAndDir(t, p)
 		if user != "" {
@@ -1361,7 +1368,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 					ui.Box(c).Size(5, 5).Radius(3).Background(colors.Danger)
 					ui.Text(c, user).TextColor(colors.Danger).FontWeight(700).FontSize(design.TextSmall - 0.5).NoWrap()
 				})
-			} else {
+			} else if !(multiPane && compact) {
 				chip(c.Key(fmt.Sprintf("paneUser:%d", p.id)), user, theme.TextMuted, colors.Chip)
 			}
 		}
@@ -1401,12 +1408,16 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				}
 				chip(c.Key(fmt.Sprintf("paneProd:%d", p.id)), label, colors.Danger, colors.DangerSoft)
 			}
-			ui.Row(c.Key(fmt.Sprintf("status:%d", p.id))).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected()).Children(func() {
+			statusRow := ui.Row(c.Key(fmt.Sprintf("status:%d", p.id))).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected())
+			if t.latency > 0 {
+				statusRow.Tooltip(locales.ViewConnected() + " · " + formatLatency(t.latency))
+			}
+			statusRow.Children(func() {
 				// 圆点第一次出现时（连上、或从“无响应”恢复）放大回弹一次，提示状态变好了。
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
 				dot.Scale(s, s)
-				if t.latency > 0 && !tiny {
+				if t.latency > 0 && !compact {
 					ui.Text(c, formatLatency(t.latency)).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap()
 				}
 			})
@@ -1465,6 +1476,13 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			}).OnClick(func() {
 				a.togglePaneBroadcast(t, p)
 			})
+		} else if a.broadcastOn && t.focus == p && !p.ended {
+			bcastText := "未加入广播"
+			if compact {
+				bcastText = "未广播"
+			}
+			chip(c.Key(fmt.Sprintf("paneNotInBcast:%d", p.id)), bcastText, colors.TextFaint, colors.Chip).
+				Tooltip("当前焦点窗格未加入广播")
 		}
 		moreLabel := locales.PaneMoreActions()
 		if t.root.leaves() > 1 {
@@ -1558,34 +1576,17 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 			ui.Icon(c, design.Icon("folder")).FontSize(13).TextColor(theme.Accent)
 			ui.Text(c, "文件管理").FontSize(design.TextSmall).FontWeight(600).SingleLine()
 			if target := t.host.Target(); target != "" {
-				ui.Box(c).Padding(1, 6).Radius(design.RadiusChip).Background(colors.Chip).Grow(1).MinWidth(0).Children(func() {
+				ui.Box(c).Padding(1, 6).Radius(design.RadiusChip).Background(colors.Chip).Shrink(1).MinWidth(0).Children(func() {
 					ui.Text(c, target).FontSize(design.TextSmall - 1).TextColor(theme.TextMuted).SingleLine().Ellipsis("…")
 				})
-			} else {
-				ui.Spacer(c)
 			}
+			ui.Spacer(c)
 			iconButton(c.Key("filesClose"), colors, "x", "关闭文件抽屉", func() {
 				a.filesOpen = false
 				t.filesOpen = false
 			}).
 				Tooltip("关闭文件抽屉（" + shortcutText("J") + "）")
 		})
-		// 抽屉本身接收拖放，目标是当前列出的目录，不是终端的工作目录。
-		// 平时不铺接收层，避免挡住列表；有文件悬停时再盖一层提示，宽度不变，终端不会跟着改尺寸。
-		if !t.local && t.dir != "" {
-			if dropped := drawer.DroppedFiles(); len(dropped) > 0 {
-				a.uploadInto(t, t.dir, dropped)
-			}
-			if drawer.FileDragOver() {
-				theme := c.Theme()
-				ui.Box(c).Absolute().Top(0).Right(0).Bottom(0).Left(0).
-					Background(theme.Accent.Alpha(0.10)).Border(1.5, theme.Accent.Alpha(0.6)).
-					Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "上传到当前目录").FontWeight(600)
-					ui.Text(c, shortPath(t.dir)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…")
-				})
-			}
-		}
 		a.ensureLocalList()
 		c.Key("filesSplit")
 		ui.SplitPercent(c, &a.filesSplit, func() {
@@ -1603,16 +1604,38 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 // transferQueueView 展示传输队列面板。
 func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
+	var activeCount, failedCount int
 	hasFinished := false
 	for _, tr := range t.transfers {
 		if tr.done.Load() {
 			hasFinished = true
-			break
+			if tr.err != "" && tr.err != locales.FileCancelled() && tr.err != "已取消" {
+				failedCount++
+			}
+		} else {
+			activeCount++
 		}
 	}
 	ui.Column(c.Key("transfers")).Padding(6, 10, 8, 10).Gap(6).Children(func() {
-		ui.Row(c).Height(22).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, locales.ViewTransferQueue()).FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted).Grow(1)
+		ui.Row(c).Height(22).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, locales.ViewTransferQueue()).FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted)
+			if activeCount > 0 {
+				chip(c, fmt.Sprintf("%d 进行中", activeCount), theme.Accent, theme.Accent.Alpha(0.14))
+			}
+			if failedCount > 0 {
+				chip(c, fmt.Sprintf("%d 失败", failedCount), colors.Danger, colors.DangerSoft)
+			}
+			ui.Spacer(c)
+			if activeCount > 0 {
+				cancelBtn := ui.ButtonBase(c.Key("cancelAllTransfers")).Label("全部取消").Height(20).Padding(0, 6).
+					Radius(design.RadiusRow - 2).AlignItems(ui.Center).Transition(design.Hover)
+				if cancelBtn.Hovered() {
+					cancelBtn.Background(colors.Hover)
+				}
+				cancelBtn.Children(func() {
+					ui.Text(c, "全部取消").FontSize(design.TextSmall - 1).TextColor(colors.Danger).NoWrap()
+				}).OnClick(func() { a.cancelAllTransfers(t) })
+			}
 			if hasFinished {
 				clearBtn := ui.ButtonBase(c.Key("clearTransfers")).Label("清除已完成").Height(20).Padding(0, 6).
 					Radius(design.RadiusRow - 2).AlignItems(ui.Center).Transition(design.Hover)
@@ -1626,8 +1649,8 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 		})
 		ui.Scroll(c.Key("transfersScroll")).MaxHeight(140).Children(func() {
 			ui.Column(c).Gap(4).Children(func() {
-				for _, tr := range t.transfers {
-					item := tr
+				for i := len(t.transfers) - 1; i >= 0; i-- {
+					item := t.transfers[i]
 					done := item.done.Load()
 					ui.Column(c.Key(fmt.Sprintf("tr:%d", item.id))).Gap(3).Padding(5, 6).
 						Radius(design.RadiusRow - 2).Background(colors.Hover).Children(func() {
@@ -1640,14 +1663,15 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 								icon = "folder"
 							}
 							ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
-							ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).MinWidth(0).SingleLine()
+							ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).MinWidth(0).SingleLine().Ellipsis("…").Tooltip(item.fileName)
 							if !done {
-								iconButton(c, colors, "x", locales.ViewCancelTransfer(), func() { a.cancelTransfer(item) })
+								iconButton(c.Key(fmt.Sprintf("trCancel:%d", item.id)), colors, "x", locales.ViewCancelTransfer(), func() { a.cancelTransfer(item) })
 							} else {
 								if item.err != "" {
 									retryBtn := ui.ButtonBase(c.Key(fmt.Sprintf("trRetry:%d", item.id))).
 										Label("重试 "+item.fileName).Height(20).Padding(0, 6).Radius(design.RadiusChip).
-										AlignItems(ui.Center).Background(colors.Card).Border(1, colors.CardBorder).Transition(design.Hover)
+										AlignItems(ui.Center).Background(colors.Card).Border(1, colors.CardBorder).
+										Disabled(t.files == nil).Transition(design.Hover)
 									if retryBtn.Hovered() {
 										retryBtn.Background(theme.Accent.Alpha(0.14))
 									}
@@ -1694,7 +1718,7 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 							if item.err != "" {
 								color = colors.Danger
 							}
-							ui.Text(c, info).FontSize(design.TextSmall - 1).TextColor(color).FontFeatures("tnum").SingleLine().Ellipsis("…")
+							ui.Text(c, info).FontSize(design.TextSmall - 1).TextColor(color).FontFeatures("tnum").SingleLine().Ellipsis("…").Tooltip(info)
 						})
 					})
 				}
@@ -1714,6 +1738,9 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			if m.Item("下载文件夹").Chosen() {
 				a.startDownloadFolder(t, entry.Path, entry.Name)
 			}
+			if m.Item("下载到当前本地目录").Disabled(a.localDir == "").Chosen() {
+				a.acceptPaneDrop(t, true, a.localDir, paneDrag{local: false, path: entry.Path, name: entry.Name, dir: true})
+			}
 		} else {
 			if m.Item("编辑").Chosen() {
 				a.openEditor(t, entry.Path, entry.Name)
@@ -1721,7 +1748,11 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			if m.Item(locales.Download()).Chosen() {
 				a.startDownload(t, entry.Path, entry.Name)
 			}
+			if m.Item("下载到当前本地目录").Disabled(a.localDir == "").Chosen() {
+				a.acceptPaneDrop(t, true, a.localDir, paneDrag{local: false, path: entry.Path, name: entry.Name, dir: false})
+			}
 		}
+		m.Separator()
 		if m.Item(locales.Rename()).Chosen() {
 			a.openRenameFile(t, entry.Path, entry.Name)
 		}
@@ -1732,7 +1763,8 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			c.WriteClipboard(entry.Path)
 			a.toast(ui.Toast{Title: locales.ViewPathCopied()})
 		}
-		if m.Item(locales.Delete()).Chosen() {
+		m.Separator()
+		if m.Item(locales.Delete()).Danger().Chosen() {
 			a.askDeleteFile(t, entry.Path, entry.Name, entry.IsDir)
 		}
 	}
@@ -1742,7 +1774,7 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c.Key(entry.Path)).Label(entry.Name).Height(28).Grow(1).MinWidth(0).
+		row := ui.ButtonBase(c.Key(entry.Path)).Label(entry.Name).Tooltip(entry.Name).Height(28).Grow(1).MinWidth(0).
 			Padding(0, 6, 0, 8).Gap(6).Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow-2).PopoverMenu(menu, menuOptions(colors))
 		// 窗口内拖动交给另一栏。拖到桌面要等副本下好：准备好之后才声明系统拖放，
 		// 否则这次手势会变成系统拖动，本机栏收不到。松手在窗口外才开始下那份副本。
@@ -1751,6 +1783,9 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			if item, ok := ui.Drop[paneDrag](row); ok {
 				a.acceptPaneDrop(t, false, entry.Path, item)
 			}
+			if over, ok := ui.DragOver[paneDrag](row); ok && over.path != entry.Path {
+				row.Background(theme.Accent.Alpha(0.14))
+			}
 		}
 		if at, ok := row.DragMissed(); ok {
 			w, h := c.Size()
@@ -1758,7 +1793,8 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 				a.prepareDragOut(t, entry)
 			}
 		}
-		if _, ready := a.dragReady(t, entry); ready {
+		_, dragPrepared := a.dragReady(t, entry)
+		if dragPrepared {
 			a.bindDragOut(row, t, entry)
 		}
 		if entry.IsDir {
@@ -1774,10 +1810,13 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			}
 			ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color).Shrink(0)
 			ui.Text(c, entry.Name).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+			if dragPrepared {
+				chip(c, "可拖出", theme.Accent, theme.Accent.Alpha(0.14))
+			}
 			if !entry.IsDir {
 				ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 			}
-			if a.effectiveFilesWidth() >= 480 && !entry.ModTime.IsZero() {
+			if a.paneWidth(false) >= 240 && !entry.ModTime.IsZero() {
 				ui.Text(c, formatShortTime(entry.ModTime)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 			}
 		})
@@ -1876,13 +1915,34 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	s := t.stats
 	if s.UpdatedAt.IsZero() {
+		if s.LastErr != "" {
+			retryBtn := ui.ButtonBase(c.Key(fmt.Sprintf("monitorRetry:%d", p.id))).Label("重试服务器监控").
+				Tooltip(s.LastErr+"（点击重试）").Height(22).Padding(0, 6).Gap(4).Radius(design.RadiusChip).
+				AlignItems(ui.Center).Background(colors.DangerSoft).Shrink(0)
+			if retryBtn.Hovered() {
+				retryBtn.Background(colors.Danger.Alpha(0.2))
+			}
+			retryBtn.Children(func() {
+				ui.Text(c, s.LastErr).TextColor(colors.Danger).FontSize(design.TextSmall - 1).NoWrap()
+				ui.Icon(c, design.Icon("refresh-cw")).FontSize(11).TextColor(colors.Danger)
+			}).OnClick(func() {
+				a.stopTabMonitor(t)
+				t.monitorOpen = true
+				a.startTabMonitor(t)
+			})
+			return
+		}
 		ui.Text(c, locales.MonitorProbing()).TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap().Shrink(0)
 		return
 	}
 	tTheme := c.Theme()
+	cpuText := "—"
 	cpuColor := colors.TextFaint
-	if s.CPUPercent >= 85 {
-		cpuColor = colors.Danger
+	if s.HasCPU {
+		cpuText = fmt.Sprintf("%3.0f%%", s.CPUPercent)
+		if s.CPUPercent >= 85 {
+			cpuColor = colors.Danger
+		}
 	}
 	var memPercent float32
 	if s.MemTotalBytes > 0 {
@@ -1901,7 +1961,7 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, p 
 	anchor.Children(func() {
 		ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.MonitorCPU()).TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
-			ui.Textf(c, "%3.0f%%", s.CPUPercent).TextColor(cpuColor).FontFeatures("tnum")
+			ui.Text(c, cpuText).TextColor(cpuColor).FontFeatures("tnum")
 		})
 		if s.MemTotalBytes > 0 {
 			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
@@ -1923,10 +1983,14 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, p 
 					ui.Text(c, val).FontSize(design.TextSmall).TextColor(valColor).FontWeight(600).FontFeatures("tnum")
 				})
 			}
-			ui.Column(c).Gap(4).Children(func() {
-				metricRow(locales.MonitorCPU(), fmt.Sprintf("%.1f%%", s.CPUPercent), cpuColor)
-				ui.Progress(c, clampRatio(s.CPUPercent)).Height(3)
-			})
+			if s.HasCPU {
+				ui.Column(c).Gap(4).Children(func() {
+					metricRow(locales.MonitorCPU(), fmt.Sprintf("%.1f%%", s.CPUPercent), cpuColor)
+					ui.Progress(c, clampRatio(s.CPUPercent)).Height(3)
+				})
+			} else {
+				metricRow(locales.MonitorCPU(), "—", colors.TextFaint)
+			}
 			metricRow(locales.MonitorLoad(), fmt.Sprintf("%.2f / %.2f", s.Load1, s.Load5), tTheme.Text)
 			if s.MemTotalBytes > 0 {
 				ui.Column(c).Gap(4).Children(func() {
@@ -1945,8 +2009,18 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, p 
 					ui.Progress(c, clampRatio(diskPercent)).Height(3)
 				})
 			}
-			metricRow(locales.MonitorNetUp(), formatRate(s.NetTxBytesPerSec), tTheme.Accent)
-			metricRow(locales.MonitorNetDown(), formatRate(s.NetRxBytesPerSec), tTheme.Accent)
+			netUp, netDown := "—", "—"
+			netColor := colors.TextFaint
+			if s.HasNet {
+				netUp = formatRate(s.NetTxBytesPerSec)
+				netDown = formatRate(s.NetRxBytesPerSec)
+				netColor = tTheme.Accent
+			}
+			metricRow(locales.MonitorNetUp(), netUp, netColor)
+			metricRow(locales.MonitorNetDown(), netDown, netColor)
+			if s.LastErr != "" {
+				ui.Text(c, "最近探测失败，正在等待下次重试").FontSize(design.TextSmall - 1).TextColor(colors.Danger)
+			}
 		})
 	})
 }

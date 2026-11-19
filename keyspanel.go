@@ -435,7 +435,11 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 			if !p.generate {
 				placeholder = locales.KeyNameFromFile()
 			}
-			ui.TextInput(c, &p.name).Placeholder(placeholder).AutoFocus()
+			ui.TextInput(c, &p.name).Placeholder(placeholder).AutoFocus().OnSubmit(func() {
+				if !p.busy {
+					a.submitAddKey()
+				}
+			})
 		})
 		if p.generate {
 			ui.Field(c, locales.KeyType(), func() {
@@ -443,7 +447,13 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 				ui.Segmented(c, &p.genIndex, "Ed25519", "RSA 4096")
 			}).Description(locales.KeyTypeHint())
 			ui.Field(c, locales.KeyPassphraseOptional(), func() {
-				passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, nil)
+				passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, func(el ui.Element) {
+					el.OnSubmit(func() {
+						if !p.busy {
+							a.submitAddKey()
+						}
+					})
+				})
 			}).Description(locales.KeyPassphraseHint())
 		} else {
 			ui.Field(c, locales.PrivateKey(), func() {
@@ -459,7 +469,13 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 			}).Description(locales.KeyPemHint())
 			if keys.Encrypted([]byte(strings.TrimSpace(p.pem) + "\n")) {
 				ui.Field(c, locales.Passphrase(), func() {
-					passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, nil)
+					passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, func(el ui.Element) {
+						el.OnSubmit(func() {
+							if !p.busy {
+								a.submitAddKey()
+							}
+						})
+					})
 				})
 				c.Key("keySavePassphrase")
 				ui.Checkbox(c, &p.savePassphrase, locales.KeySavePassphrase())
@@ -502,12 +518,12 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, design.Icon("key-round")).FontSize(20).TextColor(t.TextMuted)
-			ui.Text(c, k.Name).FontSize(design.TextHeading).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
+			ui.Text(c, k.Name).FontSize(design.TextHeading).FontWeight(600).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
 			ui.Text(c, k.Label()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 		})
 		ui.Field(c, locales.Name(), func() {
 			c.Key("keyRename")
-			ui.TextInput(c, &p.rename)
+			ui.TextInput(c, &p.rename).OnSubmit(a.saveKeyDetail)
 		})
 		ui.Field(c, locales.KeyPublicKey(), func() {
 			ui.Column(c).Gap(8).Children(func() {
