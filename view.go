@@ -1555,15 +1555,28 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 	grip := ui.Box(c.Key("drawerResize")).Width(8).Shrink(0).Margin(design.Gap/2, -4).
 		Cursor(ui.CursorResizeEW).Focusable().Label("调整文件抽屉宽度")
 	dx, _, held := grip.Dragged()
+	changed := false
 	switch {
 	case grip.DoubleClicked():
 		a.filesWidth = 560
+		changed = true
 	case held && dx != 0:
 		a.filesWidth = min(max(width-dx, 300), maxW)
+		a.filesResizing = true
+	case a.filesResizing && !held:
+		a.filesResizing = false
+		changed = true
 	case grip.Shortcut(0, ui.KeyLeft):
 		a.filesWidth = min(width+20, maxW)
+		changed = true
 	case grip.Shortcut(0, ui.KeyRight):
 		a.filesWidth = max(width-20, 300)
+		changed = true
+	}
+	if changed && a.devicePath != "" {
+		next := a.local
+		next.FilesWidth = a.filesWidth
+		_ = a.saveLocal(next)
 	}
 	if held || grip.Hovered() {
 		accent := c.Theme().Accent

@@ -111,10 +111,12 @@ type app struct {
 	filesOpen        bool
 	filesActiveTabID int
 	// filesWidth 是文件抽屉的宽度（DIP），filesSplit 是抽屉内本地栏所占百分比。
-	filesWidth float32
-	filesSplit float32
+	filesWidth    float32
+	filesSplit    float32
+	filesResizing bool
 	// aiWidth 是右侧 AI Agent 侧栏的宽度（DIP）。
-	aiWidth float32
+	aiWidth    float32
+	aiResizing bool
 	// lastDrawer 记录当前标签最近一次主动打开的右侧抽屉（"files" 或 "ai"），窄窗口两者放不下时保留它。
 	lastDrawer string
 	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
@@ -162,17 +164,18 @@ type app struct {
 	snippetPanel snippetPanel
 	forwardPanel forwardPanel
 	// tunnels 是正在监听的转发，键是规则 ID。forwardErr 是最近一次启动失败的说明。
-	tunnels       map[string]*liveTunnel
-	forwardErr    map[string]string
-	settingsPanel settingsPanel
-	aiFetchSeq    uint64
-	aiFetchTimer  *time.Timer
-	ai            aiPanel
-	aiSessions    map[int]*aiPanel // 按标签页 id 隔离各自的 AI 对话与流式任务状态
-	aiActiveTabID int              // 当前绑定到 a.ai 的标签页 id（0 表示未连接终端标签页）
-	updateURL     string
-	httpClient    *http.Client
-	update        updateModel
+	tunnels        map[string]*liveTunnel
+	forwardErr     map[string]string
+	settingsPanel  settingsPanel
+	aiFetchSeq     uint64
+	aiFetchTimer   *time.Timer
+	ai             aiPanel
+	aiSessions     map[int]*aiPanel // 按标签页 id 隔离各自的 AI 对话与流式任务状态
+	aiTabRedirects map[int]int      // 空状态(0)迁移到首个标签页后的映射，保证运行中的后台回调能找到目标会话
+	aiActiveTabID  int              // 当前绑定到 a.ai 的标签页 id（0 表示未连接终端标签页）
+	updateURL      string
+	httpClient     *http.Client
+	update         updateModel
 	// lastCopiedText 记录最近一次从终端复制的文字，供 AI 报错分析直接引用。
 	lastCopiedText string
 	restore        restorePanel

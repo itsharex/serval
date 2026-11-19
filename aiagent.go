@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,13 +18,14 @@ import (
 	"serval/core/ai"
 	"serval/core/hosts"
 	"serval/core/sshconn"
+	"serval/locales"
 )
 
 // aiPermissionMode 控制 Agent 工具调用的执行权限。
 type aiPermissionMode uint8
 
 const (
-	aiModeAuto     aiPermissionMode = iota // 自动执行：常规探测与命令自动执行，高危指令仍拦截确认
+	aiModeAuto     aiPermissionMode = iota // 自动执行：常规探测与命令自动执行，高危指令与生产变更仍拦截确认
 	aiModeConfirm                          // 逐条确认：写/执行类工具需用户逐次点击确认
 	aiModeObserver                         // 只读观察：仅允许读终端、读主机信息与 SFTP 只读探测
 )
@@ -30,11 +33,11 @@ const (
 func (m aiPermissionMode) label() string {
 	switch m {
 	case aiModeObserver:
-		return "只读观察"
+		return locales.AiModeObserver()
 	case aiModeConfirm:
-		return "确认执行"
+		return locales.AiModeConfirm()
 	default:
-		return "自动执行"
+		return locales.AiModeAuto()
 	}
 }
 
@@ -45,7 +48,7 @@ func (m aiPermissionMode) description() string {
 	case aiModeConfirm:
 		return "执行每条命令前弹窗/卡片确认"
 	default:
-		return "自动执行常规命令，高危指令仍拦截"
+		return "自动执行常规命令，高危/生产变更仍拦截"
 	}
 }
 
@@ -54,7 +57,9 @@ type aiSessionSnapshot struct {
 	tabID      int
 	hasTab     bool
 	isLocal    bool
+	protocol   string // "local", "ssh", "telnet", "serial"
 	connected  bool
+	termAlive  bool
 	hostName   string
 	hostAddr   string
 	hostPort   int
@@ -64,20 +69,34 @@ type aiSessionSnapshot struct {
 	jumpCount  int
 	liveUser   string
 	liveDir    string
+	sftpDir    string
 	client     *sshconn.Client
 }
 
 func (a *app) captureAISessionSnapshot() aiSessionSnapshot {
-	t := a.current()
+	return snapshotFromTab(a.current())
+}
+
+func snapshotFromTab(t *tab) aiSessionSnapshot {
 	if t == nil {
 		return aiSessionSnapshot{}
 	}
 	user, dir := paneUserAndDir(t, t.focus)
+	proto := strings.ToLower(strings.TrimSpace(t.host.Protocol))
+	if t.local {
+		proto = "local"
+	} else if proto == "" {
+		proto = hosts.ProtocolSSH
+	}
+	termAlive := t.focus != nil && t.focus.term != nil && !t.focus.ended
+	connected := t.local || t.client != nil || ((proto == hosts.ProtocolTelnet || proto == hosts.ProtocolSerial) && termAlive)
 	snap := aiSessionSnapshot{
 		tabID:      t.id,
 		hasTab:     true,
 		isLocal:    t.local,
-		connected:  t.local || t.client != nil,
+		protocol:   proto,
+		connected:  connected,
+		termAlive:  termAlive,
 		hostName:   tabLabel(t),
 		hostAddr:   t.host.Address,
 		hostPort:   t.host.Port,
@@ -87,6 +106,7 @@ func (a *app) captureAISessionSnapshot() aiSessionSnapshot {
 		jumpCount:  len(hosts.SplitJumps(t.host.ProxyJump)),
 		liveUser:   user,
 		liveDir:    dir,
+		sftpDir:    t.dir,
 		client:     t.client,
 	}
 	if snap.isLocal {
@@ -127,9 +147,21 @@ func agentSystemPrompt(snap aiSessionSnapshot, mode aiPermissionMode) string {
 		b.WriteString("- 当前没有打开的终端标签页。\n")
 		return b.String()
 	}
-	if snap.isLocal {
+	switch snap.protocol {
+	case "local":
 		b.WriteString(fmt.Sprintf("- 目标类型：本机终端 (%s)\n", snap.distro))
-	} else {
+	case hosts.ProtocolTelnet, hosts.ProtocolSerial:
+		protoLabel := "Telnet"
+		if snap.protocol == hosts.ProtocolSerial {
+			protoLabel = "串口 Serial"
+		}
+		state := "已连接"
+		if !snap.connected {
+			state = "已断开"
+		}
+		b.WriteString(fmt.Sprintf("- 目标类型：%s 交互终端（%s），状态：%s\n", protoLabel, snap.hostName, state))
+		b.WriteString("- 协议限制：Telnet 与串口终端不支持后台 `ssh_exec` 与 `sftp_list`/`sftp_read`；请使用 `terminal_read` 读取当前屏幕输出，并用 `terminal_insert` 将安全命令填入终端供用户确认执行。\n")
+	default:
 		port := snap.hostPort
 		if port == 0 {
 			port = 22
@@ -159,7 +191,7 @@ func agentToolDefinitions() []ai.ToolDefinition {
 			Type: "function",
 			Function: ai.ToolFunction{
 				Name:        "host_info",
-				Description: "获取当前活动标签页的主机连接状态、系统发行版、登录用户、工作目录、是否生产环境（不含密码与私钥等机密）。",
+				Description: "获取当前活动标签页的主机连接状态、协议类型、系统发行版、登录用户、工作目录、是否生产环境（不含密码与私钥等机密）。",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			},
 		},
@@ -191,7 +223,7 @@ func agentToolDefinitions() []ai.ToolDefinition {
 			Type: "function",
 			Function: ai.ToolFunction{
 				Name:        "sftp_list",
-				Description: "通过 SFTP（或本地文件）只读列出远端目录内容。",
+				Description: "通过 SFTP（或本地文件）只读列出远端目录内容，支持相对路径（基于当前工作目录）。",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"目标目录路径，留空则使用当前工作目录或主目录"}}}`),
 			},
 		},
@@ -199,12 +231,13 @@ func agentToolDefinitions() []ai.ToolDefinition {
 			Type: "function",
 			Function: ai.ToolFunction{
 				Name:        "sftp_read",
-				Description: "通过 SFTP（或本地文件）只读读取文本文件或日志内容（最大 32KB，自动拒绝二进制文件）。",
+				Description: "通过 SFTP（或本地文件）只读读取文本文件或日志内容（最大 32KB，自动拒绝二进制文件）；排查大日志时可设 tail=true 读取文件末尾。",
 				Parameters: json.RawMessage(`{
 					"type":"object",
 					"properties":{
-						"path":{"type":"string","description":"要读取的文件路径"},
-						"max_bytes":{"type":"integer","description":"读取字节上限，默认16384，最大32768"}
+						"path":{"type":"string","description":"要读取的文件路径，支持相对当前工作目录的路径"},
+						"max_bytes":{"type":"integer","description":"读取字节上限，默认16384，最大32768"},
+						"tail":{"type":"boolean","description":"为 true 时读取文件末尾最新内容，适合排查大日志"}
 					},
 					"required":["path"]
 				}`),
@@ -358,7 +391,89 @@ func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string
 	}
 }
 
+func (a *app) refreshAISnapshot(ctx context.Context, snap aiSessionSnapshot) aiSessionSnapshot {
+	var updated aiSessionSnapshot
+	var ok bool
+	if err := a.runMainSync(ctx, func() {
+		t := a.targetTabForSnapshot(snap)
+		if t == nil {
+			return
+		}
+		updated = snapshotFromTab(t)
+		ok = true
+	}); err != nil || !ok {
+		return snap
+	}
+	return updated
+}
+
+func resolveRemoteAgentPath(p, liveDir string, files *sshconn.Files) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		if strings.HasPrefix(liveDir, "/") {
+			return liveDir
+		}
+		if files != nil {
+			if home, err := files.Home(); err == nil && home != "" {
+				return home
+			}
+		}
+		return "."
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if files != nil {
+			if home, err := files.Home(); err == nil && home != "" {
+				if p == "~" {
+					return home
+				}
+				return path.Join(home, strings.TrimPrefix(p, "~/"))
+			}
+		}
+		return p
+	}
+	if !strings.HasPrefix(p, "/") {
+		if strings.HasPrefix(liveDir, "/") {
+			return path.Join(liveDir, p)
+		}
+		if files != nil {
+			if home, err := files.Home(); err == nil && home != "" {
+				return path.Join(home, p)
+			}
+		}
+	}
+	return p
+}
+
+func readLocalFileTail(f *os.File, limit int64) ([]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size <= 0 {
+		return nil, nil
+	}
+	if size > limit {
+		if _, err := f.Seek(-limit, io.SeekEnd); err != nil {
+			return nil, err
+		}
+	}
+	buf := make([]byte, limit+1)
+	n, rErr := io.ReadFull(f, buf)
+	if rErr != nil && rErr != io.EOF && rErr != io.ErrUnexpectedEOF {
+		return nil, rErr
+	}
+	data := buf[:n]
+	if size > limit {
+		if idx := bytes.IndexByte(data, '\n'); idx >= 0 && idx+1 < len(data) {
+			data = data[idx+1:]
+		}
+	}
+	return data, nil
+}
+
 func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, snap aiSessionSnapshot, mode aiPermissionMode, toolRec *aiToolRecord, tc ai.ToolCall) (string, bool) {
+	snap = a.refreshAISnapshot(ctx, snap)
 	switch tc.Function.Name {
 	case "host_info":
 		if !snap.hasTab {
@@ -366,12 +481,15 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		}
 		info := map[string]any{
 			"is_local":     snap.isLocal,
+			"protocol":     snap.protocol,
 			"connected":    snap.connected,
+			"term_alive":   snap.termAlive,
 			"host_name":    snap.hostName,
 			"host_address": snap.hostAddr,
 			"port":         snap.hostPort,
 			"user":         snap.liveUser,
 			"cwd":          snap.liveDir,
+			"sftp_dir":     snap.sftpDir,
 			"distro":       snap.distro,
 			"production":   snap.production,
 			"jump_count":   snap.jumpCount,
@@ -428,11 +546,18 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if !snap.hasTab || !snap.connected {
 			return "当前没有已连接的终端会话，无法执行命令。", true
 		}
+		if snap.protocol == hosts.ProtocolTelnet || snap.protocol == hosts.ProtocolSerial {
+			return fmt.Sprintf("当前会话协议为 %s，不支持后台 ssh_exec。请使用 terminal_read 读取屏幕输出，或用 terminal_insert 将单行命令填入终端供用户确认后执行。", snap.protocol), true
+		}
+		if !snap.isLocal && snap.client == nil {
+			return "当前 SSH 客户端尚未就绪或已断开，无法执行命令。", true
+		}
 		if mode == aiModeObserver {
 			return "当前权限模式为「只读观察」，已阻止执行命令。如需执行请提示用户切换到「确认执行」或「自动执行」。", true
 		}
 		dangerous := ai.IsDangerousCommand(cmd)
-		if mode == aiModeConfirm || dangerous {
+		needConfirm := mode == aiModeConfirm || dangerous || (snap.production && !ai.IsReadOnlyProbeCommand(cmd))
+		if needConfirm {
 			target := snap.hostName
 			if snap.liveUser != "" && snap.hostAddr != "" {
 				target = snap.liveUser + "@" + snap.hostAddr
@@ -478,17 +603,23 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if !snap.hasTab || !snap.connected {
 			return "当前没有已连接的终端会话。", true
 		}
+		if snap.protocol == hosts.ProtocolTelnet || snap.protocol == hosts.ProtocolSerial {
+			return fmt.Sprintf("当前会话协议为 %s，不支持 SFTP 文件浏览。", snap.protocol), true
+		}
 		var params struct {
 			Path string `json:"path"`
 		}
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &params)
 		targetPath := strings.TrimSpace(params.Path)
-		if targetPath == "" {
-			targetPath = snap.liveDir
-		}
 		if snap.isLocal {
 			if targetPath == "" {
+				targetPath = snap.liveDir
+			}
+			if targetPath == "" {
 				targetPath, _ = os.UserHomeDir()
+			}
+			if !filepath.IsAbs(targetPath) && snap.liveDir != "" {
+				targetPath = filepath.Join(snap.liveDir, targetPath)
 			}
 			entries, err := os.ReadDir(targetPath)
 			if err != nil {
@@ -504,19 +635,24 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 				if e.IsDir() {
 					kind = "dir "
 				}
-				lines = append(lines, fmt.Sprintf("%s  %s", kind, e.Name()))
+				var size int64
+				if info, iErr := e.Info(); iErr == nil {
+					size = info.Size()
+				}
+				lines = append(lines, fmt.Sprintf("%s  %-10d  %s", kind, size, e.Name()))
 			}
 			return fmt.Sprintf("目录 %s：\n%s", targetPath, strings.Join(lines, "\n")), false
 		}
 
+		if snap.client == nil {
+			return "当前 SSH 客户端尚未就绪或已断开。", true
+		}
 		files, err := snap.client.OpenFiles()
 		if err != nil {
 			return "打开 SFTP 通道失败：" + err.Error(), true
 		}
 		defer files.Close()
-		if targetPath == "" {
-			targetPath, _ = files.Home()
-		}
+		targetPath = resolveRemoteAgentPath(targetPath, snap.liveDir, files)
 		entries, err := files.List(targetPath)
 		if err != nil {
 			return "列出远端目录失败：" + err.Error(), true
@@ -539,9 +675,13 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if !snap.hasTab || !snap.connected {
 			return "当前没有已连接的终端会话。", true
 		}
+		if snap.protocol == hosts.ProtocolTelnet || snap.protocol == hosts.ProtocolSerial {
+			return fmt.Sprintf("当前会话协议为 %s，不支持 SFTP 文件读取。", snap.protocol), true
+		}
 		var params struct {
 			Path     string `json:"path"`
 			MaxBytes int    `json:"max_bytes"`
+			Tail     bool   `json:"tail"`
 		}
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &params)
 		p := strings.TrimSpace(params.Path)
@@ -568,22 +708,37 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 				return "读取文件失败：" + err.Error(), true
 			}
 			defer f.Close()
-			buf := make([]byte, limit+1)
-			n, rErr := f.Read(buf)
-			if rErr != nil && n == 0 {
-				return "读取文件失败：" + rErr.Error(), true
-			}
-			data = buf[:n]
-			if int64(len(data)) > limit {
-				data = data[:limit]
+			if params.Tail {
+				data, err = readLocalFileTail(f, limit)
+				if err != nil {
+					return "读取文件末尾失败：" + err.Error(), true
+				}
+			} else {
+				buf := make([]byte, limit+1)
+				n, rErr := f.Read(buf)
+				if rErr != nil && n == 0 {
+					return "读取文件失败：" + rErr.Error(), true
+				}
+				data = buf[:n]
+				if int64(len(data)) > limit {
+					data = data[:limit]
+				}
 			}
 		} else {
+			if snap.client == nil {
+				return "当前 SSH 客户端尚未就绪或已断开。", true
+			}
 			files, fErr := snap.client.OpenFiles()
 			if fErr != nil {
 				return "打开 SFTP 通道失败：" + fErr.Error(), true
 			}
 			defer files.Close()
-			data, _, err = files.ReadLimited(ctx, p, limit)
+			p = resolveRemoteAgentPath(p, snap.liveDir, files)
+			if params.Tail {
+				data, _, _, err = files.ReadTailLimited(ctx, p, limit)
+			} else {
+				data, _, err = files.ReadLimited(ctx, p, limit)
+			}
 			if err != nil {
 				return "读取远端文件失败：" + err.Error(), true
 			}

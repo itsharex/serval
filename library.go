@@ -131,6 +131,15 @@ func (a *app) loadLocal() {
 	if d.SidebarWidth > 0 {
 		a.sidebarWidth = min(max(d.SidebarWidth, 200), 360)
 	}
+	if d.FilesWidth > 0 {
+		a.filesWidth = min(max(d.FilesWidth, 300), 1200)
+	}
+	if d.AIWidth > 0 {
+		a.aiWidth = min(max(d.AIWidth, 340), 1200)
+	}
+	if d.AIMode <= uint8(aiModeObserver) {
+		a.ai.mode = aiPermissionMode(d.AIMode)
+	}
 	a.migrateAIKey()
 }
 

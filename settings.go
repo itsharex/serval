@@ -142,6 +142,12 @@ type deviceSettings struct {
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
 	// SidebarWidth 是本机侧栏宽度（DIP），0 表示使用默认值 240。
 	SidebarWidth float32 `json:"sidebarWidth,omitempty"`
+	// FilesWidth 是本机文件抽屉宽度（DIP），0 表示使用默认值 560。
+	FilesWidth float32 `json:"filesWidth,omitempty"`
+	// AIWidth 是本机 AI 助理侧栏宽度（DIP），0 表示使用默认值 460。
+	AIWidth float32 `json:"aiWidth,omitempty"`
+	// AIMode 是本机记住的 AI Agent 权限模式（0 自动执行、1 确认执行、2 只读观察）。
+	AIMode uint8 `json:"aiMode,omitempty"`
 	// DisableDefaultMonitor 为真时，新建 SSH 会话不默认开启顶栏服务器监控。
 	DisableDefaultMonitor bool `json:"disableDefaultMonitor,omitempty"`
 	// HostMonitor 记录各台主机上次的监控开关状态。
