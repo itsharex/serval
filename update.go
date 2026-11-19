@@ -17,7 +17,7 @@ import (
 )
 
 // appVersion 是当前客户端版本号，与 mygo.json 中的 version 保持一致。
-const appVersion = "0.6.3"
+const appVersion = "0.6.4"
 
 // defaultUpdateURL 是默认的 GitHub Releases 最新版本查询端点。
 const defaultUpdateURL = "https://api.github.com/repos/jhzhang09/serval/releases/latest"
@@ -359,64 +359,6 @@ func (a *app) updateDialog(c *ui.Context, colors design.Colors) {
 	if !a.update.sheetOpen {
 		a.update.sheetOpen = false
 	}
-}
-
-// aboutAndUpdatesSection 在设置面板的通用设置底部渲染“关于与更新”区块。
-func (a *app) aboutAndUpdatesSection(c *ui.Context, colors design.Colors) {
-	t := c.Theme()
-	ui.Column(c).Gap(10).Children(func() {
-		ui.Text(c, "关于与更新").FontSize(design.TextBody).FontWeight(600).TextColor(t.Text)
-
-		ui.Field(c, "当前版本", func() {
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, fmt.Sprintf("Serval v%s", appVersion)).FontSize(design.TextBody).FontWeight(600).TextColor(t.Text)
-
-				checkBtnText := "检查更新"
-				if a.update.checking {
-					checkBtnText = "正在检查…"
-				}
-				ui.Button(c.Key("settingsCheckUpdate"), checkBtnText).Disabled(a.update.checking).OnClick(func() {
-					a.checkForUpdates(true)
-				})
-
-				ui.Button(c.Key("settingsOpenAbout"), "关于 Serval").OnClick(func() {
-					a.openAbout()
-				})
-
-				if a.update.state == updateAvailable && a.update.latest != nil {
-					ui.Button(c.Key("settingsViewUpdate"), fmt.Sprintf("发现新版本 v%s", strings.TrimPrefix(a.update.latest.Version, "v"))).
-						OnClick(func() {
-							a.update.sheetOpen = true
-							a.update.sheetFresh = true
-						})
-				}
-			})
-		}).Description("轻量、安全的原生跨平台 SSH 客户端。所有用户凭据均经端到端加密保护。")
-
-		// 启动时自动检查更新开关
-		autoCheck := !a.local.DisableAutoCheckUpdate
-		c.Key("settingsAutoCheckUpdate")
-		ui.Checkbox(c, &autoCheck, "启动时自动检查更新").OnChange(func() {
-			next := a.local
-			next.DisableAutoCheckUpdate = !autoCheck
-			if err := a.saveLocal(next); err != nil {
-				a.settingsPanel.err = err.Error()
-			}
-		})
-
-		// 检查状态说明
-		if a.update.checking {
-			ui.Text(c, "正在连接 GitHub Releases 检查新版本…").FontSize(design.TextSmall).TextColor(t.TextMuted)
-		} else if a.update.state == updateLatest {
-			status := fmt.Sprintf("已是最新版本 (v%s)", appVersion)
-			if !a.update.lastChecked.IsZero() {
-				status += fmt.Sprintf(" · 上次检查于 %s", a.update.lastChecked.Format("15:04:05"))
-			}
-			ui.Text(c, status).FontSize(design.TextSmall).TextColor(t.Accent)
-		} else if a.update.state == updateError && a.update.err != "" {
-			ui.Text(c, fmt.Sprintf("检查更新失败：%s", a.update.err)).FontSize(design.TextSmall).TextColor(colors.Danger)
-		}
-	})
 }
 
 // stripHTMLComments 移除 GitHub Release 说明中的 HTML 注释（例如自动生成标记）。

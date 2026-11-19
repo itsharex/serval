@@ -125,11 +125,9 @@ func TestAppCheckForUpdatesManualLatest(t *testing.T) {
 	h.pump("打开设置面板", func() bool { return h.a.settingsPanel.open })
 	h.tt.Frame()
 
-	// 滚动到关于与更新区域
-	if box, ok := h.tt.Find("外观"); ok {
-		h.tt.Scroll(box.X+50, box.Y+50, 0, 450)
-		h.tt.Frame()
-	}
+	// 切换到“关于”标签页
+	h.click("关于")
+	h.tt.Frame()
 
 	// 点击检查更新按钮
 	h.click("检查更新")
@@ -161,11 +159,9 @@ func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	h.pump("打开设置面板", func() bool { return h.a.settingsPanel.open })
 	h.tt.Frame()
 
-	// 滚动到关于与更新区域
-	if box, ok := h.tt.Find("外观"); ok {
-		h.tt.Scroll(box.X+50, box.Y+50, 0, 450)
-		h.tt.Frame()
-	}
+	// 切换到“关于”标签页
+	h.click("关于")
+	h.tt.Frame()
 
 	// 点击检查更新
 	h.click("检查更新")
@@ -240,11 +236,9 @@ func TestAppAutoCheckUpdateToggle(t *testing.T) {
 	h.pump("打开设置面板", func() bool { return h.a.settingsPanel.open })
 	h.tt.Frame()
 
-	// 滚动到关于与更新区域
-	if box, ok := h.tt.Find("外观"); ok {
-		h.tt.Scroll(box.X+50, box.Y+50, 0, 450)
-		h.tt.Frame()
-	}
+	// 切换到“关于”标签页
+	h.click("关于")
+	h.tt.Frame()
 
 	// 默认状态：DisableAutoCheckUpdate == false (即开启)
 	if h.a.local.DisableAutoCheckUpdate {

@@ -225,6 +225,7 @@ const (
 	settingsTabTerminal
 	settingsTabSync
 	settingsTabAI
+	settingsTabAbout
 )
 
 // settingsPanel 是“设置”浮层面板的状态。
@@ -596,7 +597,7 @@ func (a *app) switchSettingsTab(nextTab settingsTab) {
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
-	if a.setup.open || a.restore.open || a.about.open || a.update.sheetOpen {
+	if a.setup.open || a.restore.open || a.update.sheetOpen {
 		return
 	}
 	if !p.open {
@@ -639,7 +640,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Spacer(c)
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
-				ui.Segmented(c, &tabIdx, locales.SetGeneral(), "安全", locales.SetTerminal(), "同步", "AI").OnChange(func() {
+				ui.Segmented(c, &tabIdx, locales.SetGeneral(), "安全", locales.SetTerminal(), "同步", "AI", "关于").OnChange(func() {
 					a.switchSettingsTab(settingsTab(tabIdx))
 				})
 				if int(p.tab) != tabIdx {
@@ -713,9 +714,6 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 								}
 							})
 						}).Description("连接后会在远端执行一次只读命令读取 /etc/os-release。对审计严格的服务器可关闭此项，改在主机编辑里手动指定。")
-
-						ui.Divider(c)
-						a.aboutAndUpdatesSection(c, colors)
 						return
 					}
 					if p.tab == settingsTabSecurity {
@@ -728,6 +726,10 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 					}
 					if p.tab == settingsTabAI {
 						a.aiSettingsSection(c, colors)
+						return
+					}
+					if p.tab == settingsTabAbout {
+						a.settingsAboutSection(c, colors)
 						return
 					}
 					ui.Field(c, locales.SetFontSize(), func() {

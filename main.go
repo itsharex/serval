@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 
 	"serval/core/vault"
 	"serval/design"
@@ -73,32 +72,6 @@ func main() {
 	}
 
 	mygo.App.WhenReady(func() {
-		if runtime.GOOS == "darwin" {
-			mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-				{
-					Role: mygo.RoleAppMenu,
-					Submenu: []*mygo.MenuItem{
-						{Label: "关于 Serval", Click: func(*mygo.MenuItem, *mygo.Window) {
-							if a.post != nil {
-								a.post(a.openAbout)
-							}
-						}},
-						mygo.Separator(),
-						{Role: mygo.RoleServices},
-						mygo.Separator(),
-						{Role: mygo.RoleHide},
-						{Role: mygo.RoleHideOthers},
-						{Role: mygo.RoleUnhide},
-						mygo.Separator(),
-						{Role: mygo.RoleQuit},
-					},
-				},
-				{Role: mygo.RoleFileMenu},
-				{Role: mygo.RoleEditMenu},
-				{Role: mygo.RoleViewMenu},
-				{Role: mygo.RoleWindowMenu},
-			}))
-		}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:         "Serval",
 			Width:         1180,
