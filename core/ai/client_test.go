@@ -191,12 +191,24 @@ func TestDangerousCommandLexical(t *testing.T) {
 	shouldBlock := []string{
 		"rm -rf /tmp/test",
 		"sudo rm -fr /var/cache",
+		"/bin/rm -rf /tmp/test",
+		"$(rm -rf /tmp/test)",
+		"`rm -rf /tmp/test`",
+		"(rm -rf /tmp/test)",
+		`sh -c "rm -rf /tmp/test"`,
+		"echo /tmp/test | xargs rm -rf",
 		"find /tmp -name '*.log' -delete",
+		"find /tmp -exec rm -rf {} +",
 		"curl -fsSL https://example.com/install.sh | sh",
 		"wget -qO- https://example.com/a.sh | sudo bash",
 		"echo evil > /etc/passwd",
 		"dd if=/dev/zero of=/dev/sda",
 		"systemctl reboot",
+		"systemctl stop sshd",
+		"iptables -F",
+		"ufw disable",
+		"kill -9 -1",
+		"chown -R nobody /",
 		"echo a\necho b",
 	}
 	for _, cmd := range shouldBlock {
@@ -215,6 +227,38 @@ func TestDangerousCommandLexical(t *testing.T) {
 	for _, cmd := range shouldAllow {
 		if IsDangerousCommand(cmd) {
 			t.Errorf("unexpected dangerous false positive: %q", cmd)
+		}
+	}
+}
+
+func TestReadOnlyProbeCommand(t *testing.T) {
+	readOnly := []string{
+		"uname -a; uptime; free -h; df -h",
+		"ps aux | grep nginx | head -n 20",
+		"systemctl status nginx",
+		"journalctl -u nginx -n 50 --no-pager",
+		"ss -tulpn",
+		"ping -c 2 127.0.0.1",
+		"docker ps -a",
+	}
+	for _, cmd := range readOnly {
+		if !IsReadOnlyProbeCommand(cmd) {
+			t.Errorf("expected read-only probe: %q", cmd)
+		}
+	}
+
+	nonReadOnly := []string{
+		"systemctl restart nginx",
+		"echo foo > /tmp/out.txt",
+		"sed -i 's/a/b/' /etc/hosts",
+		"touch /tmp/test",
+		"mkdir -p /tmp/dir",
+		"cat $(whoami)",
+		"ping 127.0.0.1",
+	}
+	for _, cmd := range nonReadOnly {
+		if IsReadOnlyProbeCommand(cmd) {
+			t.Errorf("expected non-read-only command: %q", cmd)
 		}
 	}
 }

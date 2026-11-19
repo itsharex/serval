@@ -728,6 +728,13 @@ func IsDangerousCommand(cmd string) bool {
 		return true
 	}
 
+	// 递归检查 $(...) 与反引号中的内嵌子命令，防止通过命令替换绕过检测
+	for _, sub := range extractCommandSubstitutions(trimmed) {
+		if IsDangerousCommand(sub) {
+			return true
+		}
+	}
+
 	// 按 shell 分隔符切分子命令
 	segments := splitShellSegments(trimmed)
 	for i, seg := range segments {
@@ -738,9 +745,9 @@ func IsDangerousCommand(cmd string) bool {
 
 		// 检查管道到 shell（如 curl ... | sh, wget ... | bash）
 		if i > 0 {
-			first := strings.ToLower(tokens[0])
+			first := normalizeProgName(tokens[0])
 			if first == "sudo" && len(tokens) > 1 {
-				first = strings.ToLower(tokens[1])
+				first = normalizeProgName(tokens[1])
 			}
 			if first == "sh" || first == "bash" || first == "zsh" || first == "dash" {
 				return true
@@ -752,21 +759,43 @@ func IsDangerousCommand(cmd string) bool {
 			return true
 		}
 
-		// 剥离前置 sudo / env 等包装命令
-		idx := 0
-		for idx < len(tokens) {
-			low := strings.ToLower(tokens[idx])
-			if low == "sudo" || low == "doas" || low == "env" || strings.Contains(tokens[idx], "=") {
-				idx++
-				continue
-			}
-			break
-		}
+		// 剥离前置 sudo / doas / env 等包装命令
+		idx := skipCommandWrappers(tokens)
 		if idx >= len(tokens) {
 			continue
 		}
-		prog := strings.ToLower(tokens[idx])
+		prog := normalizeProgName(tokens[idx])
 		args := tokens[idx+1:]
+
+		// 递归检查 sh -c "..." / bash -c "..." / eval "..."
+		if (prog == "sh" || prog == "bash" || prog == "zsh" || prog == "dash") && len(args) >= 2 {
+			for ai := 0; ai < len(args)-1; ai++ {
+				if args[ai] == "-c" || args[ai] == "-lc" {
+					if IsDangerousCommand(args[ai+1]) {
+						return true
+					}
+				}
+			}
+		}
+		if prog == "eval" && len(args) > 0 {
+			if IsDangerousCommand(strings.Join(args, " ")) {
+				return true
+			}
+		}
+		if prog == "xargs" && len(args) > 0 {
+			xIdx := 0
+			for xIdx < len(args) && strings.HasPrefix(args[xIdx], "-") {
+				// 跳过带参数的常见 xargs 选项
+				if (args[xIdx] == "-I" || args[xIdx] == "-n" || args[xIdx] == "-P" || args[xIdx] == "-d" || args[xIdx] == "-L") && xIdx+1 < len(args) {
+					xIdx += 2
+					continue
+				}
+				xIdx++
+			}
+			if xIdx < len(args) && isDangerousInvocation(normalizeProgName(args[xIdx]), args[xIdx+1:]) {
+				return true
+			}
+		}
 
 		if isDangerousInvocation(prog, args) {
 			return true
@@ -774,6 +803,209 @@ func IsDangerousCommand(cmd string) bool {
 	}
 
 	return false
+}
+
+// IsReadOnlyProbeCommand 判断命令是否属于纯只读系统探测命令（无重定向、无命令替换且每段均为只读白名单）。
+// 用于在生产环境主机的「自动执行」模式下放行常规只读诊断，同时对写操作/服务变更强制弹窗确认。
+func IsReadOnlyProbeCommand(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" || strings.ContainsAny(trimmed, "\r\n") {
+		return false
+	}
+	if len(extractCommandSubstitutions(trimmed)) > 0 {
+		return false
+	}
+	segments := splitShellSegments(trimmed)
+	if len(segments) == 0 {
+		return false
+	}
+	for _, seg := range segments {
+		tokens := shellFields(seg)
+		if len(tokens) == 0 {
+			return false
+		}
+		// 任何输出重定向（> / >>）均视为非只读
+		for _, tok := range tokens {
+			if strings.HasPrefix(tok, ">") || strings.Contains(tok, ">>") {
+				return false
+			}
+		}
+		idx := skipCommandWrappers(tokens)
+		if idx >= len(tokens) {
+			return false
+		}
+		prog := normalizeProgName(tokens[idx])
+		args := tokens[idx+1:]
+		if !isReadOnlyInvocation(prog, args) {
+			return false
+		}
+	}
+	return true
+}
+
+func isReadOnlyInvocation(prog string, args []string) bool {
+	switch prog {
+	case "ls", "ll", "la", "dir", "pwd", "whoami", "id", "uname", "uptime", "hostname",
+		"date", "df", "du", "free", "top", "htop", "ps", "pgrep", "lscpu", "lsmem",
+		"lsblk", "lsmod", "lspci", "lsusb", "lsof", "cat", "head", "tail", "less", "more",
+		"grep", "egrep", "fgrep", "rg", "awk", "sort", "uniq", "wc", "cut", "tr", "diff",
+		"stat", "file", "readlink", "realpath", "which", "whereis", "type", "ss", "netstat",
+		"ifconfig", "route", "traceroute", "tracepath", "dig", "nslookup", "host",
+		"env", "printenv", "echo", "printf", "journalctl", "dmesg", "last", "who", "w",
+		"vmstat", "iostat", "mpstat", "sar", "sysctl":
+		if prog == "sysctl" {
+			for _, a := range args {
+				if strings.Contains(a, "=") || a == "-w" {
+					return false
+				}
+			}
+		}
+		return true
+	case "sed":
+		for _, a := range args {
+			if a == "-i" || strings.HasPrefix(a, "-i") || a == "--in-place" || strings.HasPrefix(a, "--in-place=") {
+				return false
+			}
+		}
+		return true
+	case "find":
+		for _, a := range args {
+			low := strings.ToLower(a)
+			if low == "-delete" || low == "-exec" || low == "-execdir" || low == "-ok" {
+				return false
+			}
+		}
+		return true
+	case "ip":
+		if len(args) == 0 {
+			return true
+		}
+		for _, a := range args {
+			low := strings.ToLower(a)
+			if low == "add" || low == "del" || low == "delete" || low == "set" || low == "change" || low == "replace" || low == "flush" {
+				return false
+			}
+		}
+		return true
+	case "ping", "ping6":
+		return slices.Contains(args, "-c")
+	case "systemctl":
+		if len(args) == 0 {
+			return false
+		}
+		sub := strings.ToLower(args[0])
+		return sub == "status" || sub == "list-units" || sub == "list-unit-files" ||
+			sub == "is-active" || sub == "is-enabled" || sub == "show" || sub == "cat"
+	case "service":
+		return len(args) >= 2 && strings.ToLower(args[1]) == "status"
+	case "docker", "podman":
+		if len(args) == 0 {
+			return false
+		}
+		sub := strings.ToLower(args[0])
+		return sub == "ps" || sub == "images" || sub == "logs" || sub == "inspect" ||
+			sub == "stats" || sub == "info" || sub == "version" || sub == "top"
+	case "kubectl":
+		if len(args) == 0 {
+			return false
+		}
+		sub := strings.ToLower(args[0])
+		return sub == "get" || sub == "describe" || sub == "logs" || sub == "top" || sub == "version"
+	case "nginx", "apachectl", "httpd":
+		return slices.Contains(args, "-t") || slices.Contains(args, "-T") || slices.Contains(args, "-v") || slices.Contains(args, "-V")
+	case "crontab":
+		return slices.Contains(args, "-l")
+	}
+	return false
+}
+
+func normalizeProgName(tok string) string {
+	tok = strings.TrimLeft(tok, "({")
+	tok = strings.TrimRight(tok, ")}")
+	if idx := strings.LastIndexByte(tok, '/'); idx >= 0 {
+		tok = tok[idx+1:]
+	}
+	return strings.ToLower(tok)
+}
+
+func skipCommandWrappers(tokens []string) int {
+	idx := 0
+	for idx < len(tokens) {
+		low := normalizeProgName(tokens[idx])
+		if low == "sudo" || low == "doas" || low == "env" || low == "nohup" || low == "nice" ||
+			low == "timeout" || strings.Contains(tokens[idx], "=") {
+			if (low == "timeout" || low == "nice") && idx+1 < len(tokens) {
+				idx += 2
+				continue
+			}
+			idx++
+			continue
+		}
+		break
+	}
+	return idx
+}
+
+func extractCommandSubstitutions(s string) []string {
+	var out []string
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if quote == '\'' {
+			if ch == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\\' && i+1 < len(s) {
+			i++
+			continue
+		}
+		if ch == '"' {
+			if quote == '"' {
+				quote = 0
+			} else {
+				quote = '"'
+			}
+			continue
+		}
+		if ch == '\'' && quote == 0 {
+			quote = '\''
+			continue
+		}
+		if ch == '$' && i+1 < len(s) && s[i+1] == '(' {
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				if s[j] == '(' {
+					depth++
+				} else if s[j] == ')' {
+					depth--
+				}
+				j++
+			}
+			if depth == 0 {
+				out = append(out, s[i+2:j-1])
+				i = j - 1
+			}
+			continue
+		}
+		if ch == '`' {
+			j := i + 1
+			for j < len(s) && s[j] != '`' {
+				if s[j] == '\\' && j+1 < len(s) {
+					j += 2
+					continue
+				}
+				j++
+			}
+			if j < len(s) {
+				out = append(out, s[i+1:j])
+				i = j
+			}
+		}
+	}
+	return out
 }
 
 func splitShellSegments(s string) []string {
@@ -911,14 +1143,48 @@ func isDangerousInvocation(prog string, args []string) bool {
 		if sub == "poweroff" || sub == "reboot" || sub == "halt" {
 			return true
 		}
-	case prog == "find":
+		if (sub == "stop" || sub == "disable") && len(args) > 1 {
+			svc := strings.ToLower(args[1])
+			if svc == "ssh" || svc == "sshd" || svc == "ssh.service" || svc == "sshd.service" ||
+				svc == "networking" || svc == "networkmanager" || svc == "systemd-networkd" {
+				return true
+			}
+		}
+	case prog == "kill":
 		for _, a := range args {
+			if a == "-1" {
+				return true
+			}
+		}
+	case prog == "killall" || prog == "pkill":
+		for _, a := range args {
+			if strings.Contains(strings.ToLower(a), "sshd") {
+				return true
+			}
+		}
+	case prog == "iptables" || prog == "ip6tables":
+		for _, a := range args {
+			if a == "-F" || a == "--flush" || a == "-X" {
+				return true
+			}
+		}
+	case prog == "ufw":
+		return len(args) > 0 && strings.ToLower(args[0]) == "disable"
+	case prog == "nft":
+		return len(args) >= 2 && strings.ToLower(args[0]) == "flush"
+	case prog == "find":
+		for i, a := range args {
 			low := strings.ToLower(a)
 			if low == "-delete" {
 				return true
 			}
+			if (low == "-exec" || low == "-execdir") && i+1 < len(args) {
+				if isDangerousInvocation(normalizeProgName(args[i+1]), args[i+2:]) {
+					return true
+				}
+			}
 		}
-	case prog == "chmod":
+	case prog == "chmod" || prog == "chown":
 		hasRec := false
 		hasWide := false
 		hasRoot := false
@@ -927,7 +1193,7 @@ func isDangerousInvocation(prog string, args []string) bool {
 			if low == "-r" || low == "--recursive" {
 				hasRec = true
 			}
-			if low == "777" || low == "000" {
+			if prog == "chmod" && (low == "777" || low == "000") {
 				hasWide = true
 			}
 			if low == "/" {

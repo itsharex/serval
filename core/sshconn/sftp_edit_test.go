@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -119,6 +120,43 @@ func TestWriteFileDetectsRemoteChange(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(path); string(got) != "changed-size" {
 		t.Fatalf("拒绝后不应改文件，= %q", got)
+	}
+}
+
+func TestReadTailLimited(t *testing.T) {
+	files := editFiles(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "app.log")
+	var content string
+	for i := 1; i <= 20; i++ {
+		content += "line-" + string(rune('0'+i/10)) + string(rune('0'+i%10)) + "\n"
+	}
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 大于 limit 时只读末尾并跳过截断的首行残片
+	got, mod, truncated, err := files.ReadTailLimited(context.Background(), logPath, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated || mod.IsZero() {
+		t.Fatalf("truncated=%v mod=%v, want true non-zero", truncated, mod)
+	}
+	if !bytes.Contains(got, []byte("line-20\n")) || bytes.Contains(got, []byte("line-01\n")) {
+		t.Fatalf("tail 内容异常: %q", got)
+	}
+
+	// 小于 limit 时完整返回且 truncated=false
+	smallPath := filepath.Join(dir, "small.log")
+	if err := os.WriteFile(smallPath, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, _, truncated, err = files.ReadTailLimited(context.Background(), smallPath, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || string(got) != "hello\nworld\n" {
+		t.Fatalf("小文件读取异常: truncated=%v got=%q", truncated, got)
 	}
 }
 

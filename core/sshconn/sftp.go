@@ -383,6 +383,72 @@ func (f *Files) ReadLimited(ctx context.Context, remotePath string, limit int64)
 	return data, info.ModTime(), nil
 }
 
+// ReadTailLimited 读取普通文本文件末尾最多 limit 字节（文件小于等于 limit 时读取全文）。
+// 若从文件中间截断，会自动跳过首段不完整的 UTF-8 字节与残缺首行。
+func (f *Files) ReadTailLimited(ctx context.Context, remotePath string, limit int64) (data []byte, mod time.Time, truncated bool, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, time.Time{}, false, err
+	}
+	if limit <= 0 {
+		limit = 16 << 10
+	}
+	info, err := f.client.Lstat(remotePath)
+	if err != nil {
+		return nil, time.Time{}, false, fmt.Errorf("读取 %s 失败: %w", remotePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, time.Time{}, false, errors.New("只能读取普通文件")
+	}
+	size := info.Size()
+	if size == 0 {
+		return nil, info.ModTime(), false, nil
+	}
+	src, err := f.client.Open(remotePath)
+	if err != nil {
+		return nil, time.Time{}, false, fmt.Errorf("打开远程文件失败: %w", err)
+	}
+	defer src.Close()
+
+	offset := int64(0)
+	toRead := size
+	if size > limit {
+		offset = size - limit
+		toRead = limit
+		truncated = true
+		if _, err = src.Seek(offset, io.SeekStart); err != nil {
+			return nil, time.Time{}, false, fmt.Errorf("定位远程文件末尾失败: %w", err)
+		}
+	}
+	buf := make([]byte, toRead)
+	read := 0
+	for read < len(buf) {
+		if err = ctx.Err(); err != nil {
+			return nil, time.Time{}, false, err
+		}
+		n, readErr := src.Read(buf[read:])
+		read += n
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, time.Time{}, false, fmt.Errorf("读取远程文件失败: %w", readErr)
+		}
+	}
+	data = buf[:read]
+	if bytes.IndexByte(data, 0) >= 0 {
+		return nil, time.Time{}, false, ErrNotText
+	}
+	if truncated {
+		if nl := bytes.IndexByte(data, '\n'); nl >= 0 && nl+1 < len(data) {
+			data = data[nl+1:]
+		}
+	}
+	if !utf8.Valid(data) {
+		return nil, time.Time{}, false, ErrNotText
+	}
+	return data, info.ModTime(), truncated, nil
+}
+
 // WriteFile 把 data 写回一个普通文本文件。
 // force 为 false 时，远端大小或修改时间（精确到秒）和打开时不一致就返回 ErrRemoteChanged，不写入。
 func (f *Files) WriteFile(ctx context.Context, remotePath string, data []byte, expectSize, expectUnix int64, force bool) error {
