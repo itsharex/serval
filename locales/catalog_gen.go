@@ -4296,6 +4296,156 @@ func (msgs Messages) AiSend() string {
 	return Catalog.Format(msgs.locale, "aiSend", nil)
 }
 
+// AiSubmit says "发送"
+// in the language the app shows.
+func AiSubmit() string { return In(i18n.Locale()).AiSubmit() }
+
+// AiSubmit says "发送"
+// in the language of msgs.
+func (msgs Messages) AiSubmit() string {
+	return Catalog.Format(msgs.locale, "aiSubmit", nil)
+}
+
+// AiAnalyzeError says "分析报错"
+// in the language the app shows.
+func AiAnalyzeError() string { return In(i18n.Locale()).AiAnalyzeError() }
+
+// AiAnalyzeError says "分析报错"
+// in the language of msgs.
+func (msgs Messages) AiAnalyzeError() string {
+	return Catalog.Format(msgs.locale, "aiAnalyzeError", nil)
+}
+
+// AiCopyAnswer says "复制回答"
+// in the language the app shows.
+func AiCopyAnswer() string { return In(i18n.Locale()).AiCopyAnswer() }
+
+// AiCopyAnswer says "复制回答"
+// in the language of msgs.
+func (msgs Messages) AiCopyAnswer() string {
+	return Catalog.Format(msgs.locale, "aiCopyAnswer", nil)
+}
+
+// AiCopyCommand says "复制命令"
+// in the language the app shows.
+func AiCopyCommand() string { return In(i18n.Locale()).AiCopyCommand() }
+
+// AiCopyCommand says "复制命令"
+// in the language of msgs.
+func (msgs Messages) AiCopyCommand() string {
+	return Catalog.Format(msgs.locale, "aiCopyCommand", nil)
+}
+
+// AiCopyCode says "复制代码"
+// in the language the app shows.
+func AiCopyCode() string { return In(i18n.Locale()).AiCopyCode() }
+
+// AiCopyCode says "复制代码"
+// in the language of msgs.
+func (msgs Messages) AiCopyCode() string {
+	return Catalog.Format(msgs.locale, "aiCopyCode", nil)
+}
+
+// AiInsertTerminal says "填入终端（需确认）"
+// in the language the app shows.
+func AiInsertTerminal() string { return In(i18n.Locale()).AiInsertTerminal() }
+
+// AiInsertTerminal says "填入终端（需确认）"
+// in the language of msgs.
+func (msgs Messages) AiInsertTerminal() string {
+	return Catalog.Format(msgs.locale, "aiInsertTerminal", nil)
+}
+
+// AiApproveExec says "允许执行"
+// in the language the app shows.
+func AiApproveExec() string { return In(i18n.Locale()).AiApproveExec() }
+
+// AiApproveExec says "允许执行"
+// in the language of msgs.
+func (msgs Messages) AiApproveExec() string {
+	return Catalog.Format(msgs.locale, "aiApproveExec", nil)
+}
+
+// AiDenyExec says "拒绝"
+// in the language the app shows.
+func AiDenyExec() string { return In(i18n.Locale()).AiDenyExec() }
+
+// AiDenyExec says "拒绝"
+// in the language of msgs.
+func (msgs Messages) AiDenyExec() string {
+	return Catalog.Format(msgs.locale, "aiDenyExec", nil)
+}
+
+// AiNewChat says "新开会话"
+// in the language the app shows.
+func AiNewChat() string { return In(i18n.Locale()).AiNewChat() }
+
+// AiNewChat says "新开会话"
+// in the language of msgs.
+func (msgs Messages) AiNewChat() string {
+	return Catalog.Format(msgs.locale, "aiNewChat", nil)
+}
+
+// AiHistoryTitle says "历史会话"
+// in the language the app shows.
+func AiHistoryTitle() string { return In(i18n.Locale()).AiHistoryTitle() }
+
+// AiHistoryTitle says "历史会话"
+// in the language of msgs.
+func (msgs Messages) AiHistoryTitle() string {
+	return Catalog.Format(msgs.locale, "aiHistoryTitle", nil)
+}
+
+// AiClosePanel says "关闭 AI 面板"
+// in the language the app shows.
+func AiClosePanel() string { return In(i18n.Locale()).AiClosePanel() }
+
+// AiClosePanel says "关闭 AI 面板"
+// in the language of msgs.
+func (msgs Messages) AiClosePanel() string {
+	return Catalog.Format(msgs.locale, "aiClosePanel", nil)
+}
+
+// AiRetry says "重试"
+// in the language the app shows.
+func AiRetry() string { return In(i18n.Locale()).AiRetry() }
+
+// AiRetry says "重试"
+// in the language of msgs.
+func (msgs Messages) AiRetry() string {
+	return Catalog.Format(msgs.locale, "aiRetry", nil)
+}
+
+// AiModeObserver says "只读观察"
+// in the language the app shows.
+func AiModeObserver() string { return In(i18n.Locale()).AiModeObserver() }
+
+// AiModeObserver says "只读观察"
+// in the language of msgs.
+func (msgs Messages) AiModeObserver() string {
+	return Catalog.Format(msgs.locale, "aiModeObserver", nil)
+}
+
+// AiModeConfirm says "确认执行"
+// in the language the app shows.
+func AiModeConfirm() string { return In(i18n.Locale()).AiModeConfirm() }
+
+// AiModeConfirm says "确认执行"
+// in the language of msgs.
+func (msgs Messages) AiModeConfirm() string {
+	return Catalog.Format(msgs.locale, "aiModeConfirm", nil)
+}
+
+// AiModeAuto says "自动执行"
+// in the language the app shows.
+func AiModeAuto() string { return In(i18n.Locale()).AiModeAuto() }
+
+// AiModeAuto says "自动执行"
+// in the language of msgs.
+func (msgs Messages) AiModeAuto() string {
+	return Catalog.Format(msgs.locale, "aiModeAuto", nil)
+}
+
 // MonitorTitle says "服务器监控"
 // in the language the app shows.
 func MonitorTitle() string { return In(i18n.Locale()).MonitorTitle() }

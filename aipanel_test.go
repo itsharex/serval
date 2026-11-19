@@ -16,6 +16,8 @@ import (
 	"serval/core/hosts"
 	"serval/core/vault"
 	"serval/locales"
+
+	"github.com/egoist/mygo/ui"
 )
 
 // mockAIServer 创建模拟 OpenAI API 的 HTTP 服务
@@ -1348,5 +1350,220 @@ func TestAIPerTabConversationHistoryAndNewChat(t *testing.T) {
 	h.tt.Frame()
 	if len(h.a.ai.convs) != 1 || !h.tt.HasText("本终端历史会话（1）") {
 		t.Fatalf("删除历史会话后应剩 1 条: convs=%d texts=%q", len(h.a.ai.convs), h.tt.Texts())
+	}
+}
+
+func TestAIMultilineComposerAndMentionToken(t *testing.T) {
+	if _, _, ok := aiMentionToken("user@example.com"); ok {
+		t.Fatal("邮箱中间的 @ 不应触发上下文引用浮层")
+	}
+	if start, needle, ok := aiMentionToken("第一行\n请帮我看下 @sf"); !ok || start != len("第一行\n请帮我看下 ") || needle != "sf" {
+		t.Fatalf("多行文本中的 @ 匹配异常: start=%d needle=%q ok=%v", start, needle, ok)
+	}
+
+	ts := mockAIServer(t)
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.connectDev()
+
+	h.a.openAI()
+	h.tt.Frame()
+
+	// Shift+Enter 插入换行而不提交，plain Enter 提交
+	h.tt.Type("第一行")
+	h.tt.Key(ui.Shift, ui.KeyEnter)
+	h.tt.Type("第二行")
+	h.tt.Frame()
+	if !strings.Contains(h.a.ai.query, "\n") || len(h.a.ai.turns) != 0 {
+		t.Fatalf("Shift+Enter 应插入换行且不触发发送: query=%q turns=%d", h.a.ai.query, len(h.a.ai.turns))
+	}
+	h.tt.Key(0, ui.KeyEnter)
+	h.pump("多行输入 Enter 发送完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+	if h.a.ai.turns[0].query != "第一行\n第二行" {
+		t.Fatalf("发送内容应保留换行: %q", h.a.ai.turns[0].query)
+	}
+}
+
+func TestAIInPlaceRetryCopyAnswerAndNonShellCodeBlock(t *testing.T) {
+	var failFirst atomic.Bool
+	failFirst.Store(true)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		if failFirst.Swap(false) {
+			http.Error(w, `{"error":{"message":"temporary upstream error"}}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "配置示例：\n```json\n{\"port\": 8080}\n```"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.connectDev()
+
+	h.a.openAI()
+	h.tt.Frame()
+	h.a.ai.query = "看看配置"
+	h.a.runAIGenerate()
+	h.pump("首次失败完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && h.a.ai.turns[0].err != ""
+	})
+
+	// 点击重试应原地复用第 1 轮，而不是追加重复气泡
+	h.click("重试")
+	h.pump("原地重试成功", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running && h.a.ai.turns[0].err == ""
+	})
+	if len(h.a.ai.turns) != 1 {
+		t.Fatalf("原地重试不应产生重复气泡: turns=%d", len(h.a.ai.turns))
+	}
+	// 非 shell 代码块应显示“复制代码”而不显示“填入终端（需确认）”
+	if !h.tt.HasText("复制代码") || h.tt.HasText("填入终端（需确认）") {
+		t.Fatalf("json 代码块不应出现填入终端按钮: texts=%q", h.tt.Texts())
+	}
+	if !h.tt.HasText("复制回答") {
+		t.Fatalf("完成后应显示复制回答按钮: texts=%q", h.tt.Texts())
+	}
+}
+
+func TestAIEmptyStateMigrationAndPersistence(t *testing.T) {
+	h := newHarness(t)
+	// 空状态打开 AI 并输入内容
+	h.a.openAI()
+	h.tt.Frame()
+	h.a.ai.query = "待迁移的问题"
+	h.a.ai.mode = aiModeConfirm
+	_ = h.a.saveLocal(deviceSettings{AIWidth: 510, AIMode: uint8(aiModeConfirm)})
+
+	// 打开首个本地终端标签页，空状态会话应自动迁移到该标签页
+	h.a.openLocalTerminal()
+	h.tt.Frame()
+	if !h.a.ai.open || h.a.ai.query != "待迁移的问题" {
+		t.Fatalf("空状态 AI 会话未迁移到新打开的标签页: open=%v query=%q", h.a.ai.open, h.a.ai.query)
+	}
+
+	// 验证 loadLocal 能恢复 AIWidth 和 AIMode
+	h.a.aiWidth = 0
+	h.a.ai.mode = aiModeAuto
+	h.a.loadLocal()
+	if h.a.aiWidth != 510 || h.a.ai.mode != aiModeConfirm {
+		t.Fatalf("loadLocal 应恢复 aiWidth 和 ai.mode: width=%v mode=%v", h.a.aiWidth, h.a.ai.mode)
+	}
+}
+
+func TestAIProductionApprovalAndHistoryCompression(t *testing.T) {
+	// 验证历史工具输出压缩
+	longOut := strings.Repeat("log-line-", 120)
+	msgs := []ai.Message{
+		{Role: "user", Content: "q1"},
+		{Role: "tool", Content: longOut},
+		{Role: "assistant", Content: "a1"},
+		{Role: "user", Content: "q2"},
+		{Role: "assistant", Content: "a2"},
+		{Role: "user", Content: "q3"},
+		{Role: "assistant", Content: "a3"},
+		{Role: "tool", Content: longOut},
+		{Role: "assistant", Content: "a4"},
+	}
+	comp := compressChatHistory(msgs)
+	if !strings.Contains(comp[1].Content, "早期工具输出已摘要折叠") {
+		t.Fatalf("早期 tool 消息应被摘要折叠: %q", comp[1].Content)
+	}
+	if comp[7].Content != longOut {
+		t.Fatalf("最近 6 条内的 tool 消息应保持完整")
+	}
+
+	// 验证生产环境自动执行模式下：只读命令放行、变更命令拦截确认
+	h := newHarness(t)
+	h.connectDev()
+	tab := h.a.current()
+	prodHost := tab.host
+	prodHost.Production = true
+	_ = h.a.apply(hostChange(prodHost))
+	tab.host.Production = true
+	h.a.openAI()
+	h.tt.Frame()
+	snap := snapshotFromTab(tab)
+	if !snap.production || ai.IsReadOnlyProbeCommand("touch /tmp/serval_prod_test") {
+		t.Fatalf("前置条件异常: snap.production=%v IsReadOnly=%v", snap.production, ai.IsReadOnlyProbeCommand("touch /tmp/serval_prod_test"))
+	}
+
+	// 只读探测命令（uname -s）在生产环境自动模式下无需人工弹窗确认即可执行
+	roDone := make(chan struct {
+		out   string
+		isErr bool
+	}, 1)
+	go func() {
+		o, e := h.a.executeAgentTool(context.Background(), h.a.ai.convID, h.a.ai.reqSeq, snap, aiModeAuto, nil, ai.ToolCall{
+			ID:       "t1",
+			Function: ai.ToolCallFunction{Name: "ssh_exec", Arguments: `{"command":"uname -s"}`},
+		})
+		roDone <- struct {
+			out   string
+			isErr bool
+		}{o, e}
+	}()
+	var roRes struct {
+		out   string
+		isErr bool
+	}
+	h.pump("等待只读命令执行完成", func() bool {
+		select {
+		case roRes = <-roDone:
+			return true
+		default:
+			return false
+		}
+	})
+	if roRes.isErr || !strings.Contains(roRes.out, "exit_code: 0") {
+		t.Fatalf("生产环境只读探测命令应自动放行: isErr=%v out=%q", roRes.isErr, roRes.out)
+	}
+	if h.a.ai.pendingApproval != nil {
+		t.Fatalf("只读探测命令不应触发确认卡片")
+	}
+
+	// 非只读变更命令在生产环境自动模式下必须触发确认卡片，拒绝后返回用户拒绝
+	done := make(chan string, 1)
+	go func() {
+		o, _ := h.a.executeAgentTool(context.Background(), h.a.ai.convID, h.a.ai.reqSeq, snap, aiModeAuto, nil, ai.ToolCall{
+			ID:       "t2",
+			Function: ai.ToolCallFunction{Name: "ssh_exec", Arguments: `{"command":"touch /tmp/serval_prod_test","reason":"测试变更"}`},
+		})
+		done <- o
+	}()
+	earlyOut := ""
+	h.pump("等待生产环境确认卡片出现", func() bool {
+		select {
+		case earlyOut = <-done:
+			return true
+		default:
+			return h.a.ai.pendingApproval != nil
+		}
+	})
+	if earlyOut != "" {
+		t.Fatalf("生产环境变更命令未触发确认卡片而是直接返回: %q", earlyOut)
+	}
+	if !h.a.ai.pendingApproval.production || !h.tt.HasText("生产环境命令确认") {
+		t.Fatalf("确认卡片应标记并渲染为生产环境确认，texts=%q", h.tt.Texts())
+	}
+	h.a.resolveAgentApproval(h.a.ai.pendingApproval, false)
+	if got := <-done; !strings.Contains(got, "用户拒绝") {
+		t.Fatalf("拒绝后应返回拒绝提示: %q", got)
 	}
 }
