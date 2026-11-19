@@ -571,7 +571,7 @@ func (a *app) submitChangePassword() {
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
-	if a.setup.open || a.restore.open {
+	if a.setup.open || a.restore.open || a.update.sheetOpen {
 		return
 	}
 	if !p.open {

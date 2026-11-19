@@ -65,8 +65,13 @@ func (a *app) moveHostOrder(draggedID, targetHostID, targetGroup string) error {
 		targetGroupFinal = targetGroup
 	}
 
-	// 目标分组内的既有主机列表（排除掉被拖拽的主机自身）
+	// 目标分组内的既有主机列表（排除掉被拖拽的主机自身），并记录同组拖动的原始下标
 	existing := a.allHostsInGroup(targetGroupFinal)
+	fromIdx := slices.IndexFunc(existing, func(h hosts.Host) bool { return h.ID == dragged.ID })
+	toIdx := -1
+	if targetHostID != "" {
+		toIdx = slices.IndexFunc(existing, func(h hosts.Host) bool { return h.ID == targetHostID })
+	}
 	filtered := make([]hosts.Host, 0, len(existing)+1)
 	for _, h := range existing {
 		if h.ID != dragged.ID {
@@ -76,12 +81,15 @@ func (a *app) moveHostOrder(draggedID, targetHostID, targetGroup string) error {
 
 	dragged.Group = targetGroupFinal
 
-	// 计算插入位置
+	// 计算插入位置：同组从上往下拖放到 target 身上时落在 target 之后；其余情况落在 target 之前
 	insertIdx := len(filtered)
 	if targetHostID != "" {
 		for i, h := range filtered {
 			if h.ID == targetHostID {
 				insertIdx = i
+				if fromIdx >= 0 && toIdx >= 0 && fromIdx < toIdx {
+					insertIdx = i + 1
+				}
 				break
 			}
 		}
@@ -202,6 +210,12 @@ func (a *app) deleteEmptyGroup(name string) {
 	a.customGroups = next
 	if err := a.saveCustomGroups(); err != nil {
 		a.notice = "保存分组列表失败：" + err.Error()
+		return
+	}
+	if slices.Contains(a.local.CollapsedGroups, name) {
+		dev := a.local
+		dev.CollapsedGroups = slices.DeleteFunc(slices.Clone(a.local.CollapsedGroups), func(g string) bool { return g == name })
+		_ = a.saveLocal(dev)
 	}
 }
 
@@ -238,9 +252,7 @@ func (a *app) moveTab(draggedID, targetID int) {
 	}
 	moved := a.tabs[from]
 	a.tabs = slices.Delete(a.tabs, from, from+1)
-	if from < to {
-		to--
-	}
+	// 从左往右拖时删除原元素使 target 前移一位，不减一才能插到 target 之后；从右往左则插到 target 之前。
 	a.tabs = slices.Insert(a.tabs, to, moved)
 	if activeTab != nil {
 		if idx := slices.Index(a.tabs, activeTab); idx >= 0 {
@@ -345,12 +357,14 @@ func (a *app) submitGroupDialog() {
 			return
 		}
 	} else {
-		if !slices.Contains(a.groups(), name) {
-			a.customGroups = append(a.customGroups, name)
-			if err := a.saveCustomGroups(); err != nil {
-				a.groupSheet.err = err.Error()
-				return
-			}
+		if slices.Contains(a.groups(), name) {
+			a.groupSheet.err = "分组名称已存在，请换一个名称"
+			return
+		}
+		a.customGroups = append(a.customGroups, name)
+		if err := a.saveCustomGroups(); err != nil {
+			a.groupSheet.err = err.Error()
+			return
 		}
 	}
 	a.groupSheet = groupDialogState{}

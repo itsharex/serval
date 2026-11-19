@@ -263,11 +263,13 @@ func (z *zmodemConn) finish(s *zmodemSession, leftover []byte) {
 // zmodemTransfer 是窗格上正在进行的 rz/sz，供界面显示进度。进度字段在传输 goroutine 里写、
 // 界面上读，用原子操作。
 type zmodemTransfer struct {
-	kind   zmodem.Kind
-	name   atomic.Pointer[string]
-	done   atomic.Int64
-	total  atomic.Int64
-	cancel context.CancelFunc
+	kind     zmodem.Kind
+	name     atomic.Pointer[string]
+	done     atomic.Int64
+	total    atomic.Int64
+	cancel   context.CancelFunc
+	app      *app
+	lastWake atomic.Int64
 }
 
 func (tr *zmodemTransfer) progress(info zmodem.FileInfo, done int64) {
@@ -277,6 +279,7 @@ func (tr *zmodemTransfer) progress(info zmodem.FileInfo, done int64) {
 		tr.total.Store(info.Size)
 	}
 	tr.done.Store(done)
+	tr.app.wakeUI(&tr.lastWake, 100*time.Millisecond)
 }
 
 // errZmodemDeclined 表示用户在选择框里取消了。
@@ -338,7 +341,7 @@ func (a *app) startZmodemUpload(t *tab, p *pane, z *zmodemConn, s *zmodemSession
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	tr := &zmodemTransfer{kind: zmodem.Upload, cancel: cancel}
+	tr := &zmodemTransfer{kind: zmodem.Upload, cancel: cancel, app: a}
 	p.zmodem = tr
 	z.setCancel(s, cancel)
 	var skipped []string
@@ -371,7 +374,7 @@ func (a *app) startZmodemUpload(t *tab, p *pane, z *zmodemConn, s *zmodemSession
 
 func (a *app) startZmodemDownload(t *tab, p *pane, z *zmodemConn, s *zmodemSession) {
 	ctx, cancel := context.WithCancel(context.Background())
-	tr := &zmodemTransfer{kind: zmodem.Download, cancel: cancel}
+	tr := &zmodemTransfer{kind: zmodem.Download, cancel: cancel, app: a}
 	p.zmodem = tr
 	z.setCancel(s, cancel)
 	var (

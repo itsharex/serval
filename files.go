@@ -156,6 +156,7 @@ func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
 	files := t.files
 	go func() {
 		lastBytes, lastTime := int64(0), time.Now()
+		var lastWake atomic.Int64
 		skipped, err := files.DownloadTree(ctx, remoteRoot, localRoot, func(doneFiles, totalFiles, doneBytes, totalBytes int64) {
 			tr.filesDone.Store(doneFiles)
 			tr.filesTotal.Store(totalFiles)
@@ -165,6 +166,7 @@ func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
 				tr.speed.Store((doneBytes - lastBytes) * int64(time.Second) / int64(dur))
 				lastBytes, lastTime = doneBytes, time.Now()
 			}
+			a.wakeUI(&lastWake, 100*time.Millisecond)
 		})
 		a.post(func() {
 			defer cancel()
@@ -268,6 +270,7 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 	files := t.files
 	go func() {
 		lastBytes, lastTime := int64(0), time.Now()
+		var lastWake atomic.Int64
 		progress := func(transferred, total int64) {
 			tr.total.Store(total)
 			tr.transferred.Store(transferred)
@@ -275,6 +278,7 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 				tr.speed.Store((transferred - lastBytes) * int64(time.Second) / int64(dur))
 				lastBytes, lastTime = transferred, time.Now()
 			}
+			a.wakeUI(&lastWake, 100*time.Millisecond)
 		}
 		var err error
 		switch {

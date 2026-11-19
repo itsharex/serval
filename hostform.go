@@ -193,7 +193,14 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 	if k, ok := a.keyByID(h.KeyID); ok {
 		f.keyName = k.Name
 	}
-	if h.Port != 0 && h.Port != 22 {
+	defPort := 22
+	switch h.EffectiveProtocol() {
+	case hosts.ProtocolTelnet:
+		defPort = 23
+	case hosts.ProtocolSerial:
+		defPort = 0
+	}
+	if h.Port != 0 && h.Port != defPort {
 		f.port = strconv.Itoa(h.Port)
 	}
 	f.auth = max(slices.Index(authModes, h.Auth), 0)
@@ -395,9 +402,6 @@ func (a *app) buildHostFromForm(requireUniqueName bool) (hosts.Host, hosts.Host,
 		h.ID = f.editing
 		h.SortOrder = previous.SortOrder
 		h.Bookmarks = slices.Clone(previous.Bookmarks)
-		if h.Distro == "" {
-			h.Distro = previous.Distro
-		}
 	} else {
 		h.ID = vault.NewID()
 	}
@@ -643,7 +647,7 @@ func (a *app) hostMenu(c *ui.Context, h hosts.Host) func(m *ui.Menu) {
 		if m.Item(locales.HostDuplicate()).Chosen() {
 			a.openDuplicate(h)
 		}
-		if m.Item("复制 SSH 命令").Chosen() {
+		if h.EffectiveProtocol() == hosts.ProtocolSSH && m.Item("复制 SSH 命令").Chosen() {
 			cmd := sshCommandForHost(h, a.hosts, a.localUser)
 			c.WriteClipboard(cmd)
 			a.toast(ui.Toast{ID: "copy", Title: "已复制连接命令", Description: cmd})
@@ -749,6 +753,9 @@ func (a *app) importKeyFromHostForm() {
 			return
 		}
 		a.post(func() {
+			if !a.form.open {
+				return
+			}
 			if err != nil {
 				a.form.err = err.Error()
 				return
@@ -805,7 +812,7 @@ func (a *app) importKeyFromHostForm() {
 // hostDialog 是添加、编辑、复制主机的表单面板。设置主密码的面板或密钥/代理子面板打开时让位，表单内容保留。
 func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 	// 从表单里新建代理、设置主密码、补充私钥口令或确认主机指纹时，子面板/确认框盖在上面，表单让位，内容保留。
-	if !a.form.open || a.setup.open || a.proxyPanel.open || a.keyPanel.open || len(a.prompts) > 0 || len(a.challenges) > 0 {
+	if !a.form.open || a.setup.open || a.proxyPanel.open || a.keyPanel.open || a.auth.open || len(a.prompts) > 0 || len(a.challenges) > 0 {
 		return
 	}
 	t := c.Theme()
@@ -826,7 +833,9 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 				ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
 					ui.Field(c, "协议", func() {
 						c.Key("addProtocol")
-						ui.Segmented(c, &f.protoIdx, "SSH", "Telnet", locales.ProtoSerial())
+						if ui.Segmented(c, &f.protoIdx, "SSH", "Telnet", locales.ProtoSerial()).Changed() {
+							f.err, f.testMsg = "", ""
+						}
 					})
 
 					if f.protoIdx == 1 {
@@ -857,7 +866,9 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 								ui.Field(c, "设备路径", func() {
 									c.Key("addAddress")
-									ui.TextInput(c, &f.address).Placeholder("/dev/ttyUSB0 或 COM1").AutoFocus()
+									if ui.TextInput(c, &f.address).Placeholder("/dev/ttyUSB0 或 COM1").AutoFocus().Changed() {
+										f.err, f.testMsg = "", ""
+									}
 								})
 							})
 							ui.Column(c).Width(104).Children(func() {
@@ -907,6 +918,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 								ui.Field(c, locales.Address(), func() {
 									c.Key("addAddress")
 									if ui.TextInput(c, &f.address).Placeholder("example.com 或 user@host:port").AutoFocus().Changed() {
+										f.err, f.testMsg = "", ""
 										if user, addr, portStr, ok := parseHostAddressPaste(f.address); ok {
 											f.address = addr
 											f.user = user
@@ -920,7 +932,9 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Column(c).Width(76).Children(func() {
 								ui.Field(c, locales.Port(), func() {
 									c.Key("addPort")
-									ui.TextInput(c, &f.port).Placeholder(defaultPort)
+									if ui.TextInput(c, &f.port).Placeholder(defaultPort).Changed() {
+										f.err, f.testMsg = "", ""
+									}
 								})
 							})
 						})
@@ -1120,9 +1134,12 @@ func (a *app) totpField(c *ui.Context, colors design.Colors, f *hostForm) {
 	ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Field(c, "验证码", func() {
-				passwordInput(c, colors, "addTOTP", "验证码", &f.totp, &f.showTOTP, func(el ui.Element) {
+				in := passwordInput(c, colors, "addTOTP", "验证码", &f.totp, &f.showTOTP, func(el ui.Element) {
 					el.Placeholder(placeholder)
 				})
+				if in.Changed() && f.totp != "" {
+					f.clearTOTP = false
+				}
 			}).Description("多步验证问到验证码时自动填写。")
 		})
 		if f.totpSaved {
@@ -1152,9 +1169,12 @@ func (a *app) passwordField(c *ui.Context, colors design.Colors, f *hostForm) {
 	ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Field(c, locales.Password(), func() {
-				passwordInput(c, colors, "addPassword", locales.Password(), &f.password, &f.showPassword, func(el ui.Element) {
+				in := passwordInput(c, colors, "addPassword", locales.Password(), &f.password, &f.showPassword, func(el ui.Element) {
 					el.Placeholder(placeholder)
 				})
+				if in.Changed() && f.password != "" {
+					f.clearPassword = false
+				}
 			})
 		})
 		if f.passwordSaved {

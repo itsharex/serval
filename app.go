@@ -365,6 +365,8 @@ type pane struct {
 	// log 记录这个窗格的远程输出。本地窗格没有字节流，文件保持关闭。
 	log *sessionLog
 
+	monitorPopoverOpen bool
+
 	searchOpen  bool
 	searchQuery string
 	// searchHandle、termHandle 跨帧持有持久身份，打开查找或关闭查找/取消重连时请求焦点，
@@ -1659,11 +1661,21 @@ func (t *tab) replace(old, replacement *pane) {
 
 // closeFocused 关闭当前窗格；最后一个窗格关闭时关闭整个标签。
 func (a *app) closeFocused(t *tab) {
-	if t.root == t.focus {
+	if t == nil {
+		return
+	}
+	a.closePane(t, t.focus)
+}
+
+// closePane 关闭指定窗格；若为标签内唯一窗格则关闭整个标签页。
+func (a *app) closePane(t *tab, closing *pane) {
+	if t == nil || closing == nil {
+		return
+	}
+	if t.root == closing {
 		a.closeTab(t)
 		return
 	}
-	closing := t.focus
 	a.removeBroadcast(closing.id)
 	var parent *pane
 	var walk func(*pane)
@@ -1687,14 +1699,16 @@ func (a *app) closeFocused(t *tab) {
 		sibling = parent.second
 	}
 	t.replace(parent, sibling)
-	// 焦点落到兄弟分支的第一个叶子。
-	t.focus = nil
-	sibling.each(func(p *pane) {
-		if t.focus == nil {
-			t.focus = p
-		}
-	})
-	// removeBroadcast 时焦点还在要关掉的窗格上，这里按新焦点再算一次镜像源。
+	if t.focus == closing || t.focus == nil {
+		// 焦点若在已关闭窗格上，落到兄弟分支的第一个叶子。
+		t.focus = nil
+		sibling.each(func(p *pane) {
+			if t.focus == nil {
+				t.focus = p
+			}
+		})
+	}
+	// removeBroadcast 时焦点可能还在要关掉的窗格上，这里按新焦点再算一次镜像源。
 	a.syncBroadcastSource()
 	a.saveSessionLayout()
 	if closing.log != nil {
@@ -2305,8 +2319,20 @@ func (a *app) syncTabDrawers() {
 	a.syncFilesTab()
 }
 
+// wakeUI 在后台传输进度更新时按最小间隔节流唤醒主线程重绘。
+func (a *app) wakeUI(lastNano *atomic.Int64, interval time.Duration) {
+	if a == nil || a.post == nil || lastNano == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	prev := lastNano.Load()
+	if now-prev >= int64(interval) && lastNano.CompareAndSwap(prev, now) {
+		a.post(func() {})
+	}
+}
+
 func (a *app) ensureFiles(t *tab) {
-	if t.local || t.client == nil || t.files != nil || t.filesBusy {
+	if t.local || t.client == nil || t.files != nil || t.filesBusy || t.filesError != "" {
 		return
 	}
 	t.filesBusy = true
@@ -2325,9 +2351,10 @@ func (a *app) ensureFiles(t *tab) {
 			waiting := t.filesWaiting
 			t.filesWaiting = nil
 			if err != nil {
-				t.filesError = err.Error()
+				reason := transferReason(err)
+				t.filesError = locales.AppTransferChannelFailed(reason)
 				if len(waiting) > 0 {
-					a.toast(ui.Toast{Title: locales.AppUploadFailed(), Description: locales.AppTransferChannelFailed(err.Error()), Type: "error"})
+					a.toast(ui.Toast{Title: locales.AppUploadFailed(), Description: t.filesError, Type: "error"})
 				}
 				return
 			}
@@ -2359,7 +2386,7 @@ func (a *app) openDir(t *tab, dir string) {
 				return
 			}
 			if err != nil {
-				t.filesError = err.Error()
+				t.filesError = transferReason(err)
 				return
 			}
 			t.dir, t.entries, t.filesError = dir, entries, ""

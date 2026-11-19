@@ -505,7 +505,18 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 		fileFilterSubbar(c, colors, "local", &a.localFilter, "筛选本地文件", "清除本地筛选", "本地隐藏文件", "本地排序方式",
 			&a.localSortBy, &a.localSortDesc, &a.localHideHidden, a.localDir == "")
 		if a.localErr != "" {
-			ui.Text(c, a.localErr).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
+			ui.Row(c).Padding(8, 14).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, a.localErr).TextColor(colors.Danger).FontSize(design.TextSmall).Grow(1).MinWidth(0).Selectable()
+				ui.Button(c.Key("localRetry"), "重试").Height(22).Padding(0, 8).Shrink(0).OnClick(func() {
+					a.localErr = ""
+					if a.localDir != "" {
+						a.openLocal(a.localDir)
+					} else {
+						a.localGen = 0
+						a.ensureLocalList()
+					}
+				})
+			})
 		}
 		entries := filterLocalEntries(a.localEntries, a.localFilter, a.localSortBy, a.localSortDesc, a.localHideHidden)
 		ui.List(c, nil, len(entries), func(i int) {
@@ -731,7 +742,21 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 		fileFilterSubbar(c, colors, "remote", &t.filesFilter, "筛选远程文件", "清除远程筛选", "远程隐藏文件", "远程排序方式",
 			&t.filesSortBy, &t.filesSortDesc, &t.filesHideHidden, t.local || t.dir == "")
 		if t.filesError != "" {
-			ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
+			ui.Row(c).Padding(8, 14).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Grow(1).MinWidth(0).Selectable()
+				ui.Button(c.Key("remoteRetry"), "重试").Height(22).Padding(0, 8).Shrink(0).OnClick(func() {
+					t.filesError = ""
+					if t.files == nil {
+						a.ensureFiles(t)
+						return
+					}
+					target := t.dir
+					if target == "" {
+						target = "."
+					}
+					a.openDir(t, target)
+				})
+			})
 		}
 		if t.filesBusy {
 			ui.Text(c, locales.ViewOpeningFiles()).TextColor(theme.TextMuted).Padding(10, 14)

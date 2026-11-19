@@ -353,7 +353,7 @@ func (a *app) lockConfirmDialog(c *ui.Context) {
 // challengeDialog 弹出多步验证（keyboard-interactive）对话框。
 func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 	ch := a.currentChallenge()
-	if ch == nil || !ch.open {
+	if ch == nil || !ch.open || a.setup.open {
 		return
 	}
 	for len(ch.showAnswers) < len(ch.questions) {

@@ -111,8 +111,47 @@ func backdrop(c *ui.Context, colors design.Colors) {
 	c.Root().LinearGradient(wash)
 }
 
+func (a *app) hasModalOpen() bool {
+	return a.setup.open ||
+		a.restore.open ||
+		a.auth.open ||
+		a.pal.open ||
+		a.form.open ||
+		a.groupSheet.open ||
+		a.keyPanel.open ||
+		a.keyPanel.deleting != nil ||
+		a.proxyPanel.open ||
+		a.proxyPanel.deleting != nil ||
+		a.forwardPanel.open ||
+		a.forwardPanel.deleting != nil ||
+		a.snippetPanel.open ||
+		a.snippetPanel.deleting != nil ||
+		a.snippetPanel.confirming ||
+		a.settingsPanel.open ||
+		a.settingsPanel.askSyncMerge ||
+		a.editor.open ||
+		a.fileOp.open ||
+		a.update.sheetOpen ||
+		a.deleting != nil ||
+		a.fileDelete != nil ||
+		len(a.prompts) > 0 ||
+		len(a.challenges) > 0 ||
+		a.askingLock ||
+		a.broadcastAsk != nil ||
+		len(a.pendingUploads) > 0 ||
+		len(a.pendingDownloads) > 0 ||
+		len(a.pendingFolders) > 0 ||
+		a.syncOverwriteAsk ||
+		a.askConflicts
+}
+
 func (a *app) shortcuts(c *ui.Context) {
 	mods := chromeShortcut()
+	if a.hasModalOpen() {
+		// 弹窗打开时只拦截关闭快捷键防止透传关闭整个窗口，其余工作区快捷键不触发。
+		c.OnShortcut(mods, ui.KeyW, func() {})
+		return
+	}
 	c.OnShortcut(mods, ui.KeyK, a.openPalette)
 	c.OnShortcut(mods, ui.KeyI, a.toggleAI)
 	c.OnShortcut(mods, ui.KeyBackslash, func() { a.sidebarOpen = !a.sidebarOpen })
@@ -227,7 +266,7 @@ func (a *app) groupMenu(group string) func(m *ui.Menu) {
 }
 
 func (a *app) groupDialog(c *ui.Context, colors design.Colors) {
-	if !a.groupSheet.open {
+	if !a.groupSheet.open || a.setup.open {
 		return
 	}
 	t := c.Theme()
@@ -674,10 +713,19 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	if !selected && hovered {
 		line.Background(colors.Hover)
 	}
+	var insertAfter bool
 	var showInsertLine bool
 	if !filtering {
 		if dragged, ok := ui.DragOver[hostDrag](line); ok && dragged.ID != h.ID {
 			showInsertLine = true
+			if dHost, ok := a.hostByID(dragged.ID); ok && dHost.Group == h.Group {
+				groupList := a.allHostsInGroup(h.Group)
+				fromIdx := slices.IndexFunc(groupList, func(x hosts.Host) bool { return x.ID == dragged.ID })
+				toIdx := slices.IndexFunc(groupList, func(x hosts.Host) bool { return x.ID == h.ID })
+				if fromIdx >= 0 && toIdx >= 0 && fromIdx < toIdx {
+					insertAfter = true
+				}
+			}
 		}
 		if dropped, ok := ui.Drop[hostDrag](line); ok && dropped.ID != h.ID {
 			if err := a.moveHostOrder(dropped.ID, h.ID, h.Group); err != nil {
@@ -687,7 +735,11 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	}
 	if showInsertLine {
 		line.DrawOver(func(painter *ui.Painter, r ui.Rect) {
-			painter.Fill(ui.Rect{X: r.X + 8, Y: r.Y, W: max(0, r.W-16), H: 2}, t.Accent, 1)
+			y := r.Y
+			if insertAfter {
+				y = r.Y + max(0, r.H-2)
+			}
+			painter.Fill(ui.Rect{X: r.X + 8, Y: y, W: max(0, r.W-16), H: 2}, t.Accent, 1)
 		})
 	}
 	line.Children(func() {
@@ -923,50 +975,74 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 	theme := c.Theme()
 	selected := a.active >= 0 && a.active < len(a.tabs) && a.tabs[a.active] == t
 	title := displayTabTitle(tabs, i)
-	// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
-	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
-	item := ui.ButtonBase(c.Key(fmt.Sprintf("tab:%d", t.id))).Label(title).AccessSelected(selected).
-		Height(28).MinWidth(88).MaxWidth(200).Shrink(0).Padding(0, 10).Gap(8).AlignItems(ui.Center).
-		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t), menuOptions(colors)).Drag(tabDrag{ID: t.id})
+	// 外层容器承担选中高亮、右键菜单和拖拽；激活与关闭两个按钮并排，避免按钮嵌套（读屏和键盘不可达）。
+	line := ui.Row(c.Key(fmt.Sprintf("tabLine:%d", t.id))).Height(28).MinWidth(88).MaxWidth(200).Shrink(0).
+		AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover).
+		PopoverMenu(a.tabMenu(t), menuOptions(colors)).Drag(tabDrag{ID: t.id})
 	if selected && t.id != a.lastScrolledTabID {
 		a.lastScrolledTabID = t.id
-		item.ScrollIntoView(ui.ScrollIntoViewOptions{Inline: ui.ScrollNearest})
+		line.ScrollIntoView(ui.ScrollIntoViewOptions{Inline: ui.ScrollNearest})
 	}
 	var tabInsertLine bool
-	if dragged, ok := ui.DragOver[tabDrag](item); ok && dragged.ID != t.id {
+	var tabInsertRight bool
+	if dragged, ok := ui.DragOver[tabDrag](line); ok && dragged.ID != t.id {
 		tabInsertLine = true
+		from := slices.IndexFunc(a.tabs, func(tb *tab) bool { return tb.id == dragged.ID })
+		if from >= 0 && from < i {
+			tabInsertRight = true
+		}
 	}
-	if dropped, ok := ui.Drop[tabDrag](item); ok && dropped.ID != t.id {
+	if dropped, ok := ui.Drop[tabDrag](line); ok && dropped.ID != t.id {
 		a.moveTab(dropped.ID, t.id)
 	}
 	if tabInsertLine {
-		item.DrawOver(func(painter *ui.Painter, r ui.Rect) {
-			painter.Fill(ui.Rect{X: r.X, Y: r.Y + 4, W: 2, H: max(0, r.H-8)}, theme.Accent, 1)
+		line.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+			x := r.X
+			if tabInsertRight {
+				x = r.X + max(0, r.W-2)
+			}
+			painter.Fill(ui.Rect{X: x, Y: r.Y + 4, W: 2, H: max(0, r.H-8)}, theme.Accent, 1)
 		})
 	}
-	hovered := item.Hovered()
+	hovered := line.Hovered()
 	if !selected && hovered {
-		item.Background(colors.Hover)
+		line.Background(colors.Hover)
 	}
-	item.Children(func() {
+	line.Children(func() {
 		if selected {
 			selectionPill(c, colors, "tabs", colors.Selected, true)
 		}
-		design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
-		color := theme.TextMuted
-		if selected {
-			color = theme.Text
+		showClose := hovered || selected
+		rightPad := float32(10)
+		if showClose {
+			rightPad = 4
 		}
-		ui.Text(c, title).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
-		if hovered || selected {
-			ui.ButtonBase(c.Key("close")).Label(locales.ViewCloseTab(title)).Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
+		// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
+		// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
+		btn := ui.ButtonBase(c.Key(fmt.Sprintf("tab:%d", t.id))).Label(title).AccessSelected(selected).
+			Height(28).Grow(1).MinWidth(0).Padding(0, rightPad, 0, 10).Gap(8).Justify(ui.Start).AlignItems(ui.Center)
+		btn.Children(func() {
+			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
+			color := theme.TextMuted
+			if selected {
+				color = theme.Text
+			}
+			ui.Text(c, title).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+		}).OnClick(func() {
+			if idx := slices.Index(a.tabs, t); idx >= 0 {
+				a.active = idx
+				a.saveSessionLayout()
+			}
+		})
+		if showClose {
+			closeBtn := ui.ButtonBase(c.Key(fmt.Sprintf("tabClose:%d", t.id))).Label(locales.ViewCloseTab(title)).
+				Tooltip(locales.ViewCloseTab(title)).Size(16, 16).Margin(0, 6, 0, 0).Center().Radius(4).Shrink(0)
+			if closeBtn.Hovered() {
+				closeBtn.Background(colors.Hover)
+			}
+			closeBtn.Children(func() {
 				ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 			}).OnClick(func() { a.closeTab(t) })
-		}
-	}).OnClick(func() {
-		if idx := slices.Index(a.tabs, t); idx >= 0 {
-			a.active = idx
-			a.saveSessionLayout()
 		}
 	})
 }
@@ -1209,12 +1285,16 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	card.Children(func() {
 		a.paneHeader(c, colors, t, p)
 		if p.ended && !t.reconnecting {
+			closeText := locales.PaneCloseTab()
+			if t.root.leaves() > 1 {
+				closeText = "关闭窗格"
+			}
 			ui.Row(c.Key(fmt.Sprintf("endedBanner:%d", p.id))).Height(32).Shrink(0).Padding(0, 12).Gap(8).
 				AlignItems(ui.Center).Background(colors.DangerSoft).BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 				ui.Icon(c, design.Icon("cloud-off")).FontSize(14).TextColor(colors.Danger)
 				ui.Text(c, locales.PaneDisconnected()).FontSize(design.TextSmall).FontWeight(500).TextColor(c.Theme().Text).Grow(1)
-				ui.Button(c.Key("bannerReconnect"), locales.Reconnect()).Height(24).Padding(0, 8).OnClick(func() { a.reconnect(t) })
-				ui.Button(c.Key("bannerClose"), locales.PaneCloseTab()).Height(24).Padding(0, 8).OnClick(func() { a.closeTab(t) })
+				ui.Button(c.Key(fmt.Sprintf("bannerReconnect:%d", p.id)), locales.Reconnect()).Height(24).Padding(0, 8).OnClick(func() { a.reconnect(t) })
+				ui.Button(c.Key(fmt.Sprintf("bannerClose:%d", p.id)), closeText).Height(24).Padding(0, 8).OnClick(func() { a.closePane(t, p) })
 			})
 		}
 		if p.searchOpen {
@@ -1293,17 +1373,17 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		})
 		switch {
 		case t.reconnecting:
-			chip(c.Key("status"), locales.ViewReconnecting(t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14))
-			ui.ButtonBase(c.Key("cancelReconnect")).Label(locales.Cancel()).Shrink(0).Children(func() {
+			chip(c.Key(fmt.Sprintf("status:%d", p.id)), locales.ViewReconnecting(t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14))
+			ui.ButtonBase(c.Key(fmt.Sprintf("cancelReconnect:%d", p.id))).Label(locales.Cancel()).Shrink(0).Children(func() {
 				ui.Text(c, locales.Cancel()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.cancelReconnect(t) })
 		case p.ended:
-			ui.Text(c.Key("status"), locales.ViewSessionEnded()).TextColor(theme.TextMuted).NoWrap().Shrink(0)
-			ui.ButtonBase(c.Key("reconnect")).Label(locales.Reconnect()).Shrink(0).Children(func() {
+			ui.Text(c.Key(fmt.Sprintf("status:%d", p.id)), locales.ViewSessionEnded()).TextColor(theme.TextMuted).NoWrap().Shrink(0)
+			ui.ButtonBase(c.Key(fmt.Sprintf("reconnect:%d", p.id))).Label(locales.Reconnect()).Shrink(0).Children(func() {
 				ui.Text(c, locales.Reconnect()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.reconnect(t) })
 		case t.local:
-			ui.Row(c.Key("status")).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewLocal()).Children(func() {
+			ui.Row(c.Key(fmt.Sprintf("status:%d", p.id))).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewLocal()).Children(func() {
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
 				dot.Scale(s, s)
@@ -1312,16 +1392,16 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				}
 			})
 		case t.stalled:
-			chip(c.Key("status"), locales.ViewServerUnresponsive(), theme.Warning, theme.Warning.Alpha(0.14))
+			chip(c.Key(fmt.Sprintf("status:%d", p.id)), locales.ViewServerUnresponsive(), theme.Warning, theme.Warning.Alpha(0.14))
 		default:
 			if t.host.Production {
 				label := locales.ViewProduction()
 				if compact {
 					label = locales.ViewProductionShort()
 				}
-				chip(c, label, colors.Danger, colors.DangerSoft)
+				chip(c.Key(fmt.Sprintf("paneProd:%d", p.id)), label, colors.Danger, colors.DangerSoft)
 			}
-			ui.Row(c.Key("status")).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected()).Children(func() {
+			ui.Row(c.Key(fmt.Sprintf("status:%d", p.id))).Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected()).Children(func() {
 				// 圆点第一次出现时（连上、或从“无响应”恢复）放大回弹一次，提示状态变好了。
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
@@ -1354,14 +1434,14 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			}
 		}
 		if t.monitorOpen && !t.local && t.client != nil && !p.ended && !tiny {
-			a.paneMonitorMetrics(c, colors, t)
+			a.paneMonitorMetrics(c, colors, t, p)
 		}
 		if !t.local && t.client != nil {
 			monitorLabel := locales.MonitorToggleOpen()
 			if t.monitorOpen {
 				monitorLabel = locales.MonitorToggleClose()
 			}
-			btn := iconButton(c, colors, "activity", monitorLabel, func() { a.toggleMonitor(t) }).Disabled(p.ended)
+			btn := iconButton(c.Key(fmt.Sprintf("paneMonitorToggle:%d", p.id)), colors, "activity", monitorLabel, func() { a.toggleMonitor(t) }).Disabled(p.ended)
 			if t.monitorOpen {
 				btn.Background(theme.Accent.Alpha(0.12))
 			}
@@ -1793,7 +1873,7 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 }
 
 // paneMonitorMetrics 在窗格顶栏显示紧凑的中文监控摘要（CPU / 内存），点击弹出完整监控浮层。
-func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
+func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	s := t.stats
 	if s.UpdatedAt.IsZero() {
 		ui.Text(c, locales.MonitorProbing()).TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap().Shrink(0)
@@ -1813,9 +1893,9 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
 		memColor = colors.Danger
 	}
 
-	anchor := ui.ButtonBase(c.Key(fmt.Sprintf("monitorBtn:%d", t.id))).Label(locales.MonitorTitle()).Tooltip(locales.MonitorTitle()).
+	anchor := ui.ButtonBase(c.Key(fmt.Sprintf("monitorBtn:%d", p.id))).Label(locales.MonitorTitle()).Tooltip(locales.MonitorTitle()).
 		Height(24).Padding(0, 6).Gap(8).AlignItems(ui.Center).Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
-	if anchor.Hovered() || t.monitorPopoverOpen {
+	if anchor.Hovered() || p.monitorPopoverOpen {
 		anchor.Background(colors.Hover)
 	}
 	anchor.Children(func() {
@@ -1829,9 +1909,9 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
 				ui.Textf(c, "%3.0f%%", memPercent).TextColor(memColor).FontFeatures("tnum")
 			})
 		}
-	}).OnClick(func() { t.monitorPopoverOpen = !t.monitorPopoverOpen })
+	}).OnClick(func() { p.monitorPopoverOpen = !p.monitorPopoverOpen })
 
-	ui.Popover(c, anchor, &t.monitorPopoverOpen, func() {
+	ui.Popover(c, anchor, &p.monitorPopoverOpen, func() {
 		ui.Column(c).Width(240).Padding(12).Gap(8).Children(func() {
 			ui.Text(c, locales.MonitorTitle()).FontWeight(600).FontSize(design.TextBody)
 			clampRatio := func(pct float32) float64 {

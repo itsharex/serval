@@ -24,13 +24,16 @@ const pickProxy = "选择代理…"
 // 旧版本允许手填代理，这里原样保留，用户改选独立管理的代理后才替换。
 func legacyProxyLabel(spec string) string { return locales.RouteLegacyProxy(spec) }
 
-// jumpChoices 返回第 i 跳的规范值切片与展示标签切片：除了正在编辑的主机自己，
-// 其余已保存的主机都展示为“名称 (user@host:port)”，表单字段仍保留规范名称。
+// jumpChoices 返回第 i 跳的规范值切片与展示标签切片：仅列 SSH 主机（排除正在编辑的主机自己），
+// 展示为“名称 (user@host:port)”，表单字段仍保留规范名称。
 func (a *app) jumpChoices(f *hostForm, i int) (values, labels []string) {
 	values = []string{pickHost()}
 	labels = []string{pickHost()}
 	for _, h := range a.hosts {
 		if f.editing != "" && h.ID == f.editing {
+			continue
+		}
+		if h.EffectiveProtocol() != hosts.ProtocolSSH {
 			continue
 		}
 		values = append(values, h.Name)
@@ -148,13 +151,20 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 				if targetLabel == "" {
 					targetLabel = "目标主机"
 				}
-				chainNodes := []string{"本机"}
+				type previewNode struct {
+					label   string
+					pending bool
+				}
+				chainNodes := []previewNode{{label: "本机"}}
 				for _, j := range f.jumps {
-					if trimmed := strings.TrimSpace(j); trimmed != "" && trimmed != pickHost() {
-						chainNodes = append(chainNodes, trimmed)
+					trimmed := strings.TrimSpace(j)
+					if trimmed == "" || trimmed == pickHost() {
+						chainNodes = append(chainNodes, previewNode{label: "待选择", pending: true})
+					} else {
+						chainNodes = append(chainNodes, previewNode{label: trimmed})
 					}
 				}
-				chainNodes = append(chainNodes, targetLabel)
+				chainNodes = append(chainNodes, previewNode{label: targetLabel})
 				ui.Row(c.Key("jumpChainPreview")).Gap(4).Wrap().AlignItems(ui.Center).
 					Padding(4, 8).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 					for i, node := range chainNodes {
@@ -162,10 +172,12 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 							ui.Text(c, "→").FontSize(design.TextSmall - 1).TextColor(colors.TextFaint)
 						}
 						color := t.TextMuted
-						if i == len(chainNodes)-1 {
+						if node.pending {
+							color = colors.TextFaint
+						} else if i == len(chainNodes)-1 {
 							color = t.Accent
 						}
-						ui.Text(c, node).FontSize(design.TextSmall - 1).FontWeight(500).TextColor(color)
+						ui.Text(c, node.label).FontSize(design.TextSmall - 1).FontWeight(500).TextColor(color)
 					}
 				})
 				ui.Row(c).Children(func() {

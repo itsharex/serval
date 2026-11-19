@@ -289,9 +289,12 @@ func (a *app) proxyEditPage(c *ui.Context, colors design.Colors) {
 			ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					ui.Field(c, locales.Password(), func() {
-						passwordInput(c, colors, "proxyPassword", "代理密码", &p.password, &p.showPassword, func(el ui.Element) {
+						in := passwordInput(c, colors, "proxyPassword", "代理密码", &p.password, &p.showPassword, func(el ui.Element) {
 							el.Placeholder(placeholder)
 						})
+						if in.Changed() && p.password != "" {
+							p.clearPassword = false
+						}
 					})
 				})
 				if p.passwordSaved {

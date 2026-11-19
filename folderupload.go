@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"serval/core/sshconn"
@@ -214,7 +215,7 @@ func (a *app) runFolderUpload(plan *folderPlan, skipExisting bool) {
 	t.transfers = append(t.transfers, tr)
 	files := t.files
 	go func() {
-		err := uploadFolderFiles(ctx, files, plan, todo, tr)
+		err := a.uploadFolderFiles(ctx, files, plan, todo, tr)
 		a.post(func() {
 			defer cancel()
 			tr.done.Store(true)
@@ -249,7 +250,7 @@ func (a *app) runFolderUpload(plan *folderPlan, skipExisting bool) {
 }
 
 // uploadFolderFiles 建好目录后逐个上传文件。任何一个失败就停止并报告，不跳过错误继续传。
-func uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPlan, todo []folderFile, tr *fileTransfer) error {
+func (a *app) uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPlan, todo []folderFile, tr *fileTransfer) error {
 	if err := files.MkdirAll(plan.remoteRoot); err != nil {
 		return err
 	}
@@ -263,6 +264,7 @@ func uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPl
 	}
 	var finished int64
 	lastBytes, lastTime := int64(0), time.Now()
+	var lastWake atomic.Int64
 	for _, f := range todo {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -275,6 +277,7 @@ func uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPl
 				tr.speed.Store((sent - lastBytes) * int64(time.Second) / int64(dur))
 				lastBytes, lastTime = sent, time.Now()
 			}
+			a.wakeUI(&lastWake, 100*time.Millisecond)
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -285,6 +288,7 @@ func uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPl
 		finished += f.size
 		tr.transferred.Store(finished)
 		tr.filesDone.Add(1)
+		a.wakeUI(&lastWake, 100*time.Millisecond)
 	}
 	return nil
 }

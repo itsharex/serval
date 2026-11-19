@@ -47,6 +47,9 @@ type aiStepRecord struct {
 
 type aiTurn struct {
 	query       string
+	prompt      string
+	attachedIDs []string
+	extraErr    string
 	contextTags []string
 	steps       []*aiStepRecord
 	usage       ai.Usage
@@ -292,7 +295,7 @@ func stopAIConversation(c *aiConversation) {
 	}
 }
 
-func stopAISession(s *aiPanel) {
+func stopActiveAIConversation(s *aiPanel) {
 	if s == nil {
 		return
 	}
@@ -312,6 +315,13 @@ func stopAISession(s *aiPanel) {
 	for i := range s.turns {
 		s.turns[i].running = false
 	}
+}
+
+func stopAISession(s *aiPanel) {
+	if s == nil {
+		return
+	}
+	stopActiveAIConversation(s)
 	for _, c := range s.convs {
 		stopAIConversation(c)
 	}
@@ -478,7 +488,7 @@ func (a *app) deleteAIConversation(id string) {
 	}
 	if a.ai.convID == id {
 		showHist := a.ai.showHistory
-		stopAISession(&a.ai)
+		stopActiveAIConversation(&a.ai)
 		resetActiveConversationDraft(&a.ai, a.activeTargetOS())
 		a.ai.showHistory = showHist
 	}
@@ -676,6 +686,9 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 	turnIdx := len(a.ai.turns)
 	a.ai.turns = append(a.ai.turns, aiTurn{
 		query:       displayQuery,
+		prompt:      promptText,
+		attachedIDs: slices.Clone(attached),
+		extraErr:    extraErr,
 		contextTags: tags,
 		running:     true,
 	})
@@ -707,7 +720,9 @@ func (a *app) startAgentRun(displayQuery, promptText string, attached []string, 
 			sess.command = c.Command
 			sess.commands = c.Commands
 			sess.pendingApproval = c.PendingApproval
-			sess.autoScroll = true
+			if sess.scroll.MaxY <= 0 || sess.scroll.Y >= sess.scroll.MaxY-24 {
+				sess.autoScroll = true
+			}
 		}
 	}
 
@@ -1197,6 +1212,7 @@ func (a *app) aiMessageStream(c *ui.Context, colors design.Colors) {
 		p.scroll.Y = math.MaxFloat32
 		p.autoScroll = false
 	}
+	pinnedBottom := p.scroll.MaxY <= 0 || p.scroll.Y >= p.scroll.MaxY-24
 
 	ui.Scroll(c.Key("aiScroll")).Grow(1).MinHeight(0).TrackScroll(&p.scroll).Children(func() {
 		ui.Column(c).Padding(12).Gap(14).Children(func() {
@@ -1217,14 +1233,34 @@ func (a *app) aiMessageStream(c *ui.Context, colors design.Colors) {
 
 			if p.err != "" && (len(p.turns) == 0 || p.turns[len(p.turns)-1].err == "") {
 				ui.Text(c.Key("aiError"), p.err).TextColor(colors.Danger).FontSize(design.TextSmall).Selectable()
+				if len(a.configuredAIProfiles()) == 0 {
+					ui.Row(c).Justify(ui.Start).Children(func() {
+						ui.Button(c.Key("aiGoSettingsBtn"), "前往配置模型").Height(26).Padding(0, 10).OnClick(a.openAISettings)
+					})
+				}
 			}
 		})
 	})
+	if !pinnedBottom && p.scroll.MaxY > 0 && len(p.turns) > 0 {
+		ui.Row(c).Justify(ui.End).Padding(0, 12, 4, 12).Shrink(0).Children(func() {
+			ui.Button(c.Key("aiScrollBottom"), "回到底部").Height(24).Padding(0, 10).OnClick(func() {
+				p.autoScroll = true
+				p.scroll.Y = math.MaxFloat32
+			})
+		})
+	}
 }
 
 func (a *app) aiWelcomeView(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	ui.Column(c).Gap(10).Padding(8, 2).Children(func() {
+		if len(a.configuredAIProfiles()) == 0 {
+			ui.Row(c).Padding(8, 10).Gap(8).AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
+				ui.Text(c, "尚未配置 AI 模型密钥，点击右侧配置后即可开始对话。").
+					FontSize(design.TextSmall).TextColor(t.TextMuted).Grow(1).MinWidth(0)
+				ui.Button(c.Key("aiWelcomeSettingsBtn"), "前往配置模型").Height(26).Padding(0, 10).Shrink(0).OnClick(a.openAISettings)
+			})
+		}
 		ui.Text(c, "直接用自然语言提问，Agent 会自动探测主机、读取终端并总结结论：").
 			FontSize(design.TextSmall).TextColor(t.TextMuted)
 		starters := []struct {
@@ -1328,7 +1364,22 @@ func (a *app) renderAITurn(c *ui.Context, colors design.Colors, turnIdx int, tur
 		}
 
 		if turn.err != "" {
-			ui.Text(c, turn.err).FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
+			ui.Column(c).Gap(6).Children(func() {
+				ui.Text(c, turn.err).FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
+				if !turn.running && !a.ai.loading {
+					ui.Row(c).Gap(8).Children(func() {
+						if turn.prompt != "" {
+							retryPrompt, retryQuery, retryAtt, retryExtra := turn.prompt, turn.query, turn.attachedIDs, turn.extraErr
+							ui.Button(c.Key(fmt.Sprintf("aiRetryTurn:%d", turnIdx)), "重试").Height(24).Padding(0, 10).OnClick(func() {
+								a.startAgentRun(retryQuery, retryPrompt, retryAtt, retryExtra)
+							})
+						}
+						if len(a.configuredAIProfiles()) == 0 {
+							ui.Button(c.Key(fmt.Sprintf("aiTurnGoSettings:%d", turnIdx)), "前往配置模型").Height(24).Padding(0, 10).OnClick(a.openAISettings)
+						}
+					})
+				}
+			})
 		}
 
 		if !turn.running && turn.usage.TotalTokens > 0 {
@@ -1617,9 +1668,18 @@ func (a *app) aiApprovalCard(c *ui.Context, colors design.Colors, ap *aiApproval
 			ui.Button(c.Key("aiDenyBtn"), "拒绝").Height(26).Padding(0, 12).OnClick(func() {
 				a.resolveAgentApproval(ap, false)
 			})
-			ui.PrimaryButton(c.Key("aiApproveBtn"), "允许执行").Height(26).Padding(0, 12).OnClick(func() {
-				a.resolveAgentApproval(ap, true)
-			})
+			if ap.dangerous || ap.production {
+				btn := ui.Button(c.Key("aiApproveBtn"), "").Label("允许执行").Height(26).Padding(0, 12).
+					Background(colors.DangerSoft).Border(1, colors.Danger.Alpha(0.55)).
+					OnClick(func() { a.resolveAgentApproval(ap, true) })
+				btn.Children(func() {
+					ui.Text(c, "允许执行").FontWeight(600).TextColor(colors.Danger)
+				})
+			} else {
+				ui.PrimaryButton(c.Key("aiApproveBtn"), "允许执行").Height(26).Padding(0, 12).OnClick(func() {
+					a.resolveAgentApproval(ap, true)
+				})
+			}
 		})
 	})
 }
@@ -1638,21 +1698,37 @@ func (a *app) resolveAgentApproval(ap *aiApproval, ok bool) {
 	}
 }
 
+func aiMentionToken(q string) (start int, needle string, matched bool) {
+	idx := strings.LastIndexByte(q, '@')
+	if idx < 0 {
+		return 0, "", false
+	}
+	tail := q[idx+1:]
+	if strings.ContainsAny(tail, " \t\r\n") {
+		return 0, "", false
+	}
+	return idx, strings.ToLower(tail), true
+}
+
 func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 	p := &a.ai
 	t := c.Theme()
 
+	_, mentionNeedle, mentionMatched := aiMentionToken(p.query)
 	showSlash := p.showSlash || strings.HasPrefix(p.query, "/")
-	showMentions := p.showMentions || strings.HasSuffix(p.query, "@")
+	showMentions := p.showMentions || mentionMatched
 
 	ui.Column(c).Padding(6, 8, 8, 8).Gap(6).BorderColor(colors.Hairline).BorderWidth(1, 0, 0, 0).Shrink(0).Children(func() {
 		if showSlash {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
+				matched := 0
+				qTrim := strings.ToLower(strings.TrimSpace(p.query))
 				for _, sc := range aiSlashCommands {
 					item := sc
-					if strings.HasPrefix(p.query, "/") && len(p.query) > 1 && !strings.HasPrefix(item.Cmd, strings.TrimSpace(p.query)) {
+					if strings.HasPrefix(p.query, "/") && len(p.query) > 1 && !strings.HasPrefix(strings.ToLower(item.Cmd), qTrim) {
 						continue
 					}
+					matched++
 					row := ui.ButtonBase(c.Key("aiSlash:"+item.Cmd)).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() {
 						row.Background(colors.Selected)
@@ -1667,13 +1743,23 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 						a.runSlashCommand(item)
 					})
 				}
+				if matched == 0 {
+					ui.Text(c, "没有匹配的快捷指令").FontSize(design.TextSmall).TextColor(t.TextMuted).Padding(4, 8)
+				}
 			})
 		}
 
 		if showMentions {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
+				matched := 0
 				for _, opt := range aiMentionOptions {
 					item := opt
+					if mentionMatched && mentionNeedle != "" &&
+						!strings.Contains(strings.ToLower(item.ID), mentionNeedle) &&
+						!strings.Contains(strings.ToLower(item.Label), mentionNeedle) {
+						continue
+					}
+					matched++
 					row := ui.ButtonBase(c.Key("aiMention:"+item.ID)).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() {
 						row.Background(colors.Selected)
@@ -1684,12 +1770,15 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 							ui.Text(c, item.Desc).FontSize(design.TextSmall - 1).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 						})
 					}).OnClick(func() {
-						if strings.HasSuffix(p.query, "@") {
-							p.query = strings.TrimSuffix(p.query, "@")
+						if start, _, ok := aiMentionToken(p.query); ok {
+							p.query = p.query[:start]
 						}
 						a.attachAIContext(item.ID)
 						p.showMentions = false
 					})
+				}
+				if matched == 0 {
+					ui.Text(c, "没有匹配的上下文引用").FontSize(design.TextSmall).TextColor(t.TextMuted).Padding(4, 8)
 				}
 			})
 		}
@@ -1717,14 +1806,20 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 		ui.Column(c).Padding(7, 8).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 			c.Key("aiQueryInput")
 			placeholder := "向 AI Agent 发送消息，@ 引用上下文，/ 快捷命令"
-			if p.contextError != "" && len(p.turns) == 0 {
+			if p.pendingApproval != nil {
+				placeholder = "请先确认或拒绝上方的命令执行请求"
+			} else if p.contextError != "" && len(p.turns) == 0 {
 				placeholder = "按回车直接诊断报错，或补充说明你想排查的问题"
 			}
-			in := ui.TextInput(c, &p.query).Placeholder(placeholder).AutoFocus()
+			in := ui.TextInput(c, &p.query).Placeholder(placeholder)
 			if p.fresh {
 				in.AutoFocus()
 				p.fresh = false
 			}
+			in.OnShortcut(0, ui.KeyEscape, func() {
+				p.showMentions = false
+				p.showSlash = false
+			})
 			in.OnSubmit(a.submitAIInput)
 
 			ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {

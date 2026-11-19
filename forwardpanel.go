@@ -479,13 +479,21 @@ func (a *app) forwardListPage(c *ui.Context, colors design.Colors) {
 	})
 }
 
+func (a *app) forwardFailure(f hosts.Forward) string {
+	if live := a.tunnels[f.ID]; live != nil && live.tunnel != nil {
+		return live.tunnel.Err()
+	}
+	return a.forwardErr[f.ID]
+}
+
 func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 	t := c.Theme()
-	_, running := a.tunnels[f.ID]
+	live, running := a.tunnels[f.ID]
 	actionText, verb := "启动", "启动 "
 	if running {
 		actionText, verb = "停止", "停止 "
 	}
+	errMsg := a.forwardFailure(f)
 	line := ui.Row(c.Key("forwardline:"+f.ID)).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
 	if line.Hovered() {
 		line.Background(colors.Hover)
@@ -497,7 +505,20 @@ func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 			ui.Icon(c, design.Icon("arrow-left-right")).FontSize(18).TextColor(t.TextMuted).Shrink(0)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 				ui.Text(c, f.Name).FontWeight(500).SingleLine().Ellipsis("…")
-				ui.Text(c, f.Summary()+"  "+a.forwardStatus(f)).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+				if errMsg != "" {
+					meta := f.Summary()
+					if running && live != nil && live.tunnel != nil {
+						in, out := live.tunnel.Bytes()
+						meta += "  监听 " + live.tunnel.Addr()
+						if in+out > 0 {
+							meta += fmt.Sprintf("  下行 %s  上行 %s", formatTransfer(in), formatTransfer(out))
+						}
+					}
+					ui.Text(c, meta).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+					ui.Text(c, errMsg).FontSize(design.TextSmall).TextColor(colors.Danger).SingleLine().Ellipsis("…").Tooltip(errMsg)
+				} else {
+					ui.Text(c, f.Summary()+"  "+a.forwardStatus(f)).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+				}
 			})
 		}).OnClick(func() { a.editForward(f) })
 		ui.Button(c.Key("forwardRun:"+f.ID), actionText).Label(verb + f.Name).Shrink(0).OnClick(func() { a.toggleForward(f) })
@@ -516,7 +537,7 @@ func (a *app) forwardEditPage(c *ui.Context) {
 	t := c.Theme()
 	p := &a.forwardPanel
 	title := "添加转发"
-	if p.id != "" {
+	if _, saved := a.forwardByID(p.id); p.id != "" && saved {
 		title = "编辑转发"
 	}
 	ui.Column(c).Gap(12).Children(func() {
@@ -562,21 +583,38 @@ func (a *app) forwardEditPage(c *ui.Context) {
 		ui.Field(c, "自动开启", func() {
 			c.Key("forwardHost")
 			const noAutoHost = "不自动开启"
-			labels := make([]string, 0, len(a.hosts)+1)
+			const missingAutoHost = "原绑定主机已删除"
+			var sshHosts []hosts.Host
+			for _, h := range a.hosts {
+				if h.EffectiveProtocol() == hosts.ProtocolSSH {
+					sshHosts = append(sshHosts, h)
+				}
+			}
+			labels := make([]string, 0, len(sshHosts)+2)
 			labels = append(labels, noAutoHost)
 			selected := noAutoHost
-			for _, h := range a.hosts {
+			found := p.hostID == ""
+			for _, h := range sshHosts {
 				lbl := h.Name + " (" + h.Target() + ")"
 				labels = append(labels, lbl)
 				if h.ID == p.hostID {
 					selected = lbl
+					found = true
 				}
 			}
+			if p.hostID != "" && !found {
+				labels = append(labels, missingAutoHost)
+				selected = missingAutoHost
+			}
 			if ui.Select(c, &selected, labels).Changed() {
-				if selected == noAutoHost {
+				p.err = ""
+				switch selected {
+				case noAutoHost:
 					p.hostID = ""
-				} else {
-					for _, h := range a.hosts {
+				case missingAutoHost:
+					// 保留原 hostID，提示用户重新选择有效主机。
+				default:
+					for _, h := range sshHosts {
 						if h.Name+" ("+h.Target()+")" == selected {
 							p.hostID = h.ID
 							break

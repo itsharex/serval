@@ -75,8 +75,14 @@ func (a *app) pickKeyFile() {
 	pick := a.chooseKeyFile
 	go func() {
 		path, err := pick()
+		if a.post == nil {
+			return
+		}
 		a.post(func() {
 			p := &a.keyPanel
+			if !p.open || p.page != keyAdd || p.generate {
+				return
+			}
 			if err != nil {
 				p.err = err.Error()
 				return
@@ -174,6 +180,9 @@ func (a *app) submitAddKey() {
 			k, err := keys.Generate(kind, name, comment, passphrase)
 			a.post(func() {
 				a.keyPanel.busy = false
+				if !a.keyPanel.open || a.keyPanel.page != keyAdd {
+					return
+				}
 				if err != nil {
 					a.keyPanel.err = err.Error()
 					return
@@ -416,7 +425,9 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, locales.AddPrivateKey()).FontSize(design.TextHeading).FontWeight(600)
 		c.Key("keyMode")
-		ui.Segmented(c, &p.addingMode, locales.KeyImport(), locales.KeyGenerateOption())
+		if ui.Segmented(c, &p.addingMode, locales.KeyImport(), locales.KeyGenerateOption()).Changed() {
+			p.err, p.passphrase, p.showPassphrase = "", "", false
+		}
 		p.generate = p.addingMode == 1
 		ui.Field(c, locales.Name(), func() {
 			c.Key("keyName")
@@ -458,7 +469,7 @@ func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c.Key("keyError"), p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c.Key("keyBack"), locales.Back()).OnClick(func() {
+			ui.Button(c.Key("keyBack"), locales.Back()).Disabled(p.busy).OnClick(func() {
 				if p.fromHostForm {
 					a.keyPanel = keyPanel{}
 					return
