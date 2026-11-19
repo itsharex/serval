@@ -1365,15 +1365,16 @@ func (a *app) openLocalTerminal() {
 // createTerminal 创建终端控件。conn 为 nil 时是本地终端：插件在伪终端里运行本机 shell。
 func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.Shell) (*terminal.Terminal, error) {
 	opts := terminal.Options{
-		Font:          a.terminalFont(),
-		Theme:         a.terminalTheme(false),
-		DarkTheme:     a.terminalTheme(true),
-		Cursor:        a.terminalCursor(),
-		Scrollback:    a.terminalScrollback(),
-		CopyOnSelect:  a.terminalCopyOnSelect(),
-		RightClick:    a.terminalRightClick(),
-		Padding:       terminal.Padding{X: 10, Y: 8},
-		NoExitMessage: true, // Serval 已在顶栏和断开横幅显示会话结束并支持回车重连
+		Font:             a.terminalFont(),
+		Theme:            a.terminalTheme(false),
+		DarkTheme:        a.terminalTheme(true),
+		Cursor:           a.terminalCursor(),
+		Scrollback:       a.terminalScrollback(),
+		CopyOnSelect:     a.terminalCopyOnSelect(),
+		RightClick:       a.terminalRightClick(),
+		Padding:          terminal.Padding{X: 10, Y: 8},
+		ShellIntegration: true, // 支持 OSC 133 提示符标记：本地 zsh 自动注入，远端发送标记时在改宽前先清旧提示符避免重影
+		NoExitMessage:    true, // Serval 已在顶栏和断开横幅显示会话结束并支持回车重连
 		OnExit: func(int) {
 			a.post(func() { a.paneEnded(t, p, shell) })
 		},

@@ -1567,3 +1567,40 @@ func TestAIProductionApprovalAndHistoryCompression(t *testing.T) {
 		t.Fatalf("拒绝后应返回拒绝提示: %q", got)
 	}
 }
+
+// TestAISlashAndMentionRowsLeftAligned 验证 / 快捷指令与 @ 上下文引用弹窗中的每一行均为左对齐，不随描述长度居中偏移。
+func TestAISlashAndMentionRowsLeftAligned(t *testing.T) {
+	h := newHarness(t)
+	h.tt.Frame()
+
+	h.a.openAI()
+	h.a.ai.showSlash = true
+	h.tt.Frame()
+
+	inspectCmd, ok := h.tt.Find("/inspect")
+	if !ok {
+		t.Fatalf("未找到 /inspect 快捷指令: %q", h.tt.Texts())
+	}
+	newCmd, ok := h.tt.Find("/new")
+	if !ok {
+		t.Fatalf("未找到 /new 快捷指令: %q", h.tt.Texts())
+	}
+	if abs := inspectCmd.X - newCmd.X; abs < -1 || abs > 1 {
+		t.Fatalf("快捷指令行未左对齐: /inspect.X=%.1f, /new.X=%.1f", inspectCmd.X, newCmd.X)
+	}
+
+	h.a.ai.showSlash = false
+	h.a.ai.showMentions = true
+	h.tt.Frame()
+
+	if len(aiMentionOptions) >= 2 {
+		m0, ok0 := h.tt.Find("@" + aiMentionOptions[0].Label)
+		m1, ok1 := h.tt.Find("@" + aiMentionOptions[1].Label)
+		if !ok0 || !ok1 {
+			t.Fatalf("未找到 @ 引用选项: %q", h.tt.Texts())
+		}
+		if abs := m0.X - m1.X; abs < -1 || abs > 1 {
+			t.Fatalf("@ 引用行未左对齐: %s.X=%.1f, %s.X=%.1f", aiMentionOptions[0].Label, m0.X, aiMentionOptions[1].Label, m1.X)
+		}
+	}
+}

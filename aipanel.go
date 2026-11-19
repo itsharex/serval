@@ -2011,12 +2011,12 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 				for idx, sc := range slashItems {
 					item := sc
-					row := ui.ButtonBase(c.Key("aiSlash:"+item.Cmd)).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
+					row := ui.ButtonBase(c.Key("aiSlash:"+item.Cmd)).Padding(5, 8).Radius(6).Justify(ui.Start).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() || idx == p.popupIdx {
 						row.Background(colors.Selected)
 					}
 					row.Children(func() {
-						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
 							ui.Text(c, item.Cmd).FontSize(design.TextSmall).Font(design.FontTerminal).TextColor(t.Accent).Shrink(0)
 							ui.Text(c, item.Title).FontSize(design.TextSmall).FontWeight(500).Shrink(0)
 							ui.Text(c, item.Desc).FontSize(design.TextSmall - 1).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
@@ -2035,12 +2035,12 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 				for idx, opt := range mentionItems {
 					item := opt
-					row := ui.ButtonBase(c.Key("aiMention:"+item.ID)).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
+					row := ui.ButtonBase(c.Key("aiMention:"+item.ID)).Padding(5, 8).Radius(6).Justify(ui.Start).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() || idx == p.popupIdx {
 						row.Background(colors.Selected)
 					}
 					row.Children(func() {
-						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
 							ui.Text(c, "@"+item.Label).FontSize(design.TextSmall).TextColor(t.Accent).FontWeight(500).Shrink(0)
 							ui.Text(c, item.Desc).FontSize(design.TextSmall - 1).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 						})

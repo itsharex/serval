@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,9 +211,14 @@ func TestRzCancelledInChooserReturnsToShell(t *testing.T) {
 	rz := lrzszPath(t, "rz")
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.a.chooseUploadFiles = func() ([]string, error) { return nil, nil }
+	var chosen atomic.Bool
+	h.a.chooseUploadFiles = func() ([]string, error) {
+		chosen.Store(true)
+		return nil, nil
+	}
 	remote := t.TempDir()
 	tb.focus.term.Send([]byte(fmt.Sprintf("cd %s && %s\r", shellQuote(remote), rz)))
+	h.pump("弹出文件选择框", func() bool { return chosen.Load() })
 	assertShellUsable(t, h, tb, remote)
 	if entries, _ := os.ReadDir(remote); len(entries) != 1 { // 只有 assertShellUsable 建的标记文件
 		t.Fatalf("取消后不应上传任何文件: %v", entries)

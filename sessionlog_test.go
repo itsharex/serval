@@ -307,3 +307,30 @@ func TestSessionLogSettingAndRemoteOutput(t *testing.T) {
 		t.Fatal("关掉记录后不应再追加")
 	}
 }
+
+type resizeHoldConn struct{ *holdConn }
+
+func (resizeHoldConn) Resize(int, int) error { return nil }
+
+// TestTerminalShellIntegrationClearsPromptOnResize 验证 createTerminal 已启用 ShellIntegration，
+// 当终端列宽变化（如反复开关 AI 面板或文件抽屉）时，带 OSC 133 标记的旧提示符会被先清理，避免折行残留重影。
+func TestTerminalShellIntegrationClearsPromptOnResize(t *testing.T) {
+	h := newHarness(t)
+	h.tt.Frame()
+
+	conn := resizeHoldConn{newHoldConn()}
+	term, err := h.a.createTerminal(&tab{}, &pane{id: 999}, conn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { term.Close() })
+
+	term.Resize(100, 20)
+	term.Feed([]byte("history\r\n\x1b]133;A\a\r\n\x1b[Aprompt-left\x1b[90Gright\r\n> \x1b]133;B\a"))
+
+	// 模拟打开 AI 面板导致终端变窄
+	term.Resize(50, 20)
+	if got := term.Text(); got != "history" {
+		t.Fatalf("终端变窄前未清理带 OSC 133 标记的旧提示符，实际内容: %q", got)
+	}
+}
