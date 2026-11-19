@@ -2,6 +2,17 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-11-19
+
+### Added
+
+- **AI Agent Multi-Line Composer, Rich Inline Markdown & Tail Log Reading (`aipanel.go`, `aiagent.go`, `core/sshconn/sftp.go`)**: Upgraded the AI input box to a multi-line auto-sizing `ui.TextArea` (`Enter` sends, `Shift+Enter` inserts newline), added keyboard navigation (`Up`/`Down`/`Tab`/`Enter`/`Esc`) for `@` and `/` popups, `@SFTP目录` context attachment, `ui.RichText` inline bold/code rendering, shell-only terminal insert buttons, answer copy, user message edit-and-resend, history conversation inline rename, and `sftp_read(tail=true)` (`Files.ReadTailLimited`) for large remote/local logs.
+- **Hardened AI Safety & Persistent Drawer Preferences (`core/ai/client.go`, `aiagent.go`, `settings.go`, `library.go`, `view.go`)**: Hardened `IsDangerousCommand` against path prefixes, command wrappers, command substitutions, and destructive network/process commands; added `IsReadOnlyProbeCommand` so `aiModeAuto` on production hosts allows read-only probes while requiring confirmation for mutating commands; added Telnet/Serial protocol guards, live session snapshot refresh, SFTP relative path resolution, context history compression, and local persistence for `AIWidth`, `FilesWidth`, and `AIMode`.
+
+### Fixed
+
+- **UI Layout, Modal Ordering, Broadcast/Transfer & AI Concurrency (`aipanel.go`, `view.go`, `app.go`, `hostform.go`, `palette.go`, `settings.go`)**: Fixed form scroll clipping, active tab/split-pane highlight clarity, single-line ellipsis truncation, modal occlusion and background wakeup handling, `startAgentRun` step-map data race, empty-state (`tabID == 0`) AI session migration on first tab open, in-place retry for failed turns, and updated AI Agent i18n catalogs (`locales/`).
+
 ## [0.6.0] - 2026-11-18
 
 ### Added
