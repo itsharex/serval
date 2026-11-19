@@ -2,6 +2,17 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-11-19
+
+### Fixed
+
+- **Terminal Prompt Duplication on Resize (`app.go`, `sessionlog_test.go`)**: Enabled MyGo `ShellIntegration: true` on terminal creation so local `zsh` automatically injects OSC 133 prompt markers and remote shells emitting OSC 133 clear the old prompt at the previous width before reflowing, preventing duplicate prompt ghosts when repeatedly toggling the AI Agent drawer or file drawer.
+- **AI Slash & Mention Popup Alignment (`aipanel.go`, `aipanel_test.go`)**: Left-aligned rows in the `/` slash command and `@` context mention popups with full-width ellipsis truncation.
+
+### Docs
+
+- **Light-Mode README Screenshots (`docs/screenshots/`)**: Refreshed `welcome.png`, `workspace.png`, and `ai-agent.png` in light mode for `README.md` and `README.zh-CN.md`.
+
 ## [0.6.1] - 2026-11-19
 
 ### Added
