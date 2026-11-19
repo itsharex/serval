@@ -2,6 +2,12 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.4] - 2026-11-19
+
+### Changed
+
+- **Consolidated About & Updates Tab in Settings (`about.go`, `settings.go`, `update.go`, `view.go`, `palette.go`, `main.go`)**: Moved About & Updates into a dedicated "关于" tab in Settings (displaying author attribution, GitHub repository link, MIT License, MyGo engine version, and update checks), removed the redundant sidebar footer icon and General-tab section, and restored the native macOS menu bar About dialog.
+
 ## [0.6.3] - 2026-11-19
 
 ### Added
