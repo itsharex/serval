@@ -477,19 +477,25 @@ func (a *app) snippetEditPage(c *ui.Context) {
 func (a *app) snippetFillPage(c *ui.Context) {
 	t := c.Theme()
 	p := &a.snippetPanel
+	_, windowHeight := c.Size()
+	maxBodyH := max(min(windowHeight-240, 380), 120)
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, "填写变量").FontSize(design.TextHeading).FontWeight(600)
 		ui.Text(c, "填好后发到当前终端。这些值只用于这一次发送，不会保存。").
 			FontSize(design.TextSmall).TextColor(t.TextMuted)
-		for i := range p.vars {
-			ui.Field(c, p.vars[i], func() {
-				c.Key("snippetVar:" + p.vars[i])
-				input := ui.TextInput(c, &p.values[i]).OnSubmit(a.submitSnippetFill)
-				if i == 0 {
-					input.AutoFocus()
+		ui.Scroll(c.Key("snippetFillScroll")).MaxHeight(maxBodyH).Children(func() {
+			ui.Column(c).Gap(10).Padding(0, 4, 0, 0).Children(func() {
+				for i := range p.vars {
+					ui.Field(c, p.vars[i], func() {
+						c.Key("snippetVar:" + p.vars[i])
+						input := ui.TextInput(c, &p.values[i]).OnSubmit(a.submitSnippetFill)
+						if i == 0 {
+							input.AutoFocus()
+						}
+					})
 				}
 			})
-		}
+		})
 		if p.err != "" {
 			ui.Text(c.Key("snippetError"), p.err).TextColor(t.Danger)
 		}

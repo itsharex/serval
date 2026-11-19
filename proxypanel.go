@@ -217,17 +217,17 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c.Key("proxy:"+px.ID)).Label(px.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("proxy:"+px.ID)).Label(px.Name).Tooltip(px.Name+" · "+px.Target()).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
 			ui.Icon(c, design.Icon("globe")).FontSize(18).TextColor(t.TextMuted)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, px.Name).FontWeight(500).SingleLine()
+				ui.Text(c, px.Name).FontWeight(500).SingleLine().Ellipsis("…")
 				sub := px.Target()
 				if n := len(a.proxyUsers(px.ID)); n > 0 {
 					sub = locales.ProxyHostsUsing(sub, n)
 				}
-				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
+				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 			})
 		}).OnClick(func() { a.editProxy(px) })
 		row.PopoverMenu(menu, menuOptions(colors))

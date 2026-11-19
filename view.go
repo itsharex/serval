@@ -858,9 +858,15 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 				ui.Button(c.Key("saveAsHost"), locales.ViewSaveAsHost()).Height(28).Padding(0, 8).
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
-			iconButton(c, colors, "search", locales.ViewFindShortcut(shortcutText("F")), func() { a.openSearch(t) })
+			searchBtn := iconButton(c.Key("tabToggleSearch"), colors, "search", locales.ViewFindShortcut(shortcutText("F")), func() { a.openSearch(t) })
+			if t.focus != nil && t.focus.searchOpen {
+				searchBtn.Background(c.Theme().Accent.Alpha(0.14))
+			}
 			if !t.local && t.client != nil {
-				iconButton(c, colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
+				filesBtn := iconButton(c.Key("tabToggleFiles"), colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
+				if a.filesOpen {
+					filesBtn.Background(c.Theme().Accent.Alpha(0.14))
+				}
 			}
 		}
 		aiBtn := iconButton(c.Key("tabToggleAI"), colors, "sparkles", "AI Agent（"+shortcutText("I")+"）", a.toggleAI)
@@ -892,7 +898,7 @@ func (a *app) connectingTabPill(c *ui.Context, colors design.Colors, hostID stri
 		Padding(0, 8, 0, 10).Gap(6).AlignItems(ui.Center).Radius(design.RadiusRow).
 		Background(colors.Card).Border(1, theme.Accent.Alpha(0.35)).Tooltip(phase).Children(func() {
 		design.DistroCoatView(c, h.ID, h.Distro, h.Production, 14)
-		ui.Text(c, name).TextColor(theme.Text).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+		ui.Text(c, name).TextColor(theme.Text).FontWeight(500).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		ui.Text(c, phase).TextColor(theme.TextMuted).FontSize(design.TextSmall - 0.5).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		ui.ButtonBase(c.Key("cancelConnectTab:"+hostID)).Label("取消连接 "+name).Tooltip("取消连接").
 			Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
@@ -1019,7 +1025,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 		}
 		// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
 		// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
-		btn := ui.ButtonBase(c.Key(fmt.Sprintf("tab:%d", t.id))).Label(title).AccessSelected(selected).
+		btn := ui.ButtonBase(c.Key(fmt.Sprintf("tab:%d", t.id))).Label(title).Tooltip(title).AccessSelected(selected).
 			Height(28).Grow(1).MinWidth(0).Padding(0, rightPad, 0, 10).Gap(8).Justify(ui.Start).AlignItems(ui.Center)
 		btn.Children(func() {
 			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
@@ -1027,7 +1033,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 			if selected {
 				color = theme.Text
 			}
-			ui.Text(c, title).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+			ui.Text(c, title).TextColor(color).FontWeight(500).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		}).OnClick(func() {
 			if idx := slices.Index(a.tabs, t); idx >= 0 {
 				a.active = idx
@@ -1225,8 +1231,8 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 					}
 					btn.Children(func() {
 						design.DistroCoatView(c, host.ID, host.Distro, host.Production, 18)
-						ui.Text(c, host.Name).FontWeight(500).Grow(1).SingleLine()
-						ui.Text(c, host.Target()).FontSize(design.TextSmall).TextColor(colors.TextFaint).SingleLine()
+						ui.Text(c, host.Name).FontWeight(500).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+						ui.Text(c, host.Target()).FontSize(design.TextSmall).TextColor(colors.TextFaint).SingleLine().Shrink(0)
 					}).OnClick(func() { a.open(host) })
 				}
 			})
@@ -1904,7 +1910,7 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 		layer.Children(func() {
 			ui.Column(c).Gap(4).AlignItems(ui.Center).Padding(12, 18).Radius(design.RadiusRow).Background(colors.Card).Children(func() {
 				ui.Text(c, locales.ViewReleaseToUpload()).FontWeight(600)
-				ui.Text(c, locales.ViewUploadTo(target)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine()
+				ui.Text(c, locales.ViewUploadTo(target)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…").MaxWidth(360)
 			})
 		})
 	}

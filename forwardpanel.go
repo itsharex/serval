@@ -451,6 +451,8 @@ func (a *app) forwardsDialog(c *ui.Context, colors design.Colors) {
 func (a *app) forwardListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	p := &a.forwardPanel
+	_, windowHeight := c.Size()
+	maxListH := max(min(windowHeight-240, 360), 120)
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "端口转发").FontSize(design.TextHeading).FontWeight(600).Grow(1)
@@ -462,14 +464,15 @@ func (a *app) forwardListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, "本地转发把本机端口接到服务器能访问的地址。远程转发在服务器上监听。动态转发是本机的 SOCKS5。").
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
-		}
-		ui.Scroll(c).MaxHeight(360).Children(func() {
-			ui.Column(c).Gap(2).Children(func() {
-				for _, f := range a.forwards {
-					a.forwardRow(c, colors, f)
-				}
+		} else {
+			ui.Scroll(c.Key("forwardsListScroll")).MaxHeight(maxListH).Children(func() {
+				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+					for _, f := range a.forwards {
+						a.forwardRow(c, colors, f)
+					}
+				})
 			})
-		})
+		}
 		if p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
@@ -536,93 +539,99 @@ func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 func (a *app) forwardEditPage(c *ui.Context) {
 	t := c.Theme()
 	p := &a.forwardPanel
+	_, windowHeight := c.Size()
+	maxBodyH := max(min(windowHeight-200, 500), 120)
 	title := "添加转发"
 	if _, saved := a.forwardByID(p.id); p.id != "" && saved {
 		title = "编辑转发"
 	}
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
-		ui.Field(c, "类型", func() {
-			c.Key("forwardKind")
-			ui.Segmented(c, &p.kind, "本地转发", "远程转发", "动态转发")
-		}).Description("本地转发把本机端口接到服务器能访问的地址。远程转发在服务器上监听，接到本机。动态转发是本机的 SOCKS5，流量经这台服务器出去。")
-		ui.Field(c, "名称", func() {
-			c.Key("forwardName")
-			ui.TextInput(c, &p.name).Placeholder("留空时按类型和端口生成").AutoFocus().OnSubmit(a.saveForward)
-		})
-		ui.Row(c).Gap(10).Children(func() {
-			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				ui.Field(c, "监听地址", func() {
-					c.Key("forwardBindHost")
-					ui.TextInput(c, &p.bindHost).Placeholder("127.0.0.1").OnSubmit(a.saveForward)
+		ui.Scroll(c.Key("forwardEditScroll")).MaxHeight(maxBodyH).Children(func() {
+			ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
+				ui.Field(c, "类型", func() {
+					c.Key("forwardKind")
+					ui.Segmented(c, &p.kind, "本地转发", "远程转发", "动态转发")
+				}).Description("本地转发把本机端口接到服务器能访问的地址。远程转发在服务器上监听，接到本机。动态转发是本机的 SOCKS5，流量经这台服务器出去。")
+				ui.Field(c, "名称", func() {
+					c.Key("forwardName")
+					ui.TextInput(c, &p.name).Placeholder("留空时按类型和端口生成").AutoFocus().OnSubmit(a.saveForward)
 				})
-			})
-			ui.Column(c).Width(110).Children(func() {
-				ui.Field(c, "监听端口", func() {
-					c.Key("forwardBindPort")
-					ui.TextInput(c, &p.bindPort).Placeholder("8080").OnSubmit(a.saveForward)
-				})
-			})
-		})
-		if forwardKinds[p.kind] != hosts.ForwardDynamic {
-			ui.Row(c).Gap(10).Children(func() {
-				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-					ui.Field(c, "目标地址", func() {
-						c.Key("forwardTargetHost")
-						ui.TextInput(c, &p.targetHost).Placeholder("127.0.0.1").OnSubmit(a.saveForward)
+				ui.Row(c).Gap(10).Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+						ui.Field(c, "监听地址", func() {
+							c.Key("forwardBindHost")
+							ui.TextInput(c, &p.bindHost).Placeholder("127.0.0.1").OnSubmit(a.saveForward)
+						})
+					})
+					ui.Column(c).Width(110).Children(func() {
+						ui.Field(c, "监听端口", func() {
+							c.Key("forwardBindPort")
+							ui.TextInput(c, &p.bindPort).Placeholder("8080").OnSubmit(a.saveForward)
+						})
 					})
 				})
-				ui.Column(c).Width(110).Children(func() {
-					ui.Field(c, "目标端口", func() {
-						c.Key("forwardTargetPort")
-						ui.TextInput(c, &p.targetPort).Placeholder("5432").OnSubmit(a.saveForward)
+				if forwardKinds[p.kind] != hosts.ForwardDynamic {
+					ui.Row(c).Gap(10).Children(func() {
+						ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+							ui.Field(c, "目标地址", func() {
+								c.Key("forwardTargetHost")
+								ui.TextInput(c, &p.targetHost).Placeholder("127.0.0.1").OnSubmit(a.saveForward)
+							})
+						})
+						ui.Column(c).Width(110).Children(func() {
+							ui.Field(c, "目标端口", func() {
+								c.Key("forwardTargetPort")
+								ui.TextInput(c, &p.targetPort).Placeholder("5432").OnSubmit(a.saveForward)
+							})
+						})
 					})
-				})
-			})
-		}
-		ui.Field(c, "自动开启", func() {
-			c.Key("forwardHost")
-			const noAutoHost = "不自动开启"
-			const missingAutoHost = "原绑定主机已删除"
-			var sshHosts []hosts.Host
-			for _, h := range a.hosts {
-				if h.EffectiveProtocol() == hosts.ProtocolSSH {
-					sshHosts = append(sshHosts, h)
 				}
-			}
-			labels := make([]string, 0, len(sshHosts)+2)
-			labels = append(labels, noAutoHost)
-			selected := noAutoHost
-			found := p.hostID == ""
-			for _, h := range sshHosts {
-				lbl := h.Name + " (" + h.Target() + ")"
-				labels = append(labels, lbl)
-				if h.ID == p.hostID {
-					selected = lbl
-					found = true
-				}
-			}
-			if p.hostID != "" && !found {
-				labels = append(labels, missingAutoHost)
-				selected = missingAutoHost
-			}
-			if ui.Select(c, &selected, labels).Changed() {
-				p.err = ""
-				switch selected {
-				case noAutoHost:
-					p.hostID = ""
-				case missingAutoHost:
-					// 保留原 hostID，提示用户重新选择有效主机。
-				default:
-					for _, h := range sshHosts {
-						if h.Name+" ("+h.Target()+")" == selected {
-							p.hostID = h.ID
-							break
+				ui.Field(c, "自动开启", func() {
+					c.Key("forwardHost")
+					const noAutoHost = "不自动开启"
+					const missingAutoHost = "原绑定主机已删除"
+					var sshHosts []hosts.Host
+					for _, h := range a.hosts {
+						if h.EffectiveProtocol() == hosts.ProtocolSSH {
+							sshHosts = append(sshHosts, h)
 						}
 					}
-				}
-			}
-		}).Description("绑定主机后，连上它就自动开启，最后一条相关会话断开后关闭。")
+					labels := make([]string, 0, len(sshHosts)+2)
+					labels = append(labels, noAutoHost)
+					selected := noAutoHost
+					found := p.hostID == ""
+					for _, h := range sshHosts {
+						lbl := h.Name + " (" + h.Target() + ")"
+						labels = append(labels, lbl)
+						if h.ID == p.hostID {
+							selected = lbl
+							found = true
+						}
+					}
+					if p.hostID != "" && !found {
+						labels = append(labels, missingAutoHost)
+						selected = missingAutoHost
+					}
+					if ui.Select(c, &selected, labels).Changed() {
+						p.err = ""
+						switch selected {
+						case noAutoHost:
+							p.hostID = ""
+						case missingAutoHost:
+							// 保留原 hostID，提示用户重新选择有效主机。
+						default:
+							for _, h := range sshHosts {
+								if h.Name+" ("+h.Target()+")" == selected {
+									p.hostID = h.ID
+									break
+								}
+							}
+						}
+					}
+				}).Description("绑定主机后，连上它就自动开启，最后一条相关会话断开后关闭。")
+			})
+		})
 		if p.err != "" {
 			ui.Text(c.Key("forwardError"), p.err).TextColor(t.Danger)
 		}

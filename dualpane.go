@@ -891,7 +891,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 				Justify(ui.Center).AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Padding(10, 14).Gap(3).AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Card).Children(func() {
 					ui.Text(c, locales.ViewReleaseToUpload()).FontWeight(600).FontSize(design.TextSmall)
-					ui.Text(c, locales.ViewUploadTo(shortPath(t.dir))).FontSize(design.TextSmall - 1).TextColor(theme.TextMuted).SingleLine()
+					ui.Text(c, locales.ViewUploadTo(shortPath(t.dir))).FontSize(design.TextSmall - 1).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…").MaxWidth(280)
 				})
 			})
 		}

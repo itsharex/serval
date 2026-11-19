@@ -1123,9 +1123,10 @@ func (a *app) aiDrawerHeader(c *ui.Context, colors design.Colors) {
 			chipBg, chipFg = colors.DangerSoft, colors.Danger
 			targetText = "生产 · " + targetText
 		}
-		ui.Box(c).Padding(2, 8).Radius(design.RadiusChip).Background(chipBg).Grow(1).MinWidth(0).Children(func() {
+		ui.Box(c).Padding(2, 8).Radius(design.RadiusChip).Background(chipBg).Shrink(1).MinWidth(0).Children(func() {
 			ui.Text(c, targetText).FontSize(design.TextSmall).TextColor(chipFg).SingleLine().Ellipsis("…")
 		})
+		ui.Spacer(c)
 
 		histBtn := iconButton(c.Key("aiHistoryBtn"), colors, "history", "历史会话", func() {
 			saveActiveConversation(&a.ai)

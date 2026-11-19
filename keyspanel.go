@@ -394,17 +394,17 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 		line.Background(colors.Hover)
 	}
 	line.Children(func() {
-		row := ui.ButtonBase(c.Key("key:"+k.ID)).Label(k.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+		row := ui.ButtonBase(c.Key("key:"+k.ID)).Label(k.Name).Tooltip(k.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
 			ui.Icon(c, design.Icon("key-round")).FontSize(18).TextColor(t.TextMuted)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, k.Name).FontWeight(500).SingleLine()
+				ui.Text(c, k.Name).FontWeight(500).SingleLine().Ellipsis("…")
 				sub := k.Label() + "  " + k.Fingerprint
 				if n := len(a.usedBy(k.ID)); n > 0 {
 					sub = locales.KeyHostsUsing(k.Label(), n)
 				}
-				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
+				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 			})
 		}).OnClick(func() { a.showKey(k.ID) })
 		row.PopoverMenu(menu, menuOptions(colors))
@@ -422,65 +422,71 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	p := &a.keyPanel
+	_, windowHeight := c.Size()
+	maxBodyH := max(min(windowHeight-200, 480), 120)
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, locales.AddPrivateKey()).FontSize(design.TextHeading).FontWeight(600)
-		c.Key("keyMode")
-		if ui.Segmented(c, &p.addingMode, locales.KeyImport(), locales.KeyGenerateOption()).Changed() {
-			p.err, p.passphrase, p.showPassphrase = "", "", false
-		}
-		p.generate = p.addingMode == 1
-		ui.Field(c, locales.Name(), func() {
-			c.Key("keyName")
-			placeholder := locales.KeyNameExample()
-			if !p.generate {
-				placeholder = locales.KeyNameFromFile()
-			}
-			ui.TextInput(c, &p.name).Placeholder(placeholder).AutoFocus().OnSubmit(func() {
-				if !p.busy {
-					a.submitAddKey()
+		ui.Scroll(c.Key("keyAddScroll")).MaxHeight(maxBodyH).Children(func() {
+			ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
+				c.Key("keyMode")
+				if ui.Segmented(c, &p.addingMode, locales.KeyImport(), locales.KeyGenerateOption()).Changed() {
+					p.err, p.passphrase, p.showPassphrase = "", "", false
 				}
-			})
-		})
-		if p.generate {
-			ui.Field(c, locales.KeyType(), func() {
-				c.Key("keyType")
-				ui.Segmented(c, &p.genIndex, "Ed25519", "RSA 4096")
-			}).Description(locales.KeyTypeHint())
-			ui.Field(c, locales.KeyPassphraseOptional(), func() {
-				passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, func(el ui.Element) {
-					el.OnSubmit(func() {
+				p.generate = p.addingMode == 1
+				ui.Field(c, locales.Name(), func() {
+					c.Key("keyName")
+					placeholder := locales.KeyNameExample()
+					if !p.generate {
+						placeholder = locales.KeyNameFromFile()
+					}
+					ui.TextInput(c, &p.name).Placeholder(placeholder).AutoFocus().OnSubmit(func() {
 						if !p.busy {
 							a.submitAddKey()
 						}
 					})
 				})
-			}).Description(locales.KeyPassphraseHint())
-		} else {
-			ui.Field(c, locales.PrivateKey(), func() {
-				ui.Column(c).Gap(8).Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Button(c.Key("keyPick"), locales.KeyChooseFile()).OnClick(a.pickKeyFile)
-						ui.Text(c, locales.KeyPasteHint()).FontSize(design.TextSmall).TextColor(t.TextMuted)
-					})
-					c.Key("keyPem")
-					ui.TextArea(c, &p.pem).Height(120).Font(design.FontTerminal).FontSize(design.TextSmall).
-						Placeholder("-----BEGIN OPENSSH PRIVATE KEY-----")
-				})
-			}).Description(locales.KeyPemHint())
-			if keys.Encrypted([]byte(strings.TrimSpace(p.pem) + "\n")) {
-				ui.Field(c, locales.Passphrase(), func() {
-					passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, func(el ui.Element) {
-						el.OnSubmit(func() {
-							if !p.busy {
-								a.submitAddKey()
-							}
+				if p.generate {
+					ui.Field(c, locales.KeyType(), func() {
+						c.Key("keyType")
+						ui.Segmented(c, &p.genIndex, "Ed25519", "RSA 4096")
+					}).Description(locales.KeyTypeHint())
+					ui.Field(c, locales.KeyPassphraseOptional(), func() {
+						passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, func(el ui.Element) {
+							el.OnSubmit(func() {
+								if !p.busy {
+									a.submitAddKey()
+								}
+							})
 						})
-					})
-				})
-				c.Key("keySavePassphrase")
-				ui.Checkbox(c, &p.savePassphrase, locales.KeySavePassphrase())
-			}
-		}
+					}).Description(locales.KeyPassphraseHint())
+				} else {
+					ui.Field(c, locales.PrivateKey(), func() {
+						ui.Column(c).Gap(8).Children(func() {
+							ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+								ui.Button(c.Key("keyPick"), locales.KeyChooseFile()).OnClick(a.pickKeyFile)
+								ui.Text(c, locales.KeyPasteHint()).FontSize(design.TextSmall).TextColor(t.TextMuted)
+							})
+							c.Key("keyPem")
+							ui.TextArea(c, &p.pem).Height(120).Font(design.FontTerminal).FontSize(design.TextSmall).
+								Placeholder("-----BEGIN OPENSSH PRIVATE KEY-----")
+						})
+					}).Description(locales.KeyPemHint())
+					if keys.Encrypted([]byte(strings.TrimSpace(p.pem) + "\n")) {
+						ui.Field(c, locales.Passphrase(), func() {
+							passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, func(el ui.Element) {
+								el.OnSubmit(func() {
+									if !p.busy {
+										a.submitAddKey()
+									}
+								})
+							})
+						})
+						c.Key("keySavePassphrase")
+						ui.Checkbox(c, &p.savePassphrase, locales.KeySavePassphrase())
+					}
+				}
+			})
+		})
 		if p.err != "" {
 			ui.Text(c.Key("keyError"), p.err).TextColor(t.Danger)
 		}
@@ -515,61 +521,67 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 		p.page = keyList
 		return
 	}
+	_, windowHeight := c.Size()
+	maxBodyH := max(min(windowHeight-220, 440), 120)
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, design.Icon("key-round")).FontSize(20).TextColor(t.TextMuted)
 			ui.Text(c, k.Name).FontSize(design.TextHeading).FontWeight(600).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
-			ui.Text(c, k.Label()).FontSize(design.TextSmall).TextColor(t.TextMuted)
+			ui.Text(c, k.Label()).FontSize(design.TextSmall).TextColor(t.TextMuted).Shrink(0)
 		})
-		ui.Field(c, locales.Name(), func() {
-			c.Key("keyRename")
-			ui.TextInput(c, &p.rename).OnSubmit(a.saveKeyDetail)
-		})
-		ui.Field(c, locales.KeyPublicKey(), func() {
-			ui.Column(c).Gap(8).Children(func() {
-				ui.Text(c.Key("keyPublic"), k.PublicKey).Font(design.FontTerminal).FontSize(design.TextSmall).
-					Padding(8, 10).Radius(design.RadiusRow).Background(colors.Chip).Selectable()
-				ui.Row(c).Gap(8).Children(func() {
-					ui.Button(c.Key("keyCopyDetail"), locales.CopyPublicKey()).OnClick(func() { a.copyPublicKey(c, k) })
-					if k.PublicKey != "" {
-						if sshHosts := a.sshHosts(); len(sshHosts) > 0 {
-							ui.Button(c.Key("keyDeployDetail"), "部署到主机").PopoverMenuButton(func(m *ui.Menu) {
-								for _, h := range sshHosts {
-									host := h
-									if m.Item(host.Name).Chosen() {
-										a.deployKeyToHost(host, k)
-									}
+		ui.Scroll(c.Key("keyDetailScroll")).MaxHeight(maxBodyH).Children(func() {
+			ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
+				ui.Field(c, locales.Name(), func() {
+					c.Key("keyRename")
+					ui.TextInput(c, &p.rename).OnSubmit(a.saveKeyDetail)
+				})
+				ui.Field(c, locales.KeyPublicKey(), func() {
+					ui.Column(c).Gap(8).Children(func() {
+						ui.Text(c.Key("keyPublic"), k.PublicKey).Font(design.FontTerminal).FontSize(design.TextSmall).
+							Padding(8, 10).Radius(design.RadiusRow).Background(colors.Chip).Selectable()
+						ui.Row(c).Gap(8).Children(func() {
+							ui.Button(c.Key("keyCopyDetail"), locales.CopyPublicKey()).OnClick(func() { a.copyPublicKey(c, k) })
+							if k.PublicKey != "" {
+								if sshHosts := a.sshHosts(); len(sshHosts) > 0 {
+									ui.Button(c.Key("keyDeployDetail"), "部署到主机").PopoverMenuButton(func(m *ui.Menu) {
+										for _, h := range sshHosts {
+											host := h
+											if m.Item(host.Name).Chosen() {
+												a.deployKeyToHost(host, k)
+											}
+										}
+									}, menuButtonOptions(colors))
 								}
-							}, menuButtonOptions(colors))
-						}
-					}
+							}
+						})
+					})
+				}).Description(locales.KeyPublicKeyHint())
+				ui.Field(c, locales.KeyFingerprint(), func() {
+					ui.Text(c, k.Fingerprint).Font(design.FontTerminal).FontSize(design.TextSmall).Selectable()
 				})
+				if keys.Encrypted([]byte(k.PrivateKey)) {
+					ui.Field(c, locales.Passphrase(), func() {
+						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+							if k.Passphrase != "" {
+								ui.Text(c, locales.KeyPassphraseSaved()).Grow(1)
+								ui.Button(c.Key("keyClearPassphrase"), locales.Clear()).OnClick(func() { a.clearPassphrase(k.ID) })
+							} else {
+								ui.Text(c, locales.KeyPassphraseUnsaved()).TextColor(t.TextMuted)
+							}
+						})
+					})
+				}
+				if used := a.usedBy(k.ID); len(used) > 0 {
+					names := make([]string, len(used))
+					for i, h := range used {
+						names[i] = h.Name
+					}
+					ui.Field(c, locales.KeyUsedBy(), func() {
+						ui.Text(c, strings.Join(names, locales.NameSeparator()))
+					})
+				}
 			})
-		}).Description(locales.KeyPublicKeyHint())
-		ui.Field(c, locales.KeyFingerprint(), func() {
-			ui.Text(c, k.Fingerprint).Font(design.FontTerminal).FontSize(design.TextSmall).Selectable()
 		})
-		if keys.Encrypted([]byte(k.PrivateKey)) {
-			ui.Field(c, locales.Passphrase(), func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					if k.Passphrase != "" {
-						ui.Text(c, locales.KeyPassphraseSaved()).Grow(1)
-						ui.Button(c.Key("keyClearPassphrase"), locales.Clear()).OnClick(func() { a.clearPassphrase(k.ID) })
-					} else {
-						ui.Text(c, locales.KeyPassphraseUnsaved()).TextColor(t.TextMuted)
-					}
-				})
-			})
-		}
-		if used := a.usedBy(k.ID); len(used) > 0 {
-			names := make([]string, len(used))
-			for i, h := range used {
-				names[i] = h.Name
-			}
-			ui.Field(c, locales.KeyUsedBy(), func() {
-				ui.Text(c, strings.Join(names, locales.NameSeparator()))
-			})
-		}
 		if p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}

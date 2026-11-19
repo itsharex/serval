@@ -1474,7 +1474,7 @@ func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 		Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, host).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+				ui.Text(c, host).FontWeight(500).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 				if !k.Added.IsZero() {
 					ui.Text(c, k.Added.Local().Format("2006-01-02 15:04")).
 						FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
@@ -1482,7 +1482,7 @@ func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 			})
 			for _, sum := range k.keySummaries() {
 				ui.Text(c, sum).Font(design.FontTerminal).FontSize(design.TextSmall).
-					TextColor(t.TextMuted).SingleLine()
+					TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 			}
 		})
 		ui.Button(c.Key("knownDelete:"+host), locales.Delete()).OnClick(func() {
