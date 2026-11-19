@@ -17,7 +17,7 @@ import (
 )
 
 // appVersion 是当前客户端版本号，与 mygo.json 中的 version 保持一致。
-const appVersion = "0.6.2"
+const appVersion = "0.6.3"
 
 // defaultUpdateURL 是默认的 GitHub Releases 最新版本查询端点。
 const defaultUpdateURL = "https://api.github.com/repos/jhzhang09/serval/releases/latest"
@@ -377,6 +377,10 @@ func (a *app) aboutAndUpdatesSection(c *ui.Context, colors design.Colors) {
 				}
 				ui.Button(c.Key("settingsCheckUpdate"), checkBtnText).Disabled(a.update.checking).OnClick(func() {
 					a.checkForUpdates(true)
+				})
+
+				ui.Button(c.Key("settingsOpenAbout"), "关于 Serval").OnClick(func() {
+					a.openAbout()
 				})
 
 				if a.update.state == updateAvailable && a.update.latest != nil {

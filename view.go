@@ -90,6 +90,7 @@ func (a *app) view(c *ui.Context) {
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
 	a.broadcastDialog(c)
+	a.aboutDialog(c, colors)
 	a.updateDialog(c, colors)
 	// 焦点可能在这一帧才从窗格里的 FocusWithin 改过来，镜像源要跟着重算。
 	a.syncBroadcastSource()
@@ -131,6 +132,7 @@ func (a *app) hasModalOpen() bool {
 		a.settingsPanel.askSyncMerge ||
 		a.editor.open ||
 		a.fileOp.open ||
+		a.about.open ||
 		a.update.sheetOpen ||
 		a.deleting != nil ||
 		a.fileDelete != nil ||
@@ -542,6 +544,8 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				snipBtn.Tooltip(snipTip)
 				sidebarIconButton(c, colors, "openSettings", "settings", locales.Settings(), 0, a.openSettings).
 					Tooltip(locales.Settings() + "（" + shortcutText(",") + "）")
+				sidebarIconButton(c, colors, "openAbout", "info", "关于", 0, a.openAbout).
+					Tooltip("关于 Serval")
 			})
 		})
 	})

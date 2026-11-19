@@ -176,6 +176,7 @@ type app struct {
 	updateURL      string
 	httpClient     *http.Client
 	update         updateModel
+	about          aboutModel
 	// lastCopiedText 记录最近一次从终端复制的文字，供 AI 报错分析直接引用。
 	lastCopiedText string
 	restore        restorePanel

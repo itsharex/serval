@@ -252,6 +252,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
 	action("refresh-cw", "检查更新", func() { a.checkForUpdates(true) })
 	actionWithShortcut("settings", locales.PaletteOpenSettings(), shortcutText(","), a.openSettings)
+	action("info", "关于 Serval", a.openAbout)
 	action("server", locales.KnownHosts(), func() {
 		a.openSettings()
 		a.settingsPanel.tab = settingsTabSecurity
