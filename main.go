@@ -62,9 +62,6 @@ func main() {
 		a.reload() // 未加密时直接读出；锁定时 reload 什么都读不到，界面显示解锁页面
 	}
 	a.loadLocal()
-	if a.vault.State() != vault.Locked {
-		a.restoreSession()
-	}
 	a.unlock.remember = a.deviceAvailable()
 	installSystemDialogs(a)
 	if u, err := user.Current(); err == nil {
@@ -93,6 +90,9 @@ func main() {
 		a.idleTime = mygo.Power.IdleTime
 		a.startAutoLock()
 		a.onVaultReady()
+		if a.vault.State() != vault.Locked {
+			a.restoreSession()
+		}
 		a.probeAllHosts(false)
 		win.OnClosed(func() {
 			stop()

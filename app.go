@@ -2156,7 +2156,7 @@ func (a *app) saveSessionLayout() {
 }
 
 func (a *app) restoreSession() {
-	if a.local.DisableRestoreSession || a.local.SavedSession == nil || len(a.local.SavedSession.Tabs) == 0 {
+	if a.post == nil || a.local.DisableRestoreSession || a.local.SavedSession == nil || len(a.local.SavedSession.Tabs) == 0 {
 		return
 	}
 	// 各台主机并行连接。需要密码或核对指纹的主机会各自弹出询问。

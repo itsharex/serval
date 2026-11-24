@@ -1717,3 +1717,27 @@ func TestFilesDrawerOnLocalTabExplains(t *testing.T) {
 		t.Fatalf("本地标签的文件抽屉应说明原因: %q", h.tt.Texts())
 	}
 }
+
+// 启动时若 a.post 尚未就绪（窗口未初始化完成），restoreSession 不应提前发起后台连接，避免回主线程时 nil panic。
+func TestRestoreSessionRequiresPostReady(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	dev := tb.host
+	h.a.closeTab(tb)
+	h.pump("关闭初始标签", func() bool { return len(h.a.tabs) == 0 })
+
+	h.a.local.SavedSession = &savedSession{
+		Tabs: []savedTab{{HostID: dev.ID}},
+	}
+	origPost := h.a.post
+	h.a.post = nil
+	h.a.restoreSession()
+	if len(h.a.connecting) != 0 || len(h.a.tabs) != 0 {
+		t.Fatalf("a.post 为空时 restoreSession 不应发起连接: connecting=%d tabs=%d", len(h.a.connecting), len(h.a.tabs))
+	}
+	time.Sleep(80 * time.Millisecond)
+
+	h.a.post = origPost
+	h.a.restoreSession()
+	h.pump("a.post 就绪后正常恢复会话", func() bool { return len(h.a.tabs) == 1 })
+}
