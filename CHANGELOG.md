@@ -2,6 +2,12 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.6] - 2026-11-25
+
+### Fixed
+
+- **Startup Crash on Fast Session Restore (`main.go`, `app.go`, `main_test.go`)**: Moved `restoreSession()` into `mygo.App.WhenReady` after `a.post = win.Update` is initialized, and guarded `restoreSession()` against `a.post == nil`, preventing a `nil` pointer panic in `connectWithLayout` when saved hosts connect before the window finishes initializing.
+
 ## [0.6.5] - 2026-11-25
 
 ### Fixed
