@@ -256,6 +256,7 @@ func setTerminalDir(t *testing.T, h *harness, tb *tab, dir string) {
 
 func TestDropFilesOnTerminalUploadsToCurrentDir(t *testing.T) {
 	h := newHarness(t)
+	h.a.transferHideDelay = 80 * time.Millisecond
 	tb := h.connectDev()
 	remote, err := filepath.EvalSymlinks(t.TempDir()) // macOS 的临时目录经过符号链接，shell 上报的是真实路径
 	if err != nil {
@@ -274,9 +275,15 @@ func TestDropFilesOnTerminalUploadsToCurrentDir(t *testing.T) {
 		got, _ := os.ReadFile(filepath.Join(remote, "dropped.bin"))
 		return bytes.Equal(got, data)
 	})
-	if !h.a.filesOpen {
-		t.Fatal("拖放上传后应打开文件抽屉显示进度")
+	if h.a.filesOpen || tb.filesOpen {
+		t.Fatal("拖放上传后不应自动展开文件抽屉")
 	}
+	if !tb.floatingQueue || !h.tt.HasText("传输队列") {
+		t.Fatalf("拖放上传时应展示悬浮传输队列: floating=%v texts=%q", tb.floatingQueue, h.tt.Texts())
+	}
+	h.pump("传输完成后队列自动消失", func() bool {
+		return !tb.floatingQueue && len(tb.transfers) == 0 && !h.tt.HasText("传输队列")
+	})
 	h.tt.Frame()
 	if tb.focus.fileDrag {
 		t.Fatal("松开后接收层应消失，不能挡住终端的鼠标操作")

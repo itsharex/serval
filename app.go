@@ -241,6 +241,10 @@ type app struct {
 	// challenges 是等待用户回答的多步验证（keyboard-interactive）询问，依次显示。
 	// 经跳板机连接时，跳板机和目标主机可能先后都要求验证码。
 	challenges []*challengeSheet
+	// transferHideDelay 为传输全部完成后的浮层自动收起延迟（测试可覆盖；<=0 时使用默认值）。
+	transferHideDelay time.Duration
+	// resolveUserHome 已被替换为 resolveUserInfo：查询远程指定用户的主目录与 UID/GID（测试可覆盖；为 nil 时走 resolveRemoteUserInfo）。
+	resolveUserInfo func(ctx context.Context, client *sshconn.Client, files *sshconn.Files, user string) (remoteUserInfo, error)
 }
 
 // hostKeyPrompt 是等待用户回答的未知主机询问。
@@ -349,7 +353,12 @@ type tab struct {
 	filesHideHidden bool
 	filesPinned     bool
 
-	transfers []*fileTransfer
+	transfers         []*fileTransfer
+	remoteHome        string
+	userInfos         map[string]remoteUserInfo
+	floatingQueue     bool
+	transferHideTimer *time.Timer
+	transferHideGen   int
 
 	monitorOpen        bool
 	monitorPopoverOpen bool
@@ -1824,6 +1833,7 @@ func (a *app) closeTab(t *tab) {
 	a.stopTabMonitor(t)
 	a.closeAISessionForTab(t.id)
 	a.clearTabDragOut(t.id)
+	a.cancelFloatingQueueTimer(t)
 	if t.id == a.filesActiveTabID {
 		a.filesOpen = false
 		a.lastDrawer = ""
@@ -1880,6 +1890,9 @@ func (a *app) closeAll() {
 		a.probeCancel = nil
 	}
 	a.clearDragOut()
+	for _, t := range a.tabs {
+		a.cancelFloatingQueueTimer(t)
+	}
 	a.stopAllAISessions()
 	a.filesOpen = false
 	a.filesActiveTabID = 0
@@ -2056,6 +2069,8 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 		t.files = nil
 		go oldFiles.Close()
 	}
+	t.remoteHome = ""
+	t.userInfos = nil
 	if t.filesOpen && a.current() == t {
 		a.ensureFiles(t)
 	}
@@ -2093,6 +2108,7 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 		p.term = term
 		p.shell = shell
 		p.ended = false
+		p.promptUser, p.promptDir, p.lastTermDir, p.lastTermTitle = "", "", "", ""
 	})
 	a.saveSessionLayout()
 }
@@ -2280,6 +2296,36 @@ func (a *app) cancelChallenge() {
 	ch.answerChan <- challengeResult{err: errChallengeCancelled}
 }
 
+func (a *app) floatingQueueHideDelay() time.Duration {
+	if a.transferHideDelay > 0 {
+		return a.transferHideDelay
+	}
+	return 1800 * time.Millisecond
+}
+
+// setFilesOpen 切换标签页的文件抽屉开关，并在收起时仅在仍有活跃传输时交接给右下角浮层。
+func (a *app) setFilesOpen(t *tab, open bool) {
+	if t == nil {
+		a.filesOpen = false
+		return
+	}
+	t.filesOpen = open
+	if a.current() == t {
+		a.filesOpen = open
+	}
+	if open {
+		t.floatingQueue = false
+		a.cancelFloatingQueueTimer(t)
+		return
+	}
+	if hasActiveTransfer(t) {
+		t.floatingQueue = true
+		return
+	}
+	t.floatingQueue = false
+	a.cancelFloatingQueueTimer(t)
+}
+
 // toggleFiles 打开或收起当前标签页的文件抽屉（按标签页隔离）。SFTP 通道到需要时才打开，不用文件的会话不占这份资源。
 func (a *app) toggleFiles() {
 	a.syncTabDrawers()
@@ -2292,8 +2338,7 @@ func (a *app) toggleFiles() {
 		return
 	}
 	open := !t.filesOpen
-	t.filesOpen = open
-	a.filesOpen = open
+	a.setFilesOpen(t, open)
 	if open {
 		t.lastDrawer = "files"
 		a.lastDrawer = "files"
@@ -2375,6 +2420,15 @@ func (a *app) ensureFiles(t *tab) {
 				return
 			}
 			t.files = files
+			t.remoteHome = home
+			if loginUser := strings.TrimSpace(t.host.User); loginUser != "" && home != "" {
+				if t.userInfos == nil {
+					t.userInfos = map[string]remoteUserInfo{}
+				}
+				info := t.userInfos[loginUser]
+				info.Home = home
+				t.userInfos[loginUser] = info
+			}
 			a.openDir(t, home)
 			for _, fn := range waiting {
 				fn()

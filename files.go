@@ -46,6 +46,8 @@ type fileTransfer struct {
 	filesTotal atomic.Int64
 	err        string
 	guardLocal bool
+	owner      *sshconn.FileOwner
+	targetUser string
 	cancel     context.CancelFunc
 }
 
@@ -53,6 +55,8 @@ type fileTransfer struct {
 type pendingUpload struct {
 	tab                             *tab
 	localPath, remotePath, fileName string
+	owner                           *sshconn.FileOwner
+	targetUser                      string
 }
 
 // pendingDownload 是本地已有同名普通文件、拖放下载前等用户确认替换的下载。
@@ -153,6 +157,7 @@ func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
 	tr := &fileTransfer{id: a.nextID, kind: transferDownload, remotePath: remoteRoot, localPath: localRoot,
 		fileName: name, folder: true, cancel: cancel}
 	t.transfers = append(t.transfers, tr)
+	a.noteTransferStarted(t)
 	files := t.files
 	go func() {
 		lastBytes, lastTime := int64(0), time.Now()
@@ -192,6 +197,7 @@ func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
 					a.openLocal(a.localDir)
 				}
 			}
+			a.maybeScheduleHideFloatingQueue(t)
 		})
 	}()
 }
@@ -199,8 +205,13 @@ func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
 // uploadTo 把本地文件上传到 remotePath。远端已有同名文件时先请用户确认替换；
 // 检查是否存在要走网络，放在后台。
 func (a *app) uploadTo(t *tab, localPath, remotePath string) {
+	a.uploadToOwned(t, localPath, remotePath, nil, "")
+}
+
+func (a *app) uploadToOwned(t *tab, localPath, remotePath string, owner *sshconn.FileOwner, targetUser string) {
 	fileName := filepath.Base(localPath)
 	files := t.files
+	loginUser := strings.TrimSpace(t.host.User)
 	go func() {
 		exists, err := files.Exists(remotePath)
 		a.post(func() {
@@ -208,14 +219,22 @@ func (a *app) uploadTo(t *tab, localPath, remotePath string) {
 				return
 			}
 			if err != nil {
-				a.toast(ui.Toast{Title: locales.FileUploadFailedNamed(fileName), Description: transferReason(err), Type: "error"})
+				reason := transferReason(err)
+				if errors.Is(err, os.ErrPermission) && targetUser != "" && loginUser != "" && targetUser != loginUser {
+					reason = fmt.Sprintf("没有权限（SFTP 以登录用户 %s 运行，无法写入 %s 的目录；可用 rz 上传或以 %s 登录）", loginUser, targetUser, targetUser)
+				}
+				a.toast(ui.Toast{Title: locales.FileUploadFailedNamed(fileName), Description: reason, Type: "error"})
+				a.maybeScheduleHideFloatingQueue(t)
 				return
 			}
 			if exists {
-				a.pendingUploads = append(a.pendingUploads, &pendingUpload{tab: t, localPath: localPath, remotePath: remotePath, fileName: fileName})
+				a.pendingUploads = append(a.pendingUploads, &pendingUpload{
+					tab: t, localPath: localPath, remotePath: remotePath, fileName: fileName,
+					owner: owner, targetUser: targetUser,
+				})
 				return
 			}
-			a.runTransfer(t, transferUpload, remotePath, localPath, fileName, false)
+			a.runTransferOwned(t, transferUpload, remotePath, localPath, fileName, false, owner, targetUser)
 		})
 	}()
 }
@@ -247,18 +266,24 @@ func (a *app) uploadConfirmDialog(c *ui.Context) {
 			a.pendingUploads = nil
 			for _, item := range pending {
 				if slices.Contains(a.tabs, item.tab) {
-					a.runTransfer(item.tab, transferUpload, item.remotePath, item.localPath, item.fileName, false)
+					a.runTransferOwned(item.tab, transferUpload, item.remotePath, item.localPath, item.fileName, false, item.owner, item.targetUser)
 				}
 			}
 			return
 		case 2:
+			pending := a.pendingUploads
 			a.pendingUploads = nil
+			for _, item := range pending {
+				a.maybeScheduleHideFloatingQueue(item.tab)
+			}
 			return
 		}
 	}
 	a.pendingUploads = a.pendingUploads[1:]
 	if choice == 0 && slices.Contains(a.tabs, u.tab) {
-		a.runTransfer(u.tab, transferUpload, u.remotePath, u.localPath, u.fileName, false)
+		a.runTransferOwned(u.tab, transferUpload, u.remotePath, u.localPath, u.fileName, false, u.owner, u.targetUser)
+	} else {
+		a.maybeScheduleHideFloatingQueue(u.tab)
 	}
 }
 
@@ -307,14 +332,23 @@ func (a *app) downloadConfirmDialog(c *ui.Context) {
 // runTransfer 在后台执行一次传输，进度通过原子字段给界面读取，结束后回到主线程提示结果。
 // guardLocal 为真时，下载落盘前再检查一次本地同名文件，存在就不覆盖（拖放下载承诺不覆盖）。
 func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, fileName string, guardLocal bool) {
+	a.runTransferOwned(t, kind, remotePath, localPath, fileName, guardLocal, nil, "")
+}
+
+func (a *app) runTransferOwned(t *tab, kind transferKind, remotePath, localPath, fileName string, guardLocal bool, owner *sshconn.FileOwner, targetUser string) {
 	if t.files == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.nextID++
-	tr := &fileTransfer{id: a.nextID, kind: kind, remotePath: remotePath, localPath: localPath, fileName: fileName, guardLocal: guardLocal, cancel: cancel}
+	tr := &fileTransfer{
+		id: a.nextID, kind: kind, remotePath: remotePath, localPath: localPath, fileName: fileName,
+		guardLocal: guardLocal, owner: owner, targetUser: targetUser, cancel: cancel,
+	}
 	t.transfers = append(t.transfers, tr)
+	a.noteTransferStarted(t)
 	files := t.files
+	loginUser := strings.TrimSpace(t.host.User)
 	go func() {
 		lastBytes, lastTime := int64(0), time.Now()
 		var lastWake atomic.Int64
@@ -327,14 +361,14 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 			}
 			a.wakeUI(&lastWake, 100*time.Millisecond)
 		}
-		var err error
+		var chownErr, err error
 		switch {
 		case kind == transferDownload && guardLocal:
 			err = files.DownloadIfAbsent(ctx, remotePath, localPath, progress)
 		case kind == transferDownload:
 			err = files.Download(ctx, remotePath, localPath, progress)
 		default:
-			err = files.Upload(ctx, localPath, remotePath, progress)
+			chownErr, err = files.UploadOwned(ctx, localPath, remotePath, owner, progress)
 		}
 		a.post(func() {
 			defer cancel()
@@ -352,7 +386,11 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 				tr.err = "本地已经有同名的文件或文件夹"
 				a.toast(ui.Toast{Title: "没有下载 " + fileName, Description: "下载期间本地出现了同名的文件或文件夹，没有覆盖它，请先把原来的移走。", Type: "error"})
 			case err != nil:
-				tr.err = transferReason(err)
+				reason := transferReason(err)
+				if upload && errors.Is(err, os.ErrPermission) && targetUser != "" && loginUser != "" && targetUser != loginUser {
+					reason = fmt.Sprintf("没有权限（SFTP 以登录用户 %s 运行，无法写入 %s 的目录；可用 rz 上传或以 %s 登录）", loginUser, targetUser, targetUser)
+				}
+				tr.err = reason
 				title := locales.FileDownloadFailedNamed(fileName)
 				if upload {
 					title = locales.FileUploadFailedNamed(fileName)
@@ -363,7 +401,11 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 				if upload {
 					title = locales.FileUploadedNamed(fileName)
 				}
-				a.toast(ui.Toast{Title: title})
+				var desc string
+				if upload && chownErr != nil && targetUser != "" && loginUser != "" && targetUser != loginUser {
+					desc = fmt.Sprintf("已写入目标目录，但 SFTP 以登录用户 %s 运行，未能将属主改为 %s。", loginUser, targetUser)
+				}
+				a.toast(ui.Toast{Title: title, Description: desc})
 				if upload && slices.Contains(a.tabs, t) {
 					a.openDir(t, t.dir)
 				}
@@ -371,6 +413,7 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 					a.openLocal(a.localDir)
 				}
 			}
+			a.maybeScheduleHideFloatingQueue(t)
 		})
 	}()
 }
@@ -414,6 +457,7 @@ func (a *app) dismissTransfer(t *tab, id int) {
 	t.transfers = slices.DeleteFunc(t.transfers, func(tr *fileTransfer) bool {
 		return tr.id == id && tr.done.Load()
 	})
+	a.maybeScheduleHideFloatingQueue(t)
 }
 
 func (a *app) clearFinishedTransfers(t *tab) {
@@ -423,6 +467,7 @@ func (a *app) clearFinishedTransfers(t *tab) {
 	t.transfers = slices.DeleteFunc(t.transfers, func(tr *fileTransfer) bool {
 		return tr.done.Load()
 	})
+	a.maybeScheduleHideFloatingQueue(t)
 }
 
 func (a *app) retryTransfer(t *tab, item *fileTransfer) {
@@ -434,7 +479,7 @@ func (a *app) retryTransfer(t *tab, item *fileTransfer) {
 		if item.kind == transferDownload {
 			a.runFolderDownload(t, item.remotePath, item.localPath, item.fileName)
 		} else {
-			a.planFolderUpload(t, item.localPath, path.Dir(item.remotePath))
+			a.planFolderUploadOwned(t, item.localPath, path.Dir(item.remotePath), item.owner, item.targetUser)
 		}
 		return
 	}
@@ -454,7 +499,7 @@ func (a *app) retryTransfer(t *tab, item *fileTransfer) {
 		a.runTransfer(t, transferDownload, item.remotePath, item.localPath, item.fileName, item.guardLocal)
 		return
 	}
-	a.runTransfer(t, transferUpload, item.remotePath, item.localPath, item.fileName, false)
+	a.runTransferOwned(t, transferUpload, item.remotePath, item.localPath, item.fileName, false, item.owner, item.targetUser)
 }
 
 type fileOpKind int
@@ -791,14 +836,18 @@ func (a *app) classifyDrop(paths []string) (files, folders []string) {
 
 // uploadPaths 把已经分好类的本地路径上传到远程 dir。
 func (a *app) uploadPaths(t *tab, dir string, files, folders []string) {
+	a.uploadPathsOwned(t, dir, files, folders, nil, "")
+}
+
+func (a *app) uploadPathsOwned(t *tab, dir string, files, folders []string, owner *sshconn.FileOwner, targetUser string) {
 	if !slices.Contains(a.tabs, t) || t.files == nil || dir == "" {
 		return
 	}
 	for _, local := range files {
-		a.uploadTo(t, local, path.Join(dir, filepath.Base(local)))
+		a.uploadToOwned(t, local, path.Join(dir, filepath.Base(local)), owner, targetUser)
 	}
 	for _, folder := range folders {
-		a.planFolderUpload(t, folder, dir)
+		a.planFolderUploadOwned(t, folder, dir, owner, targetUser)
 	}
 }
 
@@ -811,9 +860,306 @@ func (a *app) uploadInto(t *tab, dir string, paths []string) {
 	a.uploadPaths(t, dir, files, folders)
 }
 
-// uploadDropped 把拖到终端上的文件和文件夹用 SFTP 传到终端的当前目录（shell 通过 OSC 7 上报的目录）。
-// 没拿到当前目录时（服务器的 shell 没有上报）传到主目录，并告诉用户。传输进度在文件抽屉里，所以打开它。
-// 文件夹见 planFolderUpload：远端已有同名文件夹时合并，有同名文件时问一次。
+type remoteUserInfo struct {
+	Home   string
+	UID    int
+	GID    int
+	HasIDs bool
+}
+
+// parsePasswdEntry 从 /etc/passwd 单行或多行内容里解析指定用户的主目录与 UID/GID。
+func parsePasswdEntry(data []byte, user string) (remoteUserInfo, bool) {
+	if !isValidPromptUser(user) {
+		return remoteUserInfo{}, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) >= 6 && fields[0] == user && strings.HasPrefix(fields[5], "/") {
+			info := remoteUserInfo{Home: path.Clean(fields[5])}
+			if uid, uErr := strconv.Atoi(fields[2]); uErr == nil && uid >= 0 {
+				if gid, gErr := strconv.Atoi(fields[3]); gErr == nil && gid >= 0 {
+					info.UID = uid
+					info.GID = gid
+					info.HasIDs = true
+				}
+			}
+			return info, true
+		}
+	}
+	return remoteUserInfo{}, false
+}
+
+// parsePasswdHome 从 /etc/passwd 内容里解析指定用户的主目录。
+func parsePasswdHome(data []byte, user string) string {
+	info, ok := parsePasswdEntry(data, user)
+	if !ok {
+		return ""
+	}
+	return info.Home
+}
+
+// resolveRemoteUserInfo 查询远程指定用户的主目录与 UID/GID（支持 su / sudo -i 切换用户后的 ~ 展开与属主对齐）。
+func resolveRemoteUserInfo(ctx context.Context, client *sshconn.Client, files *sshconn.Files, user string) (remoteUserInfo, error) {
+	if !isValidPromptUser(user) {
+		return remoteUserInfo{}, fmt.Errorf("无效的远程用户名: %q", user)
+	}
+	if client != nil {
+		// isValidPromptUser 仅允许 [a-zA-Z0-9._-] 且不以 - 开头，拼入 shell 命令是安全的。
+		cmd := fmt.Sprintf("line=$(getent passwd %s 2>/dev/null | head -n 1); if [ -z \"$line\" ]; then line=$(awk -F: -v u=%s '$1==u{print; exit}' /etc/passwd 2>/dev/null); fi; if [ -n \"$line\" ]; then printf 'P:%%s\\n' \"$line\"; else eval \"h=~%s\"; u=$(id -u %s 2>/dev/null); g=$(id -g %s 2>/dev/null); printf 'I:%%s:%%s:%%s\\n' \"$u\" \"$g\" \"$h\"; fi", user, user, user, user, user)
+		res, err := client.ExecContext(ctx, cmd, 4<<10)
+		if err == nil && res.ExitCode == 0 {
+			for _, rawLine := range strings.Split(res.Stdout, "\n") {
+				line := strings.TrimSpace(rawLine)
+				switch {
+				case strings.HasPrefix(line, "P:"):
+					if info, ok := parsePasswdEntry([]byte(strings.TrimPrefix(line, "P:")), user); ok {
+						return info, nil
+					}
+				case strings.HasPrefix(line, "I:"):
+					parts := strings.SplitN(strings.TrimPrefix(line, "I:"), ":", 3)
+					if len(parts) == 3 && strings.HasPrefix(parts[2], "/") {
+						info := remoteUserInfo{Home: path.Clean(parts[2])}
+						if uid, uErr := strconv.Atoi(parts[0]); uErr == nil && uid >= 0 {
+							if gid, gErr := strconv.Atoi(parts[1]); gErr == nil && gid >= 0 {
+								info.UID = uid
+								info.GID = gid
+								info.HasIDs = true
+							}
+						}
+						return info, nil
+					}
+				}
+			}
+		}
+	}
+	if files != nil {
+		if data, _, err := files.ReadLimited(ctx, "/etc/passwd", 512<<10); err == nil {
+			if info, ok := parsePasswdEntry(data, user); ok {
+				return info, nil
+			}
+		}
+		candidates := []string{"/home/" + user, "/Users/" + user}
+		if user == "root" {
+			candidates = []string{"/root", "/var/root"}
+		}
+		for _, cand := range candidates {
+			if _, _, mode, err := files.Stat(cand); err == nil && mode.IsDir() {
+				return remoteUserInfo{Home: cand}, nil
+			}
+		}
+	}
+	return remoteUserInfo{}, fmt.Errorf("无法确定用户 %s 的主目录", user)
+}
+
+func joinRemoteHome(home, sub string) string {
+	home = path.Clean(home)
+	if sub == "" {
+		return home
+	}
+	return path.Join(home, sub)
+}
+
+// resolveUploadTarget 根据终端追踪到的当前用户与目录解析拖放上传的目标绝对路径及目标用户信息。
+func resolveUploadTarget(
+	ctx context.Context,
+	client *sshconn.Client,
+	remote *sshconn.Files,
+	loginUser, liveUser, liveDir string,
+	cachedInfo remoteUserInfo,
+	lookupUser func(context.Context, *sshconn.Client, *sshconn.Files, string) (remoteUserInfo, error),
+) (dir string, resolvedInfo remoteUserInfo, fallback bool, err error) {
+	if lookupUser == nil {
+		lookupUser = resolveRemoteUserInfo
+	}
+	switched := liveUser != "" && (loginUser == "" || liveUser != loginUser)
+	ensureSwitchedInfo := func() (remoteUserInfo, error) {
+		info := cachedInfo
+		if strings.HasPrefix(info.Home, "/") && info.HasIDs {
+			return info, nil
+		}
+		looked, lookErr := lookupUser(ctx, client, remote, liveUser)
+		if lookErr != nil {
+			if strings.HasPrefix(info.Home, "/") {
+				return info, nil
+			}
+			return remoteUserInfo{}, lookErr
+		}
+		if info.Home == "" {
+			info.Home = looked.Home
+		}
+		if !info.HasIDs && looked.HasIDs {
+			info.UID, info.GID, info.HasIDs = looked.UID, looked.GID, true
+		}
+		return info, nil
+	}
+
+	if strings.HasPrefix(liveDir, "/") {
+		if switched {
+			info, _ := ensureSwitchedInfo()
+			return path.Clean(liveDir), info, false, nil
+		}
+		return path.Clean(liveDir), remoteUserInfo{}, false, nil
+	}
+	if liveDir == "~" || strings.HasPrefix(liveDir, "~/") {
+		sub := strings.TrimPrefix(strings.TrimPrefix(liveDir, "~"), "/")
+		if !switched {
+			home, homeErr := remote.Home()
+			if homeErr != nil {
+				return "", remoteUserInfo{}, false, homeErr
+			}
+			info := cachedInfo
+			info.Home = path.Clean(home)
+			return joinRemoteHome(home, sub), info, false, nil
+		}
+		info, infoErr := ensureSwitchedInfo()
+		if infoErr != nil || !strings.HasPrefix(info.Home, "/") {
+			return "", remoteUserInfo{}, false, fmt.Errorf("无法确定用户 %s 的主目录，请先切换到绝对路径后再上传", liveUser)
+		}
+		return joinRemoteHome(info.Home, sub), info, false, nil
+	}
+	if switched {
+		if info, infoErr := ensureSwitchedInfo(); infoErr == nil && strings.HasPrefix(info.Home, "/") {
+			return path.Clean(info.Home), info, true, nil
+		}
+	}
+	home, homeErr := remote.Home()
+	if homeErr != nil {
+		return "", remoteUserInfo{}, false, homeErr
+	}
+	return path.Clean(home), remoteUserInfo{}, true, nil
+}
+
+// previewRemoteDir 在主线程上把终端提示符目录格式化为可预览的上传目标路径（不做网络 I/O）。
+func (a *app) previewRemoteDir(t *tab, user, dir string) string {
+	if strings.HasPrefix(dir, "/") {
+		return path.Clean(dir)
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		sub := strings.TrimPrefix(strings.TrimPrefix(dir, "~"), "/")
+		if user != "" && t.userInfos != nil && t.userInfos[user].Home != "" {
+			return joinRemoteHome(t.userInfos[user].Home, sub)
+		}
+		loginUser := strings.TrimSpace(t.host.User)
+		if (user == "" || user == loginUser) && t.remoteHome != "" {
+			return joinRemoteHome(t.remoteHome, sub)
+		}
+		if user != "" && loginUser != "" && user != loginUser {
+			if sub == "" {
+				return "~" + user
+			}
+			return "~" + user + "/" + sub
+		}
+		return dir
+	}
+	return ""
+}
+
+func hasActiveTransfer(t *tab) bool {
+	if t == nil {
+		return false
+	}
+	for _, tr := range t.transfers {
+		if !tr.done.Load() {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) hasPendingForTab(t *tab) bool {
+	if t == nil {
+		return false
+	}
+	if t.scanningFolders > 0 {
+		return true
+	}
+	for _, u := range a.pendingUploads {
+		if u.tab == t {
+			return true
+		}
+	}
+	for _, d := range a.pendingDownloads {
+		if d.tab == t {
+			return true
+		}
+	}
+	for _, f := range a.pendingFolders {
+		if f.tab == t {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) cancelFloatingQueueTimer(t *tab) {
+	if t == nil {
+		return
+	}
+	t.transferHideGen++
+	if t.transferHideTimer != nil {
+		t.transferHideTimer.Stop()
+		t.transferHideTimer = nil
+	}
+}
+
+func (a *app) noteTransferStarted(t *tab) {
+	if t == nil {
+		return
+	}
+	a.cancelFloatingQueueTimer(t)
+	if !t.filesOpen {
+		t.floatingQueue = true
+	}
+}
+
+func (a *app) maybeScheduleHideFloatingQueue(t *tab) {
+	if t == nil || !t.floatingQueue || t.filesOpen {
+		return
+	}
+	if len(t.transfers) == 0 {
+		t.floatingQueue = false
+		a.cancelFloatingQueueTimer(t)
+		return
+	}
+	if a.hasPendingForTab(t) {
+		a.cancelFloatingQueueTimer(t)
+		return
+	}
+	for _, tr := range t.transfers {
+		if !tr.done.Load() || tr.err != "" {
+			a.cancelFloatingQueueTimer(t)
+			return
+		}
+	}
+	a.cancelFloatingQueueTimer(t)
+	gen := t.transferHideGen
+	delay := a.floatingQueueHideDelay()
+	t.transferHideTimer = time.AfterFunc(delay, func() {
+		if a.post == nil {
+			return
+		}
+		a.post(func() {
+			if gen != t.transferHideGen || !slices.Contains(a.tabs, t) || !t.floatingQueue || t.filesOpen || a.hasPendingForTab(t) {
+				return
+			}
+			for _, tr := range t.transfers {
+				if !tr.done.Load() || tr.err != "" {
+					return
+				}
+			}
+			t.transferHideTimer = nil
+			a.clearFinishedTransfers(t)
+			t.floatingQueue = false
+		})
+	})
+}
+
+// uploadDropped 把拖到终端上的文件和文件夹用 SFTP 传到终端的当前目录（优先 OSC 7，其次 OSC 0 / 提示符追踪；
+// 若通过 su 切换过用户，会按当前用户的主目录展开 ~ 并对齐文件属主）。传输期间不自动展开文件抽屉，只在终端右下角显示传输队列。
 func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 	if t.local || t.client == nil {
 		return
@@ -822,34 +1168,59 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 	if len(files) == 0 && len(folders) == 0 {
 		return
 	}
-	cwd := ""
-	if p != nil && p.term != nil {
-		cwd = p.term.Dir()
+	liveUser, liveDir := paneUserAndDir(t, p)
+	loginUser := strings.TrimSpace(t.host.User)
+	switched := liveUser != "" && (loginUser == "" || liveUser != loginUser)
+	var cachedInfo remoteUserInfo
+	if liveUser != "" && t.userInfos != nil {
+		cachedInfo = t.userInfos[liveUser]
 	}
-	t.filesOpen = true
-	t.lastDrawer = "files"
-	if a.current() == t {
-		a.filesOpen = true
-		a.lastDrawer = "files"
+	targetUser := ""
+	if switched {
+		targetUser = liveUser
 	}
+	client := t.client
+	lookupUser := a.resolveUserInfo
 	start := func() {
 		if !slices.Contains(a.tabs, t) || t.files == nil {
 			return
 		}
-		if cwd != "" {
-			a.uploadPaths(t, cwd, files, folders)
+		if strings.HasPrefix(liveDir, "/") && (!switched || cachedInfo.HasIDs) {
+			var owner *sshconn.FileOwner
+			if switched && cachedInfo.HasIDs {
+				owner = &sshconn.FileOwner{UID: cachedInfo.UID, GID: cachedInfo.GID}
+			}
+			a.uploadPathsOwned(t, path.Clean(liveDir), files, folders, owner, targetUser)
 			return
 		}
 		remote := t.files
 		go func() {
-			home, err := remote.Home()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			dir, resolvedInfo, fallback, err := resolveUploadTarget(ctx, client, remote, loginUser, liveUser, liveDir, cachedInfo, lookupUser)
 			a.post(func() {
-				if err != nil {
-					a.toast(ui.Toast{Title: locales.FileCannotUpload(), Description: transferReason(err), Type: "error"})
+				if !slices.Contains(a.tabs, t) || t.files == nil {
 					return
 				}
-				a.toast(ui.Toast{Title: locales.FileUploadedToHome(), Description: locales.FileNoCwd(home)})
-				a.uploadPaths(t, home, files, folders)
+				if liveUser != "" && (resolvedInfo.Home != "" || resolvedInfo.HasIDs) {
+					if t.userInfos == nil {
+						t.userInfos = map[string]remoteUserInfo{}
+					}
+					t.userInfos[liveUser] = resolvedInfo
+				}
+				if err != nil {
+					a.toast(ui.Toast{Title: locales.FileCannotUpload(), Description: transferReason(err), Type: "error"})
+					a.maybeScheduleHideFloatingQueue(t)
+					return
+				}
+				if fallback {
+					a.toast(ui.Toast{Title: locales.FileUploadedToHome(), Description: locales.FileNoCwd(dir)})
+				}
+				var owner *sshconn.FileOwner
+				if switched && resolvedInfo.HasIDs {
+					owner = &sshconn.FileOwner{UID: resolvedInfo.UID, GID: resolvedInfo.GID}
+				}
+				a.uploadPathsOwned(t, dir, files, folders, owner, targetUser)
 			})
 		}()
 	}
@@ -857,6 +1228,7 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 		start()
 		return
 	}
+	t.filesError = ""
 	t.filesWaiting = append(t.filesWaiting, start)
 	a.ensureFiles(t)
 }

@@ -1074,10 +1074,7 @@ func (a *app) drawerBudget(c *ui.Context, hasFiles, hasAI bool) (filesW, filesMa
 		const minAI float32 = 320
 		if totalBudget < minFiles+minAI {
 			if a.lastDrawer == "ai" {
-				a.filesOpen = false
-				if cur := a.current(); cur != nil {
-					cur.filesOpen = false
-				}
+				a.setFilesOpen(a.current(), false)
 				hasFiles = false
 			} else {
 				a.ai.open = false
@@ -1153,6 +1150,9 @@ func (a *app) workspace(c *ui.Context, colors design.Colors) {
 					})
 				}
 				a.paneView(c, colors, t, t.root)
+				if !hasFiles && t.floatingQueue && len(t.transfers) > 0 {
+					a.floatingTransferQueue(c, colors, t, aiW, hasAI)
+				}
 			})
 			if hasFiles {
 				a.filesDrawer(c, colors, t, filesW, filesMaxW)
@@ -1601,8 +1601,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 			}
 			ui.Spacer(c)
 			iconButton(c.Key("filesClose"), colors, "x", "关闭文件抽屉", func() {
-				a.filesOpen = false
-				t.filesOpen = false
+				a.setFilesOpen(t, false)
 			}).
 				Tooltip("关闭文件抽屉（" + shortcutText("J") + "）")
 		})
@@ -1617,6 +1616,25 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 			ui.Divider(c)
 			a.transferQueueView(c, colors, t)
 		}
+	})
+}
+
+// floatingTransferQueue 在文件抽屉未展开时，于终端右下角悬浮展示当前传输队列。
+func (a *app) floatingTransferQueue(c *ui.Context, colors design.Colors, t *tab, aiW float32, hasAI bool) {
+	windowW, _ := c.Size()
+	var sideW float32
+	if a.sidebarOpen {
+		sideW = a.effectiveSidebarWidth()
+	}
+	var aiUsed float32
+	if hasAI {
+		aiUsed = aiW
+	}
+	availW := max(float32(240), windowW-sideW-aiUsed-24)
+	queueW := min(float32(340), max(float32(220), availW-24))
+	card := raised(ui.Column(c.Key("floatingTransfers")).Absolute().Right(14).Bottom(14).Width(queueW).Clip(), colors, design.RadiusCard)
+	card.Transition(design.SlideIn(18)).Children(func() {
+		a.transferQueueView(c, colors, t)
 	})
 }
 
@@ -1917,8 +1935,9 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 		}
 		over = over || layer.FileDragOver()
 		target := locales.ViewTerminalDirectory()
-		if dir := p.term.Dir(); dir != "" {
-			target = shortPath(dir)
+		user, dir := paneUserAndDir(t, p)
+		if resolved := a.previewRemoteDir(t, user, dir); resolved != "" {
+			target = shortPath(resolved)
 		}
 		layer.Children(func() {
 			ui.Column(c).Gap(4).AlignItems(ui.Center).Padding(12, 18).Radius(design.RadiusRow).Background(colors.Card).Children(func() {

@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"path"
 	"strings"
 	"sync"
 )
@@ -118,9 +119,10 @@ func (pt *promptTracker) feed(data []byte) (user, dir string, changed bool) {
 	}
 
 	if len(pt.lineBuf) > 0 {
-		if u, d, _, ok := parsePromptLine(string(pt.lineBuf)); ok {
+		if u, d, isAbsOrHome, ok := parsePromptLine(string(pt.lineBuf)); ok {
 			pt.user = u
-			if d != "" && !pt.oscDirThisPrompt && (!pt.oscTitleThisPrompt || (strings.HasPrefix(d, "/") && !strings.HasPrefix(pt.dir, "/"))) {
+			keepFull := !isAbsOrHome && u == prevUser && isResolvableRemoteDir(pt.dir) && path.Base(pt.dir) == d
+			if d != "" && !keepFull && !pt.oscDirThisPrompt && (!pt.oscTitleThisPrompt || (strings.HasPrefix(d, "/") && !strings.HasPrefix(pt.dir, "/"))) {
 				pt.dir = d
 			}
 		}
@@ -284,6 +286,10 @@ func stripEnvPrefix(s string) string {
 func isExplicitPath(p string) bool {
 	return p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "/") ||
 		strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../")
+}
+
+func isResolvableRemoteDir(dir string) bool {
+	return strings.HasPrefix(dir, "/") || dir == "~" || strings.HasPrefix(dir, "~/")
 }
 
 func isValidPromptUser(u string) bool {

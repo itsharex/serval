@@ -163,24 +163,44 @@ func (f *Files) download(ctx context.Context, remotePath, localPath string, prog
 	return nil
 }
 
+// FileOwner 指定远端文件或新建目录的属主与属组（UID / GID）。
+type FileOwner struct {
+	UID int
+	GID int
+}
+
 // Upload 把本地文件流式上传到 remotePath。
 //
 // 先写到服务器上的 remotePath.serval-part，完成后再改名（覆盖同名文件）：
 // 中途失败或取消时删除这个临时文件，服务器上不会留下写了一半的文件。
-func (f *Files) Upload(ctx context.Context, localPath, remotePath string, progress func(transferred, total int64)) (err error) {
+func (f *Files) Upload(ctx context.Context, localPath, remotePath string, progress func(transferred, total int64)) error {
+	_, err := f.UploadOwned(ctx, localPath, remotePath, nil, progress)
+	return err
+}
+
+// UploadOwned 与 Upload 相同，但在覆盖同名普通文件时尽量保留原有权限，并在 owner 非空时
+// 尝试在改名落盘前将临时文件的属主/属组设置为 owner。若无权限修改属主（例如非 root 登录），
+// 文件仍会正常上传，并通过 chownErr 返回改属主失败原因。
+func (f *Files) UploadOwned(ctx context.Context, localPath, remotePath string, owner *FileOwner, progress func(transferred, total int64)) (chownErr, err error) {
 	src, err := os.Open(localPath)
 	if err != nil {
-		return fmt.Errorf("打开本地文件失败: %w", err)
+		return nil, fmt.Errorf("打开本地文件失败: %w", err)
 	}
 	defer src.Close()
 	stat, err := src.Stat()
 	if err != nil {
-		return fmt.Errorf("获取本地文件信息失败: %w", err)
+		return nil, fmt.Errorf("获取本地文件信息失败: %w", err)
+	}
+	var prevPerm fs.FileMode
+	var hasPrevPerm bool
+	if existing, lstatErr := f.client.Lstat(remotePath); lstatErr == nil && existing.Mode().IsRegular() {
+		prevPerm = existing.Mode().Perm()
+		hasPrevPerm = true
 	}
 	part := remotePath + ".serval-part"
 	dst, err := f.client.Create(part)
 	if err != nil {
-		return fmt.Errorf("创建远程文件失败: %w", err)
+		return nil, fmt.Errorf("创建远程文件失败: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -189,19 +209,25 @@ func (f *Files) Upload(ctx context.Context, localPath, remotePath string, progre
 		}
 	}()
 	if err = copyWithProgress(ctx, dst, src, stat.Size(), progress, "本地文件", "远程文件"); err != nil {
-		return err
+		return nil, err
 	}
 	if err = dst.Close(); err != nil {
-		return fmt.Errorf("写入远程文件失败: %w", err)
+		return nil, fmt.Errorf("写入远程文件失败: %w", err)
+	}
+	if owner != nil {
+		chownErr = f.client.Chown(part, owner.UID, owner.GID)
+	}
+	if hasPrevPerm {
+		_ = f.client.Chmod(part, prevPerm)
 	}
 	if err = f.client.PosixRename(part, remotePath); err != nil {
 		// 不支持 posix-rename 扩展的服务器：先删除旧文件再改名。
 		f.client.Remove(remotePath)
 		if err = f.client.Rename(part, remotePath); err != nil {
-			return fmt.Errorf("保存远程文件失败: %w", err)
+			return chownErr, fmt.Errorf("保存远程文件失败: %w", err)
 		}
 	}
-	return nil
+	return chownErr, nil
 }
 
 // Exists 报告远程路径是否已经存在。
@@ -224,6 +250,49 @@ func (f *Files) Mkdir(remotePath string) error {
 // MkdirAll 在远程创建目录及缺少的上级目录，目录已存在时不报错。
 func (f *Files) MkdirAll(remotePath string) error {
 	return f.client.MkdirAll(remotePath)
+}
+
+// MkdirAllOwned 创建目录及缺少的上级目录，并对新建的每一级目录尝试设置属主/属组。
+// 已存在的上级目录保持原有属主不变。
+func (f *Files) MkdirAllOwned(remotePath string, owner *FileOwner) (chownErr, err error) {
+	if owner == nil {
+		return nil, f.client.MkdirAll(remotePath)
+	}
+	cleaned := path.Clean(remotePath)
+	if cleaned == "" || cleaned == "." || cleaned == "/" {
+		return nil, nil
+	}
+	var missing []string
+	cur := cleaned
+	for cur != "/" && cur != "." && cur != "" {
+		if _, statErr := f.client.Lstat(cur); statErr == nil {
+			break
+		}
+		missing = append(missing, cur)
+		parent := path.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		dir := missing[i]
+		if mkErr := f.client.Mkdir(dir); mkErr != nil {
+			if info, statErr := f.client.Stat(dir); statErr == nil && info.IsDir() {
+				continue
+			}
+			return chownErr, mkErr
+		}
+		if cErr := f.client.Chown(dir, owner.UID, owner.GID); cErr != nil && chownErr == nil {
+			chownErr = cErr
+		}
+	}
+	return chownErr, nil
+}
+
+// Chown 修改远程文件或目录的属主与属组。
+func (f *Files) Chown(remotePath string, uid, gid int) error {
+	return f.client.Chown(remotePath, uid, gid)
 }
 
 // Rename 重命名或移动远程文件/目录。

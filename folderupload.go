@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -27,6 +29,8 @@ type folderPlan struct {
 	localRoot  string
 	remoteRoot string
 	name       string
+	owner      *sshconn.FileOwner
+	targetUser string
 
 	dirs      []string // 相对路径，上级目录在前
 	files     []folderFile
@@ -41,13 +45,19 @@ type folderFile struct {
 
 // planFolderUpload 在后台扫描本地文件夹、检查远端，结果回到主线程：有冲突时先问用户，没有就直接上传。
 func (a *app) planFolderUpload(t *tab, localRoot, remoteParent string) {
+	a.planFolderUploadOwned(t, localRoot, remoteParent, nil, "")
+}
+
+func (a *app) planFolderUploadOwned(t *tab, localRoot, remoteParent string, owner *sshconn.FileOwner, targetUser string) {
 	files := t.files
 	name := filepath.Base(localRoot)
+	loginUser := strings.TrimSpace(t.host.User)
 	t.scanningFolders++
 	go func() {
 		plan, err := scanFolder(localRoot)
 		if err == nil {
 			plan.tab, plan.name = t, name
+			plan.owner, plan.targetUser = owner, targetUser
 			plan.remoteRoot = path.Join(remoteParent, name)
 			err = plan.checkRemote(files)
 		}
@@ -59,11 +69,17 @@ func (a *app) planFolderUpload(t *tab, localRoot, remoteParent string) {
 				return
 			}
 			if err != nil {
-				a.toast(ui.Toast{Title: locales.FolderCannotUploadNamed(name), Description: transferReason(err), Type: "error"})
+				reason := transferReason(err)
+				if errors.Is(err, os.ErrPermission) && targetUser != "" && loginUser != "" && targetUser != loginUser {
+					reason = fmt.Sprintf("没有权限（SFTP 以登录用户 %s 运行，无法写入 %s 的目录；可用 rz 上传或以 %s 登录）", loginUser, targetUser, targetUser)
+				}
+				a.toast(ui.Toast{Title: locales.FolderCannotUploadNamed(name), Description: reason, Type: "error"})
+				a.maybeScheduleHideFloatingQueue(t)
 				return
 			}
 			if len(plan.files) == 0 && len(plan.dirs) == 0 {
 				a.toast(ui.Toast{Title: locales.FolderNothingToUpload(name)})
+				a.maybeScheduleHideFloatingQueue(t)
 				return
 			}
 			if len(plan.conflicts) > 0 {
@@ -195,6 +211,8 @@ func (a *app) folderConflictDialog(c *ui.Context) {
 		a.runFolderUpload(plan, false)
 	case 1:
 		a.runFolderUpload(plan, true)
+	default:
+		a.maybeScheduleHideFloatingQueue(plan.tab)
 	}
 }
 
@@ -216,13 +234,15 @@ func (a *app) runFolderUpload(plan *folderPlan, skipExisting bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.nextID++
 	tr := &fileTransfer{id: a.nextID, kind: transferUpload, remotePath: plan.remoteRoot, localPath: plan.localRoot,
-		fileName: plan.name, folder: true, cancel: cancel}
+		fileName: plan.name, folder: true, owner: plan.owner, targetUser: plan.targetUser, cancel: cancel}
 	tr.total.Store(total)
 	tr.filesTotal.Store(int64(len(todo)))
 	t.transfers = append(t.transfers, tr)
+	a.noteTransferStarted(t)
 	files := t.files
+	loginUser := strings.TrimSpace(t.host.User)
 	go func() {
-		err := a.uploadFolderFiles(ctx, files, plan, todo, tr)
+		chownErr, err := a.uploadFolderFiles(ctx, files, plan, todo, tr)
 		a.post(func() {
 			defer cancel()
 			tr.done.Store(true)
@@ -232,7 +252,11 @@ func (a *app) runFolderUpload(plan *folderPlan, skipExisting bool) {
 				tr.err = locales.FileCancelled()
 				a.toast(ui.Toast{Title: locales.FolderUploadCancelledNamed(plan.name), Description: locales.FolderUploadKept(int(done))})
 			case err != nil:
-				tr.err = transferReason(err)
+				reason := transferReason(err)
+				if errors.Is(err, os.ErrPermission) && plan.targetUser != "" && loginUser != "" && plan.targetUser != loginUser {
+					reason = fmt.Sprintf("没有权限（SFTP 以登录用户 %s 运行，无法写入 %s 的目录；可用 rz 上传或以 %s 登录）", loginUser, plan.targetUser, plan.targetUser)
+				}
+				tr.err = reason
 				a.toast(ui.Toast{Title: locales.FolderUploadFailedNamed(plan.name), Description: tr.err, Type: "error"})
 			default:
 				existing, skipped := len(plan.conflicts), len(plan.skipped)
@@ -247,26 +271,34 @@ func (a *app) runFolderUpload(plan *folderPlan, skipExisting bool) {
 				default:
 					desc = locales.FolderUploadedFiles(int(done))
 				}
+				if chownErr != nil && plan.targetUser != "" && loginUser != "" && plan.targetUser != loginUser {
+					desc += fmt.Sprintf("（但 SFTP 以登录用户 %s 运行，未能将属主改为 %s。）", loginUser, plan.targetUser)
+				}
 				a.toast(ui.Toast{Title: locales.FolderUploadedNamed(plan.name), Description: desc})
 			}
 			if slices.Contains(a.tabs, t) {
 				a.openDir(t, t.dir)
 			}
+			a.maybeScheduleHideFloatingQueue(t)
 		})
 	}()
 }
 
 // uploadFolderFiles 建好目录后逐个上传文件。任何一个失败就停止并报告，不跳过错误继续传。
-func (a *app) uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPlan, todo []folderFile, tr *fileTransfer) error {
-	if err := files.MkdirAll(plan.remoteRoot); err != nil {
-		return err
+func (a *app) uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPlan, todo []folderFile, tr *fileTransfer) (chownErr, err error) {
+	if cErr, mkErr := files.MkdirAllOwned(plan.remoteRoot, plan.owner); mkErr != nil {
+		return cErr, mkErr
+	} else if cErr != nil && chownErr == nil {
+		chownErr = cErr
 	}
 	for _, dir := range plan.dirs {
 		if err := ctx.Err(); err != nil {
-			return err
+			return chownErr, err
 		}
-		if err := files.MkdirAll(path.Join(plan.remoteRoot, dir)); err != nil {
-			return err
+		if cErr, mkErr := files.MkdirAllOwned(path.Join(plan.remoteRoot, dir), plan.owner); mkErr != nil {
+			return chownErr, mkErr
+		} else if cErr != nil && chownErr == nil {
+			chownErr = cErr
 		}
 	}
 	var finished int64
@@ -274,10 +306,10 @@ func (a *app) uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan 
 	var lastWake atomic.Int64
 	for _, f := range todo {
 		if err := ctx.Err(); err != nil {
-			return err
+			return chownErr, err
 		}
 		local := filepath.Join(plan.localRoot, filepath.FromSlash(f.rel))
-		err := files.Upload(ctx, local, path.Join(plan.remoteRoot, f.rel), func(transferred, _ int64) {
+		cErr, upErr := files.UploadOwned(ctx, local, path.Join(plan.remoteRoot, f.rel), plan.owner, func(transferred, _ int64) {
 			sent := finished + transferred
 			tr.transferred.Store(sent)
 			if dur := time.Since(lastTime); dur >= 500*time.Millisecond {
@@ -286,16 +318,22 @@ func (a *app) uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan 
 			}
 			a.wakeUI(&lastWake, 100*time.Millisecond)
 		})
-		if err != nil {
+		if cErr != nil && chownErr == nil {
+			chownErr = cErr
+		}
+		if upErr != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return chownErr, ctx.Err()
 			}
-			return fmt.Errorf("%s", locales.FolderUploadFileFailed(f.rel, transferReason(err)))
+			if errors.Is(upErr, os.ErrPermission) {
+				return chownErr, fmt.Errorf("%s：%w", f.rel, upErr)
+			}
+			return chownErr, fmt.Errorf("%s", locales.FolderUploadFileFailed(f.rel, transferReason(upErr)))
 		}
 		finished += f.size
 		tr.transferred.Store(finished)
 		tr.filesDone.Add(1)
 		a.wakeUI(&lastWake, 100*time.Millisecond)
 	}
-	return nil
+	return chownErr, nil
 }
