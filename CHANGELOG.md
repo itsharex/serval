@@ -2,6 +2,16 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.5] - 2026-11-25
+
+### Fixed
+
+- **Terminal Drag-and-Drop Upload Directory & User Ownership (`files.go`, `folderupload.go`, `promptstate.go`, `core/sshconn/sftp.go`, `app.go`)**: Resolved drop-upload targets via `paneUserAndDir` (supporting OSC 0 and prompt-tracked paths without downgrading full paths to basenames), resolved the switched user's remote `(Home, UID, GID)` after `su`/`sudo` so `~` expands to the active terminal user's home, preserved existing file permissions on overwrite, and applied `Chown` to uploaded files and newly created directories when permitted.
+
+### Changed
+
+- **Non-Intrusive Floating Transfer Queue (`view.go`, `files.go`, `app.go`)**: Terminal drag-and-drop uploads no longer auto-open the SFTP drawer; instead, a compact floating transfer queue appears at the bottom-right of the terminal and automatically dismisses after all transfers succeed (staying visible on errors/cancellations for retry).
+
 ## [0.6.4] - 2026-11-19
 
 ### Changed
