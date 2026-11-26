@@ -2,6 +2,12 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.7] - 2026-11-26
+
+### Fixed
+
+- **Windows Portable Build Missing `ghostty-vt.dll` (`.github/workflows/release.yml`, `.github/release-notes.md`, `app.go`, `locales/`, `terminal_error_test.go`)**: Packaged all entries from `.mygo-files` (including `ghostty-vt.dll`) into the Windows portable zip with post-archive verification, added portable extraction guidance in release notes, and replaced raw missing-library errors with localized actionable guidance.
+
 ## [0.6.6] - 2026-11-25
 
 ### Fixed

@@ -1,5 +1,5 @@
-VIProductVersion "0.6.6.0"
+VIProductVersion "0.6.7.0"
 VIAddVersionKey "ProductName" "Serval"
 VIAddVersionKey "FileDescription" "Serval SSH Client"
-VIAddVersionKey "FileVersion" "0.6.6"
-VIAddVersionKey "ProductVersion" "0.6.6"
+VIAddVersionKey "FileVersion" "0.6.7"
+VIAddVersionKey "ProductVersion" "0.6.7"

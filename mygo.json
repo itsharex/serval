@@ -2,7 +2,7 @@
   "name": "Serval",
   "slug": "serval",
   "identifier": "io.github.jhzhang09.serval",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "out": "build",
   "macos": {
     "minimumSystemVersion": "13.0"
