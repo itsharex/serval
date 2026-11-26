@@ -20,6 +20,7 @@
   "appSelectedKeyDeleted": "The private key selected for {name} was deleted. Edit this host and choose another private key.",
   "appSelectedProxyDeleted": "The proxy selected for {name} was deleted. Edit this host and choose another proxy.",
   "appSessionEnded": "The session on {name} has ended",
+  "appTerminalMissingLibrary": "missing terminal runtime library ({name}). Extract all files from the archive into the same folder as Serval, or reinstall the app",
   "appTerminalStartFailed": "Couldn't start the terminal: {reason}",
   "appTransferChannelFailed": "Couldn't open the file transfer channel: {reason}",
   "appUploadFailed": "Couldn't upload",

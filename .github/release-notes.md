@@ -14,5 +14,5 @@ Verify downloads with `SHA256SUMS.txt`, or with the build provenance attestation
 > **macOS:** the app is ad-hoc signed, not notarized. Installing via Homebrew Cask clears quarantine automatically; if downloading the `.dmg` manually, run `xattr -dr com.apple.quarantine /Applications/Serval.app` once, or choose **System Settings → Privacy & Security → Open Anyway** after the first launch attempt.
 > **macOS：** 应用使用临时签名，尚未经过公证。通过 Homebrew Cask 安装会自动移除隔离属性；若手动下载 `.dmg`，请执行一次 `xattr -dr com.apple.quarantine /Applications/Serval.app`，或在首次尝试打开后到**系统设置 → 隐私与安全性**点击**仍要打开**。
 >
-> **Windows:** the binaries are not code-signed, so SmartScreen may warn; choose **More info → Run anyway**.
-> **Windows：** 程序未做代码签名，SmartScreen 可能提示风险，请选择**更多信息 → 仍要运行**。
+> **Windows:** the binaries are not code-signed, so SmartScreen may warn; choose **More info → Run anyway**. For the portable zip, extract all files before running `Serval.exe` so `ghostty-vt.dll` stays in the same folder.
+> **Windows：** 程序未做代码签名，SmartScreen 可能提示风险，请选择**更多信息 → 仍要运行**。免安装版请先完整解压全部文件后再运行 `Serval.exe`，保持 `ghostty-vt.dll` 与其位于同一目录。

@@ -1058,7 +1058,7 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 		stop()
 		shell.Close()
 		client.Close()
-		a.notice = locales.AppTerminalStartFailed(err.Error())
+		a.notice = locales.AppTerminalStartFailed(friendlyTerminalError(err))
 		return
 	}
 	t.root, t.focus = leaf, leaf
@@ -1096,7 +1096,7 @@ func (a *app) addTabWithConn(h hosts.Host, conn shellConn, closer io.Closer) {
 		if closer != nil {
 			_ = closer.Close()
 		}
-		a.notice = locales.AppTerminalStartFailed(err.Error())
+		a.notice = locales.AppTerminalStartFailed(friendlyTerminalError(err))
 		return
 	}
 	t.root, t.focus = leaf, leaf
@@ -1260,7 +1260,7 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 			s.Close()
 		}
 		client.Close()
-		a.notice = locales.AppTerminalStartFailed(err.Error())
+		a.notice = locales.AppTerminalStartFailed(friendlyTerminalError(err))
 		return
 	}
 	t.root = root
@@ -1361,7 +1361,7 @@ func (a *app) openLocalTerminal() {
 	}
 	pane, err := a.newPane(t, nil)
 	if err != nil {
-		a.notice = locales.AppLocalTerminalStartFailed(err.Error())
+		a.notice = locales.AppLocalTerminalStartFailed(friendlyTerminalError(err))
 		return
 	}
 	t.root = pane
@@ -1639,7 +1639,7 @@ func (a *app) split(t *tab, vertical bool) {
 				if shell != nil {
 					shell.Close()
 				}
-				a.notice = locales.AppTerminalStartFailed(err.Error())
+				a.notice = locales.AppTerminalStartFailed(friendlyTerminalError(err))
 				return
 			}
 			// 叶子节点的指针必须保持不变：它的退出回调捕获了这个指针。
@@ -3004,4 +3004,17 @@ func friendlySerialError(err error, dev string) string {
 	default:
 		return fmt.Sprintf("无法打开串口 %s，请检查设备路径和参数设置", dev)
 	}
+}
+
+func friendlyTerminalError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	s := strings.TrimPrefix(msg, "terminal: ")
+	s = strings.TrimPrefix(s, "ffi: ")
+	if before, _, ok := strings.Cut(s, " is missing from the app"); ok && strings.TrimSpace(before) != "" {
+		return locales.AppTerminalMissingLibrary(strings.TrimSpace(before))
+	}
+	return msg
 }

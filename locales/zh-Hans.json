@@ -20,6 +20,7 @@
   "appSelectedKeyDeleted": "{name} 选用的私钥已经删除，请编辑这台主机，重新选择私钥",
   "appSelectedProxyDeleted": "{name} 选用的代理已经删除，请编辑这台主机，重新选择代理",
   "appSessionEnded": "{name} 的会话已结束",
+  "appTerminalMissingLibrary": "缺少终端运行库（{name}），请完整解压安装包并保持该文件与程序在同一目录，或重新安装 Serval",
   "appTerminalStartFailed": "启动终端失败: {reason}",
   "appTransferChannelFailed": "打不开文件传输通道：{reason}",
   "appUploadFailed": "无法上传",

@@ -86,8 +86,37 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
           foreach ($arch in 'amd64', 'arm64') {
-            Compress-Archive -Path "dist/windows-$arch/Serval.exe" -DestinationPath "assets/serval-$env:VERSION-windows-$arch-portable.zip"
+            $dir = "dist/windows-$arch"
+            $manifest = Join-Path $dir '.mygo-files'
+            if (-not (Test-Path -LiteralPath $manifest)) {
+              throw "Missing $manifest"
+            }
+            $entries = @(Get-Content -LiteralPath $manifest | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            if ($entries -notcontains 'Serval.exe' -or $entries -notcontains 'ghostty-vt.dll') {
+              throw "Unexpected $manifest entries: $($entries -join ', ')"
+            }
+            $paths = @($entries | ForEach-Object {
+              $p = Join-Path $dir $_
+              if (-not (Test-Path -LiteralPath $p)) {
+                throw "Missing entry $p listed in $manifest"
+              }
+              $p
+            })
+            $zip = "assets/serval-$env:VERSION-windows-$arch-portable.zip"
+            Compress-Archive -LiteralPath $paths -DestinationPath $zip -Force
+
+            $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $zip))
+            try {
+              $names = @($archive.Entries | ForEach-Object { $_.FullName })
+            } finally {
+              $archive.Dispose()
+            }
+            if ($names -notcontains 'Serval.exe' -or $names -notcontains 'ghostty-vt.dll') {
+              throw "$zip missing required files; found: $($names -join ', ')"
+            }
           }
       - run: ls -l assets
       - uses: actions/upload-artifact@v7

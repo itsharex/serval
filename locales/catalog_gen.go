@@ -246,6 +246,18 @@ func (msgs Messages) AppSessionEnded(name string) string {
 	return Catalog.Format(msgs.locale, "appSessionEnded", map[string]any{"name": name})
 }
 
+// AppTerminalMissingLibrary says "缺少终端运行库（{name}…"
+// in the language the app shows.
+func AppTerminalMissingLibrary(name string) string {
+	return In(i18n.Locale()).AppTerminalMissingLibrary(name)
+}
+
+// AppTerminalMissingLibrary says "缺少终端运行库（{name}…"
+// in the language of msgs.
+func (msgs Messages) AppTerminalMissingLibrary(name string) string {
+	return Catalog.Format(msgs.locale, "appTerminalMissingLibrary", map[string]any{"name": name})
+}
+
 // AppTerminalStartFailed says "启动终端失败: {reason}"
 // in the language the app shows.
 func AppTerminalStartFailed(reason string) string {
