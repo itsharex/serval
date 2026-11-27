@@ -435,3 +435,17 @@ func TestDangerousExecCommandAllowsSafeMultilineBlocksDangerous(t *testing.T) {
 		}
 	}
 }
+
+func TestNewClientLocalEndpointHeaderTimeout(t *testing.T) {
+	localClient := NewClient(Config{BaseURL: "http://localhost:11434/v1", Model: "qwen3:8b"})
+	localTr, ok := localClient.streamClient.Transport.(*http.Transport)
+	if !ok || localTr.ResponseHeaderTimeout < 5*time.Minute {
+		t.Fatalf("本地 Ollama 端点 ResponseHeaderTimeout 应至少 5 分钟，实际=%v", localTr)
+	}
+
+	remoteClient := NewClient(Config{BaseURL: "https://api.openai.com/v1", APIKey: "sk-test"})
+	remoteTr, ok := remoteClient.streamClient.Transport.(*http.Transport)
+	if !ok || remoteTr.ResponseHeaderTimeout != 90*time.Second {
+		t.Fatalf("远程端点 ResponseHeaderTimeout 应为 90s，实际=%v", remoteTr)
+	}
+}

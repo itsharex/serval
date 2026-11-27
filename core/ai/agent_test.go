@@ -594,3 +594,211 @@ func TestStreamChatIdleTimeoutAndRunAgentDeadlineMapsToErrTimeout(t *testing.T) 
 		t.Fatalf("expected RunAgent deadline to map to ErrTimeout, got: %v", runErr)
 	}
 }
+
+func TestRunAgentPreservesOpenRouterReasoningDetails(t *testing.T) {
+	var round atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		n := round.Add(1)
+		switch n {
+		case 1:
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"id\":\"r1\",\"index\":0,\"text\":\"先看\"}]}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"id\":\"r1\",\"index\":0,\"text\":\"磁盘\"},{\"type\":\"reasoning.encrypted\",\"id\":\"r2\",\"index\":1,\"data\":\"enc_blob\"}]}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_or1\",\"type\":\"function\",\"function\":{\"name\":\"ssh_exec\",\"arguments\":\"{\\\"command\\\":\\\"df -h\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		case 2:
+			msgs, _ := req["messages"].([]any)
+			foundRD := false
+			for _, m := range msgs {
+				mm, _ := m.(map[string]any)
+				if mm["role"] == "assistant" {
+					if rd, ok := mm["reasoning_details"].([]any); ok && len(rd) == 2 {
+						first, _ := rd[0].(map[string]any)
+						second, _ := rd[1].(map[string]any)
+						if first["text"] == "先看磁盘" && second["data"] == "enc_blob" {
+							foundRD = true
+						}
+					}
+				}
+			}
+			if !foundRD {
+				http.Error(w, `{"error":{"message":"missing reasoning_details"}}`, http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"OpenRouter 多步成功。\"},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		default:
+			http.Error(w, "unexpected round", http.StatusInternalServerError)
+		}
+	}))
+	defer ts.Close()
+
+	// 通过 URL 模拟 OpenRouter 端点规则
+	c := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-or", Model: "anthropic/claude-3.7-sonnet"})
+	// 测试 prepareMessagesForProvider 对 openrouter.ai 保留、对 api.openai.com/google 剥离
+	res, err := RunAgent(context.Background(), AgentRunConfig{
+		Client:   c,
+		Messages: []Message{{Role: "user", Content: "查磁盘"}},
+		Tools: []ToolDefinition{{
+			Type:     "function",
+			Function: ToolFunction{Name: "ssh_exec", Parameters: json.RawMessage(`{"type":"object"}`)},
+		}},
+		ExecuteTool: func(_ context.Context, call ToolCall) (string, bool) {
+			return "ok", false
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenRouter reasoning_details round-trip failed: %v", err)
+	}
+	if res.FinalText != "OpenRouter 多步成功。" {
+		t.Fatalf("unexpected FinalText: %q", res.FinalText)
+	}
+
+	strippedOpenAI := prepareMessagesForProvider("https://api.openai.com/v1", "gpt-5.4", res.Messages)
+	for _, m := range strippedOpenAI {
+		if len(m.ReasoningDetails) > 0 || m.ReasoningContent != "" {
+			t.Fatalf("OpenAI 官方端点应剥离 reasoning_details/reasoning_content: %+v", m)
+		}
+	}
+	keptOR := prepareMessagesForProvider("https://openrouter.ai/api/v1", "google/gemini-2.5-pro", res.Messages)
+	sawKept := false
+	for _, m := range keptOR {
+		if len(m.ReasoningDetails) > 0 {
+			sawKept = true
+		}
+	}
+	if !sawKept {
+		t.Fatal("OpenRouter 端点多轮历史应保留 reasoning_details")
+	}
+}
+
+func TestRunAgentSeparatesThinkTagsFromWireReasoningContent(t *testing.T) {
+	var round atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		n := round.Add(1)
+		switch n {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "<think>本地模型思考</think>\n准备执行命令",
+						"tool_calls": []map[string]any{
+							{"id": "c_think_1", "type": "function", "function": map[string]string{"name": "host_info", "arguments": "{}"}},
+						},
+					},
+				}},
+			})
+		case 2:
+			msgs, _ := req["messages"].([]any)
+			for _, m := range msgs {
+				mm, _ := m.(map[string]any)
+				if mm["role"] == "assistant" {
+					if rc, ok := mm["reasoning_content"]; ok && rc != "" {
+						t.Fatalf("<think> 标签拆出的思考不应作为 reasoning_content 回传: %v", rc)
+					}
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"role": "assistant", "content": "完成"},
+				}},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-test", Model: "qwen3:8b"})
+	res, err := RunAgent(context.Background(), AgentRunConfig{
+		Client:   c,
+		Messages: []Message{{Role: "user", Content: "检查"}},
+		Tools:    []ToolDefinition{{Type: "function", Function: ToolFunction{Name: "host_info", Parameters: json.RawMessage(`{"type":"object"}`)}}},
+		ExecuteTool: func(_ context.Context, call ToolCall) (string, bool) {
+			return "ok", false
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgent failed: %v", err)
+	}
+	if res.FinalText != "完成" {
+		t.Fatalf("unexpected FinalText: %q", res.FinalText)
+	}
+}
+
+func TestPrepareMessagesStripsToolNameAndNormalizesUnsafeToolCallIDs(t *testing.T) {
+	unsafeLongID := "functions.ssh_exec:" + strings.Repeat("x", 35)
+	msgs := []Message{
+		{Role: "user", Content: "hi"},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{ID: "call_valid_1", Type: "function", Function: ToolCallFunction{Name: "host_info", Arguments: "{}"}},
+				{ID: unsafeLongID, Type: "function", Function: ToolCallFunction{Name: "ssh_exec", Arguments: "{}"}},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_valid_1", Name: "host_info", Content: "ok1"},
+		{Role: "tool", ToolCallID: unsafeLongID, Name: "ssh_exec", Content: "ok2"},
+	}
+	out := prepareMessagesForProvider("https://api.openai.com/v1", "gpt-5.4", msgs)
+	if out[2].Name != "" || out[3].Name != "" {
+		t.Fatalf("tool 消息不应保留非标准 name 字段: %+v", out[2:4])
+	}
+	if out[1].ToolCalls[0].ID != "call_valid_1" || out[2].ToolCallID != "call_valid_1" {
+		t.Fatal("合法 tool_call_id 不应被修改")
+	}
+	remapped := out[1].ToolCalls[1].ID
+	if !isSafeToolCallID(remapped) || out[3].ToolCallID != remapped {
+		t.Fatalf("不合规/超长 tool_call_id 应成对规范映射: tc=%q tool=%q", remapped, out[3].ToolCallID)
+	}
+}
+
+func TestStreamChatResponsesFallbackRetriesOnStaleEOF(t *testing.T) {
+	var respAttempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/chat/completions":
+			http.NotFound(w, r)
+		case "/responses":
+			if respAttempts.Add(1) == 1 {
+				if hj, ok := w.(http.Hijacker); ok {
+					conn, _, err := hj.Hijack()
+					if err == nil {
+						_ = conn.Close()
+						return
+					}
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"output": []map[string]any{{
+					"type":    "message",
+					"role":    "assistant",
+					"content": []map[string]string{{"type": "output_text", "text": "Responses 重试成功"}},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{BaseURL: ts.URL, APIKey: "sk-test", Model: "gpt-5.4"})
+	res, err := c.StreamChat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamChat /responses retry failed: %v", err)
+	}
+	if res.Content != "Responses 重试成功" || respAttempts.Load() != 2 {
+		t.Fatalf("unexpected /responses retry result: content=%q attempts=%d", res.Content, respAttempts.Load())
+	}
+}

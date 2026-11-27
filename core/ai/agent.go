@@ -112,10 +112,11 @@ func (w *usageWire) toUsage() Usage {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			Reasoning        string `json:"reasoning"`
+			Role             string          `json:"role"`
+			Content          string          `json:"content"`
+			ReasoningContent string          `json:"reasoning_content"`
+			Reasoning        string          `json:"reasoning"`
+			ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
 			ToolCalls        []struct {
 				Index        *int            `json:"index"`
 				ID           string          `json:"id"`
@@ -128,10 +129,11 @@ type streamChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 		Message *struct {
-			Role             string     `json:"role"`
-			Content          string     `json:"content"`
-			ReasoningContent string     `json:"reasoning_content"`
-			ToolCalls        []ToolCall `json:"tool_calls"`
+			Role             string          `json:"role"`
+			Content          string          `json:"content"`
+			ReasoningContent string          `json:"reasoning_content"`
+			ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
+			ToolCalls        []ToolCall      `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -144,11 +146,13 @@ type streamChunk struct {
 
 // StreamResult 是单轮流式对话的完整结果。
 type StreamResult struct {
-	Thinking        string
-	ThinkingSeconds int
-	Content         string
-	ToolCalls       []ToolCall
-	Usage           Usage
+	Thinking         string
+	ThinkingSeconds  int
+	ReasoningContent string
+	ReasoningDetails json.RawMessage
+	Content          string
+	ToolCalls        []ToolCall
+	Usage            Usage
 }
 
 // StreamProgress 用于流式增量推送模型当前步的推理与输出快照。
@@ -168,15 +172,46 @@ func isGoogleEndpoint(baseURL, model string) bool {
 		strings.Contains(lowURL, "aiplatform.googleapis.com") {
 		return true
 	}
+	if isOpenRouterEndpoint(baseURL) {
+		return false
+	}
 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "gemini")
 }
 
-// prepareMessagesForProvider 按目标服务商协议清洗历史消息，避免跨模型切换（如 DeepSeek <-> Google）触发 HTTP 400。
+func isOpenAIOfficialEndpoint(baseURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+}
+
+func isOpenRouterEndpoint(baseURL string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(baseURL)), "openrouter.ai")
+}
+
+func isSafeToolCallID(id string) bool {
+	if len(id) == 0 || len(id) > 40 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		ch := id[i]
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// prepareMessagesForProvider 按目标服务商协议清洗历史消息，避免跨模型切换（如 DeepSeek <-> Google / OpenRouter / OpenAI）触发 HTTP 400。
 func prepareMessagesForProvider(baseURL, model string, msgs []Message) []Message {
 	if len(msgs) == 0 {
 		return nil
 	}
 	googleTarget := isGoogleEndpoint(baseURL, model)
+	openAIOfficial := isOpenAIOfficialEndpoint(baseURL)
+	openRouterTarget := isOpenRouterEndpoint(baseURL)
 	lastUserIdx := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
@@ -185,16 +220,61 @@ func prepareMessagesForProvider(baseURL, model string, msgs []Message) []Message
 		}
 	}
 
+	usedIDs := make(map[string]bool)
+	for _, m := range msgs {
+		if isSafeToolCallID(m.ToolCallID) {
+			usedIDs[m.ToolCallID] = true
+		}
+		for _, tc := range m.ToolCalls {
+			if isSafeToolCallID(tc.ID) {
+				usedIDs[tc.ID] = true
+			}
+		}
+	}
+	idMap := make(map[string]string)
+	normSeq := 0
+	remapID := func(raw string) string {
+		if isSafeToolCallID(raw) {
+			return raw
+		}
+		if mapped, ok := idMap[raw]; ok {
+			return mapped
+		}
+		for {
+			normSeq++
+			cand := fmt.Sprintf("call_norm_%d", normSeq)
+			if !usedIDs[cand] {
+				usedIDs[cand] = true
+				idMap[raw] = cand
+				return cand
+			}
+		}
+	}
+
 	out := make([]Message, len(msgs))
 	for i, m := range msgs {
+		if m.Role == "tool" {
+			m.Name = ""
+			if m.ToolCallID != "" {
+				m.ToolCallID = remapID(m.ToolCallID)
+			}
+		}
 		if m.Role == "assistant" {
-			if i < lastUserIdx || googleTarget {
+			if i < lastUserIdx || googleTarget || openAIOfficial {
 				m.ReasoningContent = ""
+			}
+			if googleTarget || openAIOfficial || (i < lastUserIdx && !openRouterTarget) {
+				m.ReasoningDetails = nil
+			} else if len(m.ReasoningDetails) > 0 {
+				m.ReasoningDetails = slices.Clone(m.ReasoningDetails)
 			}
 		}
 		if len(m.ToolCalls) > 0 {
 			tcs := make([]ToolCall, len(m.ToolCalls))
 			for j, tc := range m.ToolCalls {
+				if tc.ID != "" {
+					tc.ID = remapID(tc.ID)
+				}
 				if strings.TrimSpace(tc.Function.Arguments) == "" {
 					tc.Function.Arguments = "{}"
 				}
@@ -341,7 +421,24 @@ func (c *Client) StreamChat(ctx context.Context, messages []Message, tools []Too
 	}
 
 	if err != nil && shouldFallbackToResponses(status, err) {
-		if rRes, rStatus, rErr := c.doResponses(ctx, prepared, tools, true, wrappedProgress); rErr == nil {
+		var rRes *StreamResult
+		var rStatus int
+		var rErr error
+		for attempt := 0; attempt <= len(backoffs); attempt++ {
+			rRes, rStatus, rErr = c.doResponses(ctx, prepared, tools, true, wrappedProgress)
+			if rErr == nil || emittedAny.Load() || ctx.Err() != nil || !isRetryableStreamError(rErr) || attempt == len(backoffs) {
+				break
+			}
+			c.closeIdleConnections()
+			timer := time.NewTimer(backoffs[attempt])
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, mapTransportError(ctx.Err())
+			case <-timer.C:
+			}
+		}
+		if rErr == nil {
 			return rRes, nil
 		} else if rStatus != 0 && rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed {
 			return nil, rErr
@@ -440,7 +537,11 @@ func parseNonStreamChunk(body []byte) (*StreamResult, error) {
 	res := &StreamResult{Usage: chunk.Usage.toUsage()}
 	if len(chunk.Choices) > 0 && chunk.Choices[0].Message != nil {
 		m := chunk.Choices[0].Message
-		res.Thinking = strings.TrimSpace(m.ReasoningContent)
+		res.ReasoningContent = strings.TrimSpace(m.ReasoningContent)
+		res.Thinking = res.ReasoningContent
+		if trimmedRD := bytes.TrimSpace(m.ReasoningDetails); len(trimmedRD) > 0 && string(trimmedRD) != "null" {
+			res.ReasoningDetails = slices.Clone(m.ReasoningDetails)
+		}
 		res.Content = m.Content
 		res.ToolCalls = normalizeToolCalls(m.ToolCalls)
 		if res.Thinking == "" {
@@ -453,11 +554,86 @@ func parseNonStreamChunk(body []byte) (*StreamResult, error) {
 	return res, nil
 }
 
+type reasoningDetailsAccumulator struct {
+	items     []map[string]any
+	rawSingle json.RawMessage
+}
+
+func (a *reasoningDetailsAccumulator) Add(raw json.RawMessage) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return
+	}
+	if trimmed[0] != '[' {
+		a.rawSingle = slices.Clone(trimmed)
+		return
+	}
+	var incoming []map[string]any
+	if json.Unmarshal(trimmed, &incoming) != nil {
+		return
+	}
+	for _, item := range incoming {
+		if len(item) == 0 {
+			continue
+		}
+		merged := false
+		if len(a.items) > 0 {
+			last := a.items[len(a.items)-1]
+			if sameReasoningDetailSlot(last, item) {
+				typ, _ := item["type"].(string)
+				if typ == "reasoning.text" || typ == "reasoning.summary" {
+					if txt, ok := item["text"].(string); ok && txt != "" {
+						prev, _ := last["text"].(string)
+						last["text"] = prev + txt
+					}
+					if sm, ok := item["summary"].(string); ok && sm != "" {
+						prev, _ := last["summary"].(string)
+						last["summary"] = prev + sm
+					}
+					for k, v := range item {
+						if k != "text" && k != "summary" {
+							last[k] = v
+						}
+					}
+					merged = true
+				}
+			}
+		}
+		if !merged {
+			a.items = append(a.items, item)
+		}
+	}
+}
+
+func sameReasoningDetailSlot(a, b map[string]any) bool {
+	if a["type"] != b["type"] {
+		return false
+	}
+	if a["id"] != b["id"] {
+		return false
+	}
+	return a["index"] == b["index"]
+}
+
+func (a *reasoningDetailsAccumulator) Bytes() json.RawMessage {
+	if len(a.items) > 0 {
+		if b, err := json.Marshal(a.items); err == nil {
+			return json.RawMessage(b)
+		}
+	}
+	if len(a.rawSingle) > 0 {
+		return slices.Clone(a.rawSingle)
+	}
+	return nil
+}
+
 func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
 
 	var thinkingBuf strings.Builder
+	var nativeReasoningBuf strings.Builder
+	var reasoningDetailsAcc reasoningDetailsAccumulator
 	var contentBuf strings.Builder
 	var thinkStart time.Time
 	var thinkEnd time.Time
@@ -525,6 +701,12 @@ func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult
 			sawFinishReason = true
 		}
 		d := chunk.Choices[0].Delta
+		if len(d.ReasoningDetails) > 0 {
+			reasoningDetailsAcc.Add(d.ReasoningDetails)
+		}
+		if d.ReasoningContent != "" {
+			nativeReasoningBuf.WriteString(d.ReasoningContent)
+		}
 		reasonPiece := d.ReasoningContent
 		if reasonPiece == "" {
 			reasonPiece = d.Reasoning
@@ -615,11 +797,13 @@ func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult
 		return nil, ErrEmptyResponse
 	}
 	return &StreamResult{
-		Thinking:        th,
-		ThinkingSeconds: calcThinkingSeconds(thinkStart, thinkEnd, th != ""),
-		Content:         ct,
-		ToolCalls:       tcs,
-		Usage:           usage,
+		Thinking:         th,
+		ThinkingSeconds:  calcThinkingSeconds(thinkStart, thinkEnd, th != ""),
+		ReasoningContent: nativeReasoningBuf.String(),
+		ReasoningDetails: reasoningDetailsAcc.Bytes(),
+		Content:          ct,
+		ToolCalls:        tcs,
+		Usage:            usage,
 	}, nil
 }
 
@@ -804,7 +988,8 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 		assistantMsg := Message{
 			Role:             "assistant",
 			Content:          res.Content,
-			ReasoningContent: res.Thinking,
+			ReasoningContent: res.ReasoningContent,
+			ReasoningDetails: res.ReasoningDetails,
 			ToolCalls:        res.ToolCalls,
 		}
 		msgs = append(msgs, assistantMsg)
@@ -858,7 +1043,6 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 			msgs = append(msgs, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
-				Name:       tc.Function.Name,
 				Content:    out,
 			})
 		}

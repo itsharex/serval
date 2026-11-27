@@ -101,6 +101,10 @@ func NewClient(cfg Config) *Client {
 	if streamIdle <= 0 {
 		streamIdle = 120 * time.Second
 	}
+	headerTimeout := 90 * time.Second
+	if isLocalEndpoint(baseURL) {
+		headerTimeout = 5 * time.Minute
+	}
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  strings.TrimSpace(cfg.APIKey),
@@ -110,7 +114,7 @@ func NewClient(cfg Config) *Client {
 			Transport: newAITransport(0),
 		},
 		streamClient: &http.Client{
-			Transport: newAITransport(90 * time.Second),
+			Transport: newAITransport(headerTimeout),
 		},
 		streamIdleTimeout: streamIdle,
 	}
@@ -118,12 +122,13 @@ func NewClient(cfg Config) *Client {
 
 // Message 代表一条聊天消息。
 type Message struct {
-	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	Name             string     `json:"name,omitempty"`
+	Role             string          `json:"role"` // "system", "user", "assistant", "tool"
+	Content          string          `json:"content"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
 }
 
 type chatRequest struct {

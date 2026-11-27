@@ -701,6 +701,7 @@ func conversationToRecord(scope string, c *aiConversation) aiChatRecord {
 	cleanHist := make([]ai.Message, len(hist))
 	for i, m := range hist {
 		m.ReasoningContent = ""
+		m.ReasoningDetails = nil
 		cleanHist[i] = m
 	}
 	return aiChatRecord{
