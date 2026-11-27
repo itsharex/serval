@@ -414,3 +414,24 @@ func TestGoogleAndMiniMaxModelFiltering(t *testing.T) {
 		t.Fatalf("ListModels got %v, want %v", models, want)
 	}
 }
+
+func TestDangerousExecCommandAllowsSafeMultilineBlocksDangerous(t *testing.T) {
+	safeMultiline := "echo '=== check ==='\nps aux | grep nginx\nawk '{print $1}' /etc/hosts"
+	if !IsDangerousCommand(safeMultiline) {
+		t.Fatal("IsDangerousCommand 仍应对含换行文本返回 true（保护 terminal_insert）")
+	}
+	if IsDangerousExecCommand(safeMultiline) {
+		t.Fatal("IsDangerousExecCommand 不应把安全多行只读命令误判为高危")
+	}
+
+	dangerousMultiline := []string{
+		"echo start\nrm -rf /tmp/test",
+		"echo ok\nrm \\\n-rf /tmp/test",
+		"ls -la\nreboot",
+	}
+	for _, cmd := range dangerousMultiline {
+		if !IsDangerousExecCommand(cmd) {
+			t.Errorf("IsDangerousExecCommand 应拦截含高危行的多行命令: %q", cmd)
+		}
+	}
+}

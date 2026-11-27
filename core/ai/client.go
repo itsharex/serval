@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -34,6 +35,10 @@ var (
 	ErrTimeout = errors.New("请求 AI 服务超时")
 	// ErrInvalidEndpoint 表示 API 端点地址无效。
 	ErrInvalidEndpoint = errors.New("无效的 API 端点地址")
+	// ErrStreamInterrupted 表示流式响应连接被中断或重置。
+	ErrStreamInterrupted = errors.New("AI 响应流被中断")
+	// ErrInvalidResponse 表示服务端返回了无法解析的响应格式。
+	ErrInvalidResponse = errors.New("AI 服务返回了无法解析的响应格式")
 )
 
 // DefaultBaseURL 是默认的 OpenAI 兼容端点。
@@ -44,18 +49,38 @@ const DefaultModel = "gpt-5.4"
 
 // Config 是 AI 客户端配置。
 type Config struct {
-	BaseURL string // 如 https://api.openai.com/v1 或本地 http://localhost:11434/v1
-	APIKey  string // API 访问密钥
-	Model   string // 模型名称，如 gpt-5.4, deepseek-chat, qwen3-max
-	Timeout time.Duration
+	BaseURL           string // 如 https://api.openai.com/v1 或本地 http://localhost:11434/v1
+	APIKey            string // API 访问密钥
+	Model             string // 模型名称，如 gpt-5.4, deepseek-chat, qwen3-max
+	Timeout           time.Duration
+	StreamIdleTimeout time.Duration // 流式读取空闲超时，默认 120s
 }
 
 // Client 是 OpenAI 兼容客户端。
 type Client struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
+	baseURL           string
+	apiKey            string
+	model             string
+	httpClient        *http.Client
+	streamClient      *http.Client
+	streamIdleTimeout time.Duration
+}
+
+func newAITransport(responseHeaderTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   20 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       25 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+	}
 }
 
 // NewClient 创建 AI 客户端。
@@ -72,20 +97,29 @@ func NewClient(cfg Config) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	streamIdle := cfg.StreamIdleTimeout
+	if streamIdle <= 0 {
+		streamIdle = 120 * time.Second
+	}
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  strings.TrimSpace(cfg.APIKey),
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: newAITransport(0),
 		},
+		streamClient: &http.Client{
+			Transport: newAITransport(90 * time.Second),
+		},
+		streamIdleTimeout: streamIdle,
 	}
 }
 
 // Message 代表一条聊天消息。
 type Message struct {
 	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
-	Content          string     `json:"content,omitempty"`
+	Content          string     `json:"content"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
@@ -158,28 +192,66 @@ func mapHTTPError(status int) error {
 	return &APIError{StatusCode: status}
 }
 
+func extractErrorMessageFromEnvelope(raw json.RawMessage) string {
+	var envelope struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+		Detail  string          `json:"detail"`
+		Msg     string          `json:"msg"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return ""
+	}
+	if len(envelope.Error) > 0 {
+		var errObj struct {
+			Message string `json:"message"`
+			Msg     string `json:"msg"`
+		}
+		if json.Unmarshal(envelope.Error, &errObj) == nil {
+			if m := strings.TrimSpace(errObj.Message); m != "" {
+				return m
+			}
+			if m := strings.TrimSpace(errObj.Msg); m != "" {
+				return m
+			}
+		}
+		var errStr string
+		if json.Unmarshal(envelope.Error, &errStr) == nil && strings.TrimSpace(errStr) != "" {
+			return strings.TrimSpace(errStr)
+		}
+	}
+	for _, cand := range []string{envelope.Message, envelope.Detail, envelope.Msg} {
+		if m := strings.TrimSpace(cand); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
 func parseAPIError(status int, body []byte, secret string) error {
 	var msg string
-	if len(body) > 0 {
-		var envelope struct {
-			Error *struct {
-				Message string `json:"message"`
-			} `json:"error"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(body, &envelope) == nil {
-			if envelope.Error != nil && strings.TrimSpace(envelope.Error.Message) != "" {
-				msg = strings.TrimSpace(envelope.Error.Message)
-			} else if strings.TrimSpace(envelope.Message) != "" {
-				msg = strings.TrimSpace(envelope.Message)
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 {
+		msg = extractErrorMessageFromEnvelope(trimmed)
+		if msg == "" && trimmed[0] == '[' {
+			var arr []json.RawMessage
+			if json.Unmarshal(trimmed, &arr) == nil {
+				for _, item := range arr {
+					if m := extractErrorMessageFromEnvelope(item); m != "" {
+						msg = m
+						break
+					}
+				}
 			}
+		}
+		if msg == "" && trimmed[0] != '<' {
+			msg = strings.Join(strings.Fields(string(trimmed)), " ")
 		}
 	}
 	if secret != "" && msg != "" {
 		msg = strings.ReplaceAll(msg, secret, "***")
 	}
-	if runes := []rune(msg); len(runes) > 180 {
-		msg = string(runes[:180]) + "…"
+	if runes := []rune(msg); len(runes) > 240 {
+		msg = string(runes[:240]) + "…"
 	}
 	return &APIError{
 		StatusCode: status,
@@ -187,13 +259,44 @@ func parseAPIError(status int, body []byte, secret string) error {
 	}
 }
 
+func isStreamResetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNABORTED) {
+		return true
+	}
+	low := strings.ToLower(err.Error())
+	for _, kw := range []string{
+		"connection reset",
+		"broken pipe",
+		"unexpected eof",
+		"http2: response body closed",
+		"stream error:",
+		"goaway",
+		"client connection force closed",
+	} {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 func mapTransportError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return err
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrTimeout
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
 		return ErrTimeout
+	}
+	if isStreamResetError(err) {
+		return fmt.Errorf("%w: %v", ErrStreamInterrupted, err)
 	}
 	return err
 }
@@ -502,10 +605,11 @@ func (c *Client) chatWithOptions(ctx context.Context, messages []Message, maxTok
 	}
 
 	endpoint := c.baseURL + "/chat/completions"
+	prepared := prepareMessagesForProvider(c.baseURL, c.model, messages)
 	// 不强行传入 temperature，避免 gpt-5*/o3/o4 等仅接受默认采样参数的模型返回 HTTP 400。
 	reqBody, err := json.Marshal(chatRequest{
 		Model:     c.model,
-		Messages:  messages,
+		Messages:  prepared,
 		MaxTokens: maxTokens,
 	})
 	if err != nil {
@@ -535,9 +639,9 @@ func (c *Client) chatWithOptions(ctx context.Context, messages []Message, maxTok
 	if resp.StatusCode != http.StatusOK {
 		chatErr := parseAPIError(resp.StatusCode, body, c.apiKey)
 		if shouldFallbackToResponses(resp.StatusCode, chatErr) {
-			if rRes, rStatus, rErr := c.doResponses(ctx, messages, nil, false, nil); rErr == nil && strings.TrimSpace(rRes.Content) != "" {
+			if rRes, rStatus, rErr := c.doResponses(ctx, prepared, nil, false, nil); rErr == nil && strings.TrimSpace(rRes.Content) != "" {
 				return strings.TrimSpace(rRes.Content), nil
-			} else if rErr != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed || (rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed && rStatus != 0)) {
+			} else if rErr != nil && rStatus != 0 && rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed {
 				return "", rErr
 			}
 		}
@@ -546,7 +650,7 @@ func (c *Client) chatWithOptions(ctx context.Context, messages []Message, maxTok
 
 	var chatResp chatResponse
 	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return "", fmt.Errorf("解析响应失败: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
 
 	if len(chatResp.Choices) == 0 || chatResp.Choices[0].Message.Content == "" {
@@ -802,6 +906,31 @@ func IsDangerousCommand(cmd string) bool {
 		}
 	}
 
+	return false
+}
+
+// IsDangerousExecCommand 判断 ssh_exec 传入的命令是否高危。
+// 与 IsDangerousCommand 不同，ssh_exec 是非交互执行，不会因粘贴换行自动回车，
+// 因此折叠续行后逐行做高危词法检查，避免安全的多行只读脚本被误拦。
+func IsDangerousExecCommand(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, ":(){") && strings.Contains(trimmed, ":|:&") {
+		return true
+	}
+	normalized := strings.ReplaceAll(trimmed, "\\\r\n", " ")
+	normalized = strings.ReplaceAll(normalized, "\\\n", " ")
+	for _, line := range strings.FieldsFunc(normalized, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if IsDangerousCommand(line) {
+			return true
+		}
+	}
 	return false
 }
 

@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,9 +37,10 @@ type ToolCallFunction struct {
 
 // ToolCall 表示模型返回的一次工具调用。
 type ToolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"` // "function"
-	Function ToolCallFunction `json:"function"`
+	ID           string           `json:"id"`
+	Type         string           `json:"type"` // "function"
+	Function     ToolCallFunction `json:"function"`
+	ExtraContent json.RawMessage  `json:"extra_content,omitempty"`
 }
 
 // Usage 记录一次或累计 Token 用量。
@@ -113,10 +117,11 @@ type streamChunk struct {
 			ReasoningContent string `json:"reasoning_content"`
 			Reasoning        string `json:"reasoning"`
 			ToolCalls        []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
+				Index        *int            `json:"index"`
+				ID           string          `json:"id"`
+				Type         string          `json:"type"`
+				ExtraContent json.RawMessage `json:"extra_content,omitempty"`
+				Function     struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
@@ -155,13 +160,138 @@ type StreamProgress struct {
 	Usage           Usage
 }
 
+const googleSkipThoughtSignature = "skip_thought_signature_validator"
+
+func isGoogleEndpoint(baseURL, model string) bool {
+	lowURL := strings.ToLower(strings.TrimSpace(baseURL))
+	if strings.Contains(lowURL, "generativelanguage.googleapis.com") ||
+		strings.Contains(lowURL, "aiplatform.googleapis.com") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "gemini")
+}
+
+// prepareMessagesForProvider 按目标服务商协议清洗历史消息，避免跨模型切换（如 DeepSeek <-> Google）触发 HTTP 400。
+func prepareMessagesForProvider(baseURL, model string, msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+	googleTarget := isGoogleEndpoint(baseURL, model)
+	lastUserIdx := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			lastUserIdx = i
+			break
+		}
+	}
+
+	out := make([]Message, len(msgs))
+	for i, m := range msgs {
+		if m.Role == "assistant" {
+			if i < lastUserIdx || googleTarget {
+				m.ReasoningContent = ""
+			}
+		}
+		if len(m.ToolCalls) > 0 {
+			tcs := make([]ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				if strings.TrimSpace(tc.Function.Arguments) == "" {
+					tc.Function.Arguments = "{}"
+				}
+				if googleTarget {
+					if trimmed := bytes.TrimSpace(tc.ExtraContent); len(trimmed) == 0 || string(trimmed) == "null" {
+						tc.ExtraContent = json.RawMessage(`{"google":{"thought_signature":"` + googleSkipThoughtSignature + `"}}`)
+					} else {
+						tc.ExtraContent = slices.Clone(tc.ExtraContent)
+					}
+				} else {
+					tc.ExtraContent = nil
+				}
+				tcs[j] = tc
+			}
+			m.ToolCalls = tcs
+		}
+		out[i] = m
+	}
+	return out
+}
+
 func (c *Client) streamHTTPClient() *http.Client {
-	// 复制传输配置，去掉固定总耗时限制以便支持长流式推理，由 ctx 控制超时与取消。
+	if c.streamClient != nil {
+		if c.httpClient != nil && c.httpClient.Transport != nil && c.httpClient.Transport != c.streamClient.Transport {
+			// 若测试或外部替换了 c.httpClient.Transport，优先沿用该自定义 Transport。
+			if _, isDefaultAI := c.httpClient.Transport.(*http.Transport); !isDefaultAI {
+				return &http.Client{Transport: c.httpClient.Transport}
+			}
+		}
+		return c.streamClient
+	}
 	var tr http.RoundTripper
 	if c.httpClient != nil && c.httpClient.Transport != nil {
 		tr = c.httpClient.Transport
+	} else {
+		tr = newAITransport(90 * time.Second)
 	}
 	return &http.Client{Transport: tr}
+}
+
+func (c *Client) closeIdleConnections() {
+	if c.streamClient != nil {
+		c.streamClient.CloseIdleConnections()
+	}
+	if c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
+}
+
+type idleTimeoutReader struct {
+	r        io.Reader
+	timeout  time.Duration
+	timer    *time.Timer
+	timedOut *atomic.Bool
+	cancel   context.CancelFunc
+}
+
+func newIdleTimeoutReader(r io.Reader, timeout time.Duration, cancel context.CancelFunc) (*idleTimeoutReader, *atomic.Bool) {
+	timedOut := &atomic.Bool{}
+	if timeout <= 0 {
+		return &idleTimeoutReader{r: r, timedOut: timedOut, cancel: cancel}, timedOut
+	}
+	tr := &idleTimeoutReader{
+		r:        r,
+		timeout:  timeout,
+		timedOut: timedOut,
+		cancel:   cancel,
+	}
+	tr.timer = time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	return tr, timedOut
+}
+
+func (t *idleTimeoutReader) Read(p []byte) (int, error) {
+	if t.timer != nil {
+		t.timer.Reset(t.timeout)
+	}
+	n, err := t.r.Read(p)
+	if t.timer != nil && n > 0 {
+		t.timer.Reset(t.timeout)
+	}
+	return n, err
+}
+
+func (t *idleTimeoutReader) Stop() {
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+}
+
+func isRetryableStreamError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	return errors.Is(err, ErrStreamInterrupted)
 }
 
 // StreamChat 发起支持流式 SSE、推理思考与工具调用的 Chat Completions 请求。
@@ -175,16 +305,45 @@ func (c *Client) StreamChat(ctx context.Context, messages []Message, tools []Too
 		return nil, ErrInvalidEndpoint
 	}
 
-	res, status, err := c.doStreamChat(ctx, messages, tools, true, onProgress)
-	if err != nil && status == http.StatusBadRequest {
-		// 部分旧版 OpenAI 兼容网关不支持 stream_options，收到 400 时回退重试一次。
-		res, status, err = c.doStreamChat(ctx, messages, tools, false, onProgress)
+	prepared := prepareMessagesForProvider(c.baseURL, c.model, messages)
+
+	var emittedAny atomic.Bool
+	wrappedProgress := onProgress
+	if onProgress != nil {
+		wrappedProgress = func(p StreamProgress) {
+			if p.Thinking != "" || p.Content != "" || len(p.ToolCalls) > 0 {
+				emittedAny.Store(true)
+			}
+			onProgress(p)
+		}
 	}
+
+	var res *StreamResult
+	var status int
+	backoffs := []time.Duration{300 * time.Millisecond, 900 * time.Millisecond}
+	for attempt := 0; attempt <= len(backoffs); attempt++ {
+		res, status, err = c.doStreamChat(ctx, prepared, tools, true, wrappedProgress)
+		if err != nil && status == http.StatusBadRequest && !emittedAny.Load() {
+			// 部分旧版 OpenAI 兼容网关不支持 stream_options，收到 400 时回退重试一次。
+			res, status, err = c.doStreamChat(ctx, prepared, tools, false, wrappedProgress)
+		}
+		if err == nil || emittedAny.Load() || ctx.Err() != nil || !isRetryableStreamError(err) || attempt == len(backoffs) {
+			break
+		}
+		c.closeIdleConnections()
+		timer := time.NewTimer(backoffs[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, mapTransportError(ctx.Err())
+		case <-timer.C:
+		}
+	}
+
 	if err != nil && shouldFallbackToResponses(status, err) {
-		if rRes, rStatus, rErr := c.doResponses(ctx, messages, tools, true, onProgress); rErr == nil {
+		if rRes, rStatus, rErr := c.doResponses(ctx, prepared, tools, true, wrappedProgress); rErr == nil {
 			return rRes, nil
-		} else if status == http.StatusNotFound || status == http.StatusMethodNotAllowed ||
-			(rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed && rStatus != 0) {
+		} else if rStatus != 0 && rStatus != http.StatusNotFound && rStatus != http.StatusMethodNotAllowed {
 			return nil, rErr
 		}
 	}
@@ -207,8 +366,11 @@ func (c *Client) doStreamChat(ctx context.Context, messages []Message, tools []T
 		return nil, 0, err
 	}
 
+	stepCtx, stepCancel := context.WithCancel(ctx)
+	defer stepCancel()
+
 	endpoint := c.baseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(stepCtx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, 0, ErrInvalidEndpoint
 	}
@@ -229,10 +391,16 @@ func (c *Client) doStreamChat(ctx context.Context, messages []Message, tools []T
 		return nil, resp.StatusCode, parseAPIError(resp.StatusCode, body, c.apiKey)
 	}
 
+	idleReader, idleTimedOut := newIdleTimeoutReader(resp.Body, c.streamIdleTimeout, stepCancel)
+	defer idleReader.Stop()
+
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/event-stream") {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		body, err := io.ReadAll(io.LimitReader(idleReader, 4<<20))
 		if err != nil {
+			if idleTimedOut.Load() && ctx.Err() == nil {
+				return nil, resp.StatusCode, ErrTimeout
+			}
 			return nil, resp.StatusCode, mapTransportError(err)
 		}
 		res, err := parseNonStreamChunk(body)
@@ -251,8 +419,11 @@ func (c *Client) doStreamChat(ctx context.Context, messages []Message, tools []T
 		return res, resp.StatusCode, nil
 	}
 
-	res, err := parseSSEStream(resp.Body, onProgress)
+	res, err := parseSSEStream(idleReader, onProgress)
 	if err != nil {
+		if idleTimedOut.Load() && ctx.Err() == nil {
+			return nil, resp.StatusCode, ErrTimeout
+		}
 		return nil, resp.StatusCode, mapTransportError(err)
 	}
 	return res, resp.StatusCode, nil
@@ -261,7 +432,7 @@ func (c *Client) doStreamChat(ctx context.Context, messages []Message, tools []T
 func parseNonStreamChunk(body []byte) (*StreamResult, error) {
 	var chunk streamChunk
 	if err := json.Unmarshal(body, &chunk); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
 	if chunk.Error != nil && chunk.Error.Message != "" {
 		return nil, fmt.Errorf("AI 服务返回错误: %s", chunk.Error.Message)
@@ -292,8 +463,21 @@ func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult
 	var thinkEnd time.Time
 	var toolOrder []int
 	toolMap := map[int]*ToolCall{}
+	idToSlot := map[string]int{}
+	nextSyntheticIdx := 100000
+	allocSlot := func() int {
+		for {
+			if _, exists := toolMap[nextSyntheticIdx]; !exists {
+				idx := nextSyntheticIdx
+				nextSyntheticIdx++
+				return idx
+			}
+			nextSyntheticIdx++
+		}
+	}
 	var usage Usage
 	var sawAny bool
+	var sawFinishReason bool
 
 	emit := func() {
 		if onProgress == nil {
@@ -337,6 +521,9 @@ func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult
 			emit()
 			continue
 		}
+		if strings.TrimSpace(chunk.Choices[0].FinishReason) != "" {
+			sawFinishReason = true
+		}
 		d := chunk.Choices[0].Delta
 		reasonPiece := d.ReasoningContent
 		if reasonPiece == "" {
@@ -359,11 +546,35 @@ func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult
 			if !thinkStart.IsZero() && thinkEnd.IsZero() {
 				thinkEnd = time.Now()
 			}
-			slot, ok := toolMap[tc.Index]
+			var idx int
+			if tc.Index != nil {
+				idx = *tc.Index
+				if existing, ok := toolMap[idx]; ok && tc.ID != "" && existing.ID != "" && existing.ID != tc.ID {
+					if mapped, seenID := idToSlot[tc.ID]; seenID {
+						idx = mapped
+					} else {
+						idx = allocSlot()
+					}
+				}
+			} else if tc.ID != "" {
+				if mapped, seenID := idToSlot[tc.ID]; seenID {
+					idx = mapped
+				} else {
+					idx = allocSlot()
+				}
+			} else if len(toolOrder) > 0 {
+				idx = toolOrder[len(toolOrder)-1]
+			} else {
+				idx = 0
+			}
+			if tc.ID != "" {
+				idToSlot[tc.ID] = idx
+			}
+			slot, ok := toolMap[idx]
 			if !ok {
 				slot = &ToolCall{Type: "function"}
-				toolMap[tc.Index] = slot
-				toolOrder = append(toolOrder, tc.Index)
+				toolMap[idx] = slot
+				toolOrder = append(toolOrder, idx)
 			}
 			if tc.ID != "" {
 				slot.ID = tc.ID
@@ -372,16 +583,27 @@ func parseSSEStream(r io.Reader, onProgress func(StreamProgress)) (*StreamResult
 				slot.Type = tc.Type
 			}
 			if tc.Function.Name != "" {
-				slot.Function.Name += tc.Function.Name
+				if slot.Function.Name == "" {
+					slot.Function.Name = tc.Function.Name
+				} else if slot.Function.Name != tc.Function.Name && !strings.HasSuffix(slot.Function.Name, tc.Function.Name) {
+					slot.Function.Name += tc.Function.Name
+				}
 			}
 			if tc.Function.Arguments != "" {
 				slot.Function.Arguments += tc.Function.Arguments
+			}
+			if trimmedExtra := bytes.TrimSpace(tc.ExtraContent); len(trimmedExtra) > 0 && string(trimmedExtra) != "null" {
+				slot.ExtraContent = slices.Clone(tc.ExtraContent)
 			}
 		}
 		emit()
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		thPartial, ctPartial := splitThinkTagsIfNeeded(thinkingBuf.String(), contentBuf.String())
+		tcsPartial := collectToolCalls(toolOrder, toolMap)
+		if !(sawFinishReason && isStreamResetError(err) && (thPartial != "" || strings.TrimSpace(ctPartial) != "" || len(tcsPartial) > 0)) {
+			return nil, err
+		}
 	}
 	if !sawAny {
 		return nil, ErrEmptyResponse
@@ -444,6 +666,12 @@ func splitThinkTags(content string) (string, string) {
 	return thinking, before + after
 }
 
+var syntheticCallIDSeq atomic.Uint64
+
+func nextSyntheticCallID() string {
+	return fmt.Sprintf("call_%d", syntheticCallIDSeq.Add(1))
+}
+
 func collectToolCalls(order []int, m map[int]*ToolCall) []ToolCall {
 	if len(order) == 0 {
 		return nil
@@ -456,7 +684,10 @@ func collectToolCalls(order []int, m map[int]*ToolCall) []ToolCall {
 				copyTC.Type = "function"
 			}
 			if copyTC.ID == "" {
-				copyTC.ID = fmt.Sprintf("call_%d", idx+1)
+				copyTC.ID = nextSyntheticCallID()
+			}
+			if len(copyTC.ExtraContent) > 0 {
+				copyTC.ExtraContent = slices.Clone(copyTC.ExtraContent)
 			}
 			out = append(out, copyTC)
 		}
@@ -474,7 +705,10 @@ func normalizeToolCalls(in []ToolCall) []ToolCall {
 			tc.Type = "function"
 		}
 		if tc.ID == "" {
-			tc.ID = fmt.Sprintf("call_%d", i+1)
+			tc.ID = nextSyntheticCallID()
+		}
+		if len(tc.ExtraContent) > 0 {
+			tc.ExtraContent = slices.Clone(tc.ExtraContent)
 		}
 		out[i] = tc
 	}
@@ -546,7 +780,7 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 
 	for step := 1; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, mapTransportError(err)
 		}
 		emit(AgentEvent{Kind: EventStepStart, Step: step, TotalUsage: totalUsage})
 
@@ -601,7 +835,7 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 
 		for _, tc := range res.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, mapTransportError(err)
 			}
 			emit(AgentEvent{
 				Kind:       EventToolStart,
@@ -611,7 +845,7 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 			})
 			out, isErr := cfg.ExecuteTool(ctx, tc)
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, mapTransportError(err)
 			}
 			emit(AgentEvent{
 				Kind:       EventToolDone,
@@ -640,11 +874,14 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 }
 
 func shouldFallbackToResponses(status int, err error) bool {
-	if status == http.StatusBadRequest || status == http.StatusNotFound ||
-		status == http.StatusMethodNotAllowed || status == http.StatusUnprocessableEntity {
+	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
 		return true
 	}
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "responses")
+	if err == nil {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	return strings.Contains(low, "responses") || strings.Contains(low, "not a chat model")
 }
 
 type responsesRequest struct {
@@ -775,8 +1012,11 @@ func (c *Client) doResponses(ctx context.Context, messages []Message, tools []To
 		return nil, 0, err
 	}
 
+	stepCtx, stepCancel := context.WithCancel(ctx)
+	defer stepCancel()
+
 	endpoint := c.baseURL + "/responses"
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(stepCtx, "POST", endpoint, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, 0, ErrInvalidEndpoint
 	}
@@ -805,10 +1045,22 @@ func (c *Client) doResponses(ctx context.Context, messages []Message, tools []To
 		return nil, resp.StatusCode, parseAPIError(resp.StatusCode, body, c.apiKey)
 	}
 
+	var bodyReader io.Reader = resp.Body
+	var idleTimedOut *atomic.Bool
+	if stream {
+		var idleReader *idleTimeoutReader
+		idleReader, idleTimedOut = newIdleTimeoutReader(resp.Body, c.streamIdleTimeout, stepCancel)
+		defer idleReader.Stop()
+		bodyReader = idleReader
+	}
+
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/event-stream") {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		body, readErr := io.ReadAll(io.LimitReader(bodyReader, 4<<20))
 		if readErr != nil {
+			if idleTimedOut != nil && idleTimedOut.Load() && ctx.Err() == nil {
+				return nil, resp.StatusCode, ErrTimeout
+			}
 			return nil, resp.StatusCode, mapTransportError(readErr)
 		}
 		res, parseErr := parseNonStreamResponses(body)
@@ -827,8 +1079,11 @@ func (c *Client) doResponses(ctx context.Context, messages []Message, tools []To
 		return res, resp.StatusCode, nil
 	}
 
-	res, parseErr := parseResponsesSSEStream(resp.Body, onProgress)
+	res, parseErr := parseResponsesSSEStream(bodyReader, onProgress)
 	if parseErr != nil {
+		if idleTimedOut != nil && idleTimedOut.Load() && ctx.Err() == nil {
+			return nil, resp.StatusCode, ErrTimeout
+		}
 		return nil, resp.StatusCode, mapTransportError(parseErr)
 	}
 	return res, resp.StatusCode, nil
@@ -884,7 +1139,7 @@ func extractResponsesResult(obj *responsesObject) (thinking string, content stri
 func parseNonStreamResponses(body []byte) (*StreamResult, error) {
 	var obj responsesObject
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
 	if obj.Error != nil && obj.Error.Message != "" {
 		return nil, fmt.Errorf("AI 服务返回错误: %s", obj.Error.Message)
@@ -915,6 +1170,7 @@ func parseResponsesSSEStream(r io.Reader, onProgress func(StreamProgress)) (*Str
 	itemToIndex := map[string]int{}
 	var usage Usage
 	var sawAny bool
+	var sawCompleted bool
 	var currentEvent string
 
 	ensureSlot := func(idx int, itemID string) *ToolCall {
@@ -1077,6 +1333,7 @@ func parseResponsesSSEStream(r io.Reader, onProgress func(StreamProgress)) (*Str
 				}
 			}
 		case "response.completed", "response.done":
+			sawCompleted = true
 			if ev.Response != nil {
 				if ev.Response.Usage != nil {
 					usage = ev.Response.Usage.toUsage()
@@ -1101,7 +1358,11 @@ func parseResponsesSSEStream(r io.Reader, onProgress func(StreamProgress)) (*Str
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		thPartial, ctPartial := splitThinkTagsIfNeeded(thinkingBuf.String(), contentBuf.String())
+		tcsPartial := collectToolCalls(toolOrder, toolMap)
+		if !(sawCompleted && isStreamResetError(err) && (thPartial != "" || strings.TrimSpace(ctPartial) != "" || len(tcsPartial) > 0)) {
+			return nil, err
+		}
 	}
 	if !sawAny {
 		return nil, ErrEmptyResponse

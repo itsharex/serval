@@ -312,6 +312,9 @@ func stopAIConversation(c *aiConversation) {
 		c.Cancel = nil
 	}
 	if c.PendingApproval != nil {
+		if c.PendingApproval.tool != nil && c.PendingApproval.tool.Status == toolWaitingApproval {
+			c.PendingApproval.tool.Status = toolDenied
+		}
 		select {
 		case c.PendingApproval.answer <- false:
 		default:
@@ -334,6 +337,9 @@ func stopActiveAIConversation(s *aiPanel) {
 		s.cancel = nil
 	}
 	if s.pendingApproval != nil {
+		if s.pendingApproval.tool != nil && s.pendingApproval.tool.Status == toolWaitingApproval {
+			s.pendingApproval.tool.Status = toolDenied
+		}
 		select {
 		case s.pendingApproval.answer <- false:
 		default:
@@ -716,6 +722,9 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 		a.ai.cancel = nil
 	}
 	if a.ai.pendingApproval != nil {
+		if a.ai.pendingApproval.tool != nil && a.ai.pendingApproval.tool.Status == toolWaitingApproval {
+			a.ai.pendingApproval.tool.Status = toolDenied
+		}
 		select {
 		case a.ai.pendingApproval.answer <- false:
 		default:
@@ -724,7 +733,7 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 	}
 
 	client := a.aiClient()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 
 	a.ai.reqSeq++
 	seq := a.ai.reqSeq
@@ -1025,6 +1034,9 @@ func (a *app) stopAIRequest() {
 		a.ai.cancel = nil
 	}
 	if a.ai.pendingApproval != nil {
+		if a.ai.pendingApproval.tool != nil && a.ai.pendingApproval.tool.Status == toolWaitingApproval {
+			a.ai.pendingApproval.tool.Status = toolDenied
+		}
 		select {
 		case a.ai.pendingApproval.answer <- false:
 		default:

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"serval/core/ai"
@@ -2947,8 +2950,12 @@ func friendlyAIError(err error) string {
 		return "请求过于频繁或账号额度已用尽，请稍后再试"
 	case errors.Is(err, ai.ErrBadGateway):
 		return "AI 服务暂时不可用，请稍后重试或切换模型"
-	case errors.Is(err, ai.ErrTimeout):
-		return "连接 AI 服务超时，请检查网络或代理设置"
+	case errors.Is(err, ai.ErrTimeout) || errors.Is(err, context.DeadlineExceeded):
+		return "AI 服务响应超时，请稍后重试或检查网络与代理设置"
+	case errors.Is(err, ai.ErrStreamInterrupted):
+		return "AI 响应连接中途断开，请点击重试"
+	case errors.Is(err, ai.ErrInvalidResponse):
+		return "AI 服务返回了无法解析的数据格式，请检查端点地址是否为 OpenAI 兼容接口"
 	case errors.Is(err, ai.ErrEmptyResponse):
 		return "AI 服务返回了空内容，请换个描述再试"
 	}
@@ -2971,6 +2978,21 @@ func friendlyAIError(err error) string {
 			}
 			return fmt.Sprintf("AI 服务返回异常状态（HTTP %d）", apiErr.StatusCode)
 		}
+	}
+	var (
+		unknownCA x509.UnknownAuthorityError
+		hostErr   x509.HostnameError
+		certInv   x509.CertificateInvalidError
+		recErr    tls.RecordHeaderError
+		dnsErr    *net.DNSError
+	)
+	switch {
+	case errors.As(err, &unknownCA), errors.As(err, &hostErr), errors.As(err, &certInv), errors.As(err, &recErr):
+		return "AI 服务的 TLS 证书校验失败，请检查系统时间、代理证书或端点地址"
+	case errors.As(err, &dnsErr):
+		return "无法解析 AI 服务域名，请检查网络、DNS 或端点地址"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "目标 AI 服务拒绝连接，请确认服务已启动且端点端口正确"
 	}
 	if err != nil && strings.HasPrefix(err.Error(), "AI 服务返回错误") {
 		return err.Error()

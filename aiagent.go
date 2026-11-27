@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"serval/core/ai"
 	"serval/core/hosts"
@@ -379,6 +380,9 @@ func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string
 		return ok, nil
 	case <-ctx.Done():
 		a.post(func() {
+			if tool != nil && tool.Status == toolWaitingApproval {
+				tool.Status = toolDenied
+			}
 			sess := a.aiSessionForTab(tabID)
 			if conv := sess.convByID(convID); conv != nil && conv.PendingApproval != nil && conv.PendingApproval.answer == ch {
 				conv.PendingApproval = nil
@@ -555,7 +559,7 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if mode == aiModeObserver {
 			return "当前权限模式为「只读观察」，已阻止执行命令。如需执行请提示用户切换到「确认执行」或「自动执行」。", true
 		}
-		dangerous := ai.IsDangerousCommand(cmd)
+		dangerous := ai.IsDangerousExecCommand(cmd)
 		needConfirm := mode == aiModeConfirm || dangerous || (snap.production && !ai.IsReadOnlyProbeCommand(cmd))
 		if needConfirm {
 			target := snap.hostName
@@ -854,23 +858,39 @@ func execLocalCommand(ctx context.Context, command, dir string, maxBytes int) (s
 	return res, nil
 }
 
+func sanitizeToolText(s string, maxBytes int) (string, bool) {
+	if s == "" {
+		return "", false
+	}
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s, false
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut], true
+}
+
 func formatExecResult(res sshconn.ExecResult) string {
 	const maxForLLM = 12000
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("exit_code: %d\n", res.ExitCode))
-	out := strings.TrimRight(res.Stdout, "\r\n")
-	errOut := strings.TrimRight(res.Stderr, "\r\n")
+	out, outTrunc := sanitizeToolText(strings.TrimRight(res.Stdout, "\r\n"), maxForLLM)
+	errOut, errTrunc := sanitizeToolText(strings.TrimRight(res.Stderr, "\r\n"), 4000)
 	if out != "" {
-		if len(out) > maxForLLM {
-			out = out[:maxForLLM] + "\n...[stdout 输出过长已截断，建议使用 head/grep 精简查询]"
+		if outTrunc {
+			out += "\n...[stdout 输出过长已截断，建议使用 head/grep 精简查询]"
 		}
 		b.WriteString("--- stdout ---\n")
 		b.WriteString(out)
 		b.WriteByte('\n')
 	}
 	if errOut != "" {
-		if len(errOut) > 4000 {
-			errOut = errOut[:4000] + "\n...[stderr 已截断]"
+		if errTrunc {
+			errOut += "\n...[stderr 已截断]"
 		}
 		b.WriteString("--- stderr ---\n")
 		b.WriteString(errOut)

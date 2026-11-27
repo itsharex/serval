@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"serval/core/ai"
 	"serval/core/hosts"
+	"serval/core/sshconn"
 	"serval/core/vault"
 	"serval/locales"
 
@@ -1602,5 +1606,76 @@ func TestAISlashAndMentionRowsLeftAligned(t *testing.T) {
 		if abs := m0.X - m1.X; abs < -1 || abs > 1 {
 			t.Fatalf("@ 引用行未左对齐: %s.X=%.1f, %s.X=%.1f", aiMentionOptions[0].Label, m0.X, aiMentionOptions[1].Label, m1.X)
 		}
+	}
+}
+
+func TestFriendlyAIErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"deadline", context.DeadlineExceeded, "超时"},
+		{"ai_timeout", ai.ErrTimeout, "超时"},
+		{"stream_interrupted", ai.ErrStreamInterrupted, "连接中途断开"},
+		{"invalid_response", ai.ErrInvalidResponse, "无法解析的数据格式"},
+		{"api_400_detail", &ai.APIError{StatusCode: 400, Message: "Function call is missing a thought_signature"}, "Function call is missing a thought_signature"},
+		{"dns", &net.DNSError{Err: "no such host", Name: "api.example.com"}, "域名"},
+		{"refused", syscall.ECONNREFUSED, "拒绝连接"},
+	}
+	for _, tc := range cases {
+		got := friendlyAIError(tc.err)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: friendlyAIError(%v) = %q, want substring %q", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestAIAgentApprovalCanceledResetsToolStatus(t *testing.T) {
+	h := newHarness(t)
+	h.connectDev()
+	h.a.openAI()
+	h.tt.Frame()
+
+	snap := snapshotFromTab(h.a.current())
+	toolRec := &aiToolRecord{
+		ID:      "t-cancel",
+		Name:    "ssh_exec",
+		Summary: "$ touch /tmp/x",
+		Status:  toolRunning,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() {
+		ok, _ := h.a.requestAgentApproval(ctx, snap.tabID, h.a.ai.convID, h.a.ai.reqSeq, toolRec, "touch /tmp/x", "测试取消", "dev", false, true)
+		done <- ok
+	}()
+
+	h.pump("等待审批卡片出现", func() bool {
+		return h.a.ai.pendingApproval != nil && toolRec.Status == toolWaitingApproval
+	})
+
+	cancel()
+	<-done
+	h.pump("等待取消后状态重置", func() bool {
+		return h.a.ai.pendingApproval == nil && toolRec.Status != toolWaitingApproval
+	})
+	if toolRec.Status == toolWaitingApproval {
+		t.Fatalf("取消后 toolRec.Status 不应停留在待确认")
+	}
+}
+
+func TestFormatExecResultUTF8AndNullSanitization(t *testing.T) {
+	longChinese := strings.Repeat("中文日志测试输出", 1000) + "\x00\xff\xfe"
+	out := formatExecResult(sshconn.ExecResult{
+		ExitCode: 0,
+		Stdout:   longChinese,
+	})
+	if strings.ContainsRune(out, '\x00') {
+		t.Fatal("formatExecResult 不应保留 NUL 字节")
+	}
+	if !utf8.ValidString(out) {
+		t.Fatal("formatExecResult 截断后必须保持合法 UTF-8")
 	}
 }
