@@ -2,6 +2,17 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.8] - 2026-11-27
+
+### Added
+
+- **Encrypted AI Agent Conversation History Persistence (`aipanel.go`, `library.go`, `app.go`, `settings.go`, `main.go`, `docs/storage.md`)**: Persisted AI Agent conversations inside the encrypted vault (`kindAIChat` / `aichat`) scoped per host/local/global target so history, tool-call summaries, and compressed context survive tab close, app restart, lock/unlock, sync, and backup import/restore, with a "最近会话" quick-resume list on the welcome view and graceful flush on window close.
+
+### Fixed
+
+- **AI Agent Timeout Redesign & Approval Cancellation (`aipanel.go`, `aiagent.go`, `core/ai/agent.go`, `app.go`)**: Removed the fixed 3-minute whole-turn timeout that caused multi-step troubleshooting and human approval waits to be misreported as "无法连接到 AI 服务", replacing it with per-request response-header (90s / 5m local) and stream-idle (120s) timeouts, mapping `context.DeadlineExceeded` to `ai.ErrTimeout`, resetting `toolWaitingApproval` status on cancel/stop, and distinguishing timeout, stream interruption, invalid response, TLS, DNS, and connection-refused errors in `friendlyAIError`.
+- **Cross-Provider Protocol Compatibility (`core/ai/client.go`, `core/ai/agent.go`, `core/ai/agent_test.go`, `core/ai/client_test.go`)**: Preserved Google Gemini `extra_content.google.thought_signature` and OpenRouter `reasoning_details` across multi-turn tool calls, added cross-provider message sanitization (`skip_thought_signature_validator` fallback when switching to Gemini, stripping `reasoning_content`/`reasoning_details`/`extra_content` where unsupported, removing non-standard `tool.name`, and normalizing unsafe/overlong `tool_call_id` pairs), parsed Google JSON-array error payloads, separated display `<think>` text from wire `reasoning_content`, tightened `/responses` fallback, hardened SSE tool-call merging and trailing-EOF tolerance, added pre-output transport retries on stale connections, added `IsDangerousExecCommand` for safe multiline `ssh_exec` probes, and sanitized NUL/UTF-8 boundaries in `formatExecResult`.
+
 ## [0.6.7] - 2026-11-26
 
 ### Fixed
