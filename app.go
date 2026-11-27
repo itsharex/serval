@@ -176,6 +176,7 @@ type app struct {
 	aiSessions     map[int]*aiPanel // 按标签页 id 隔离各自的 AI 对话与流式任务状态
 	aiTabRedirects map[int]int      // 空状态(0)迁移到首个标签页后的映射，保证运行中的后台回调能找到目标会话
 	aiActiveTabID  int              // 当前绑定到 a.ai 的标签页 id（0 表示未连接终端标签页）
+	aiChats        []aiChatRecord   // 保险库中持久化保存的 AI 历史会话
 	updateURL      string
 	httpClient     *http.Client
 	update         updateModel
@@ -478,6 +479,7 @@ func (a *app) lockVault() {
 	a.proxies = nil
 	a.snippets = nil
 	a.forwards = nil
+	a.aiChats = nil
 	a.proxyPanel = proxyPanel{}
 	a.snippetPanel = snippetPanel{}
 	a.forwardPanel = forwardPanel{}

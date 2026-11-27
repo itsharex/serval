@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"serval/core/ai"
+	"serval/core/vault"
 	"serval/design"
 	"serval/locales"
 
@@ -91,6 +93,50 @@ type aiConversation struct {
 	Attached        []string
 	PendingApproval *aiApproval
 	ScrollY         float32
+}
+
+type aiSavedTool struct {
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Args    string `json:"args,omitempty"`
+	Output  string `json:"output,omitempty"`
+	Status  uint8  `json:"status,omitempty"`
+}
+
+type aiSavedStep struct {
+	Step            int           `json:"step"`
+	Thinking        string        `json:"thinking,omitempty"`
+	ThinkingSeconds int           `json:"thinkingSeconds,omitempty"`
+	Content         string        `json:"content,omitempty"`
+	Tools           []aiSavedTool `json:"tools,omitempty"`
+}
+
+type aiSavedTurn struct {
+	Query       string        `json:"query,omitempty"`
+	Prompt      string        `json:"prompt,omitempty"`
+	AttachedIDs []string      `json:"attachedIds,omitempty"`
+	ExtraErr    string        `json:"extraErr,omitempty"`
+	ContextTags []string      `json:"contextTags,omitempty"`
+	Steps       []aiSavedStep `json:"steps,omitempty"`
+	Usage       ai.Usage      `json:"usage,omitempty"`
+	Err         string        `json:"err,omitempty"`
+	Explanation string        `json:"explanation,omitempty"`
+	Commands    []string      `json:"commands,omitempty"`
+}
+
+// aiChatRecord 是持久化到加密保险库中的 AI 历史会话记录。
+type aiChatRecord struct {
+	ID          string        `json:"id"`
+	Scope       string        `json:"scope"`
+	Title       string        `json:"title"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	UpdatedAt   time.Time     `json:"updatedAt"`
+	Turns       []aiSavedTurn `json:"turns,omitempty"`
+	ChatHistory []ai.Message  `json:"chatHistory,omitempty"`
+	Explanation string        `json:"explanation,omitempty"`
+	Command     string        `json:"command,omitempty"`
+	Commands    []string      `json:"commands,omitempty"`
 }
 
 // aiPanel 是右侧停靠的 AI Agent 侧栏状态（每个标签页各自拥有独立的一份）。
@@ -261,6 +307,10 @@ func (a *app) syncAITab() {
 			a.aiTabRedirects[0] = curID
 			delete(a.aiSessions, 0)
 			a.aiActiveTabID = curID
+			a.mergePersistedConvsInto(&a.ai, a.aiScopeKeyForTabID(curID))
+			if c := a.ai.convByID(a.ai.convID); c != nil && len(c.Turns) > 0 {
+				a.persistAIConversation(curID, c)
+			}
 			return
 		}
 	}
@@ -276,6 +326,7 @@ func (a *app) syncAITab() {
 			mode:     mode,
 			targetOS: a.activeTargetOS(),
 		}
+		a.mergePersistedConvsInto(&a.ai, a.aiScopeKeyForTabID(curID))
 	}
 	a.aiActiveTabID = curID
 }
@@ -414,7 +465,7 @@ func saveActiveConversation(s *aiPanel) {
 	now := time.Now()
 	if s.convID == "" {
 		s.convSeq++
-		s.convID = fmt.Sprintf("conv-%d", s.convSeq)
+		s.convID = vault.NewID()
 		s.convCreated = now
 	}
 	if s.convTitle == "" && len(s.turns) > 0 {
@@ -527,11 +578,14 @@ func (a *app) deleteAIConversation(id string) {
 		resetActiveConversationDraft(&a.ai, a.activeTargetOS())
 		a.ai.showHistory = showHist
 	}
+	a.deletePersistedAIConversation(id)
 }
 
 // openAI 打开 AI Agent 侧栏并定位到当前活动环境（保留该标签页自己的对话记录与权限模式）。
 func (a *app) openAI() {
 	a.syncTabDrawers()
+	a.syncAITab()
+	a.mergePersistedConvsInto(&a.ai, a.aiScopeKeyForTabID(a.aiActiveTabID))
 	a.ai.open = true
 	a.ai.fresh = true
 	a.lastDrawer = "ai"
@@ -539,6 +593,319 @@ func (a *app) openAI() {
 		cur.lastDrawer = "ai"
 	}
 	a.ai.targetOS = a.activeTargetOS()
+}
+
+func aiScopeKeyForTab(t *tab) string {
+	if t == nil {
+		return "global"
+	}
+	if t.local {
+		return "local"
+	}
+	if id := strings.TrimSpace(t.host.ID); id != "" {
+		return "host:" + id
+	}
+	port := t.host.Port
+	if port == 0 {
+		port = 22
+	}
+	return fmt.Sprintf("addr:%s@%s:%d", t.host.User, t.host.Address, port)
+}
+
+func (a *app) aiScopeKeyForTabID(tabID int) string {
+	if tabID <= 0 {
+		return "global"
+	}
+	return aiScopeKeyForTab(a.tabByID(tabID))
+}
+
+func sortAIConversations(convs []*aiConversation) {
+	slices.SortStableFunc(convs, func(x, y *aiConversation) int {
+		if x == nil && y == nil {
+			return 0
+		}
+		if x == nil {
+			return 1
+		}
+		if y == nil {
+			return -1
+		}
+		if c := y.UpdatedAt.Compare(x.UpdatedAt); c != 0 {
+			return c
+		}
+		if c := y.CreatedAt.Compare(x.CreatedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.ID, y.ID)
+	})
+}
+
+func conversationToRecord(scope string, c *aiConversation) aiChatRecord {
+	turns := make([]aiSavedTurn, 0, len(c.Turns))
+	for _, t := range c.Turns {
+		steps := make([]aiSavedStep, 0, len(t.steps))
+		for _, s := range t.steps {
+			if s == nil {
+				continue
+			}
+			th, thTrunc := sanitizeToolText(s.Thinking, 16384)
+			if thTrunc {
+				th += "\n...[思考过程已截断]"
+			}
+			tools := make([]aiSavedTool, 0, len(s.Tools))
+			for _, tl := range s.Tools {
+				if tl == nil {
+					continue
+				}
+				st := tl.Status
+				if st == toolRunning {
+					st = toolError
+				} else if st == toolWaitingApproval {
+					st = toolDenied
+				}
+				out, outTrunc := sanitizeToolText(tl.Output, 8192)
+				if outTrunc {
+					out += "\n...[历史保存已截断]"
+				}
+				tools = append(tools, aiSavedTool{
+					ID:      tl.ID,
+					Name:    tl.Name,
+					Summary: tl.Summary,
+					Args:    tl.Args,
+					Output:  out,
+					Status:  uint8(st),
+				})
+			}
+			steps = append(steps, aiSavedStep{
+				Step:            s.Step,
+				Thinking:        th,
+				ThinkingSeconds: s.ThinkingSeconds,
+				Content:         s.Content,
+				Tools:           tools,
+			})
+		}
+		turns = append(turns, aiSavedTurn{
+			Query:       t.query,
+			Prompt:      t.prompt,
+			AttachedIDs: slices.Clone(t.attachedIDs),
+			ExtraErr:    t.extraErr,
+			ContextTags: slices.Clone(t.contextTags),
+			Steps:       steps,
+			Usage:       t.usage,
+			Err:         t.err,
+			Explanation: t.explanation,
+			Commands:    slices.Clone(t.commands),
+		})
+	}
+	hist := compressChatHistory(c.ChatHistory)
+	cleanHist := make([]ai.Message, len(hist))
+	for i, m := range hist {
+		m.ReasoningContent = ""
+		cleanHist[i] = m
+	}
+	return aiChatRecord{
+		ID:          c.ID,
+		Scope:       scope,
+		Title:       c.Title,
+		CreatedAt:   c.CreatedAt,
+		UpdatedAt:   c.UpdatedAt,
+		Turns:       turns,
+		ChatHistory: cleanHist,
+		Explanation: c.Explanation,
+		Command:     c.Command,
+		Commands:    slices.Clone(c.Commands),
+	}
+}
+
+func recordToConversation(rec aiChatRecord) *aiConversation {
+	turns := make([]aiTurn, 0, len(rec.Turns))
+	for _, st := range rec.Turns {
+		steps := make([]*aiStepRecord, 0, len(st.Steps))
+		for _, ss := range st.Steps {
+			tools := make([]*aiToolRecord, 0, len(ss.Tools))
+			for _, tl := range ss.Tools {
+				tools = append(tools, &aiToolRecord{
+					ID:      tl.ID,
+					Name:    tl.Name,
+					Summary: tl.Summary,
+					Args:    tl.Args,
+					Output:  tl.Output,
+					Status:  aiToolStatus(tl.Status),
+				})
+			}
+			steps = append(steps, &aiStepRecord{
+				Step:            ss.Step,
+				Thinking:        ss.Thinking,
+				ThinkingSeconds: ss.ThinkingSeconds,
+				Content:         ss.Content,
+				Tools:           tools,
+			})
+		}
+		turns = append(turns, aiTurn{
+			query:       st.Query,
+			prompt:      st.Prompt,
+			attachedIDs: slices.Clone(st.AttachedIDs),
+			extraErr:    st.ExtraErr,
+			contextTags: slices.Clone(st.ContextTags),
+			steps:       steps,
+			usage:       st.Usage,
+			err:         st.Err,
+			explanation: st.Explanation,
+			commands:    slices.Clone(st.Commands),
+		})
+	}
+	return &aiConversation{
+		ID:          rec.ID,
+		Title:       rec.Title,
+		CreatedAt:   rec.CreatedAt,
+		UpdatedAt:   rec.UpdatedAt,
+		Turns:       turns,
+		ChatHistory: slices.Clone(rec.ChatHistory),
+		Explanation: rec.Explanation,
+		Command:     rec.Command,
+		Commands:    slices.Clone(rec.Commands),
+	}
+}
+
+func (a *app) persistAIConversation(tabID int, c *aiConversation) {
+	if c == nil || c.ID == "" || len(c.Turns) == 0 || a.vault == nil || a.vault.State() == vault.Locked {
+		return
+	}
+	scope := a.aiScopeKeyForTabID(tabID)
+	rec := conversationToRecord(scope, c)
+	if err := a.vault.Apply([]vault.Change{aiChatChange(rec)}); err != nil {
+		return
+	}
+	if idx := slices.IndexFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == rec.ID }); idx >= 0 {
+		a.aiChats[idx] = rec
+	} else {
+		a.aiChats = append(a.aiChats, rec)
+	}
+	slices.SortStableFunc(a.aiChats, func(x, y aiChatRecord) int {
+		if cmpRes := y.UpdatedAt.Compare(x.UpdatedAt); cmpRes != 0 {
+			return cmpRes
+		}
+		if cmpRes := y.CreatedAt.Compare(x.CreatedAt); cmpRes != 0 {
+			return cmpRes
+		}
+		return cmp.Compare(x.ID, y.ID)
+	})
+	a.noteVaultChanged()
+
+	syncTarget := func(s *aiPanel, sTabID int) {
+		if s == nil || sTabID == tabID || a.aiScopeKeyForTabID(sTabID) != scope {
+			return
+		}
+		existing := s.convByID(rec.ID)
+		if existing == nil {
+			s.convs = append(s.convs, recordToConversation(rec))
+			sortAIConversations(s.convs)
+			return
+		}
+		if existing.Loading {
+			return
+		}
+		cp := recordToConversation(rec)
+		*existing = *cp
+		if s.convID == rec.ID {
+			loadConversationInto(s, existing)
+		}
+		sortAIConversations(s.convs)
+	}
+	syncTarget(&a.ai, a.aiActiveTabID)
+	for tid, s := range a.aiSessions {
+		if tid != a.aiActiveTabID {
+			syncTarget(s, tid)
+		}
+	}
+}
+
+func (a *app) deletePersistedAIConversation(id string) {
+	if id == "" || a.vault == nil || a.vault.State() == vault.Locked {
+		return
+	}
+	inMem := slices.ContainsFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == id })
+	_, inVault, _ := a.vault.Get(id)
+	if !inMem && !inVault {
+		return
+	}
+	if err := a.vault.Apply([]vault.Change{{Kind: kindAIChat, ID: id, Delete: true}}); err != nil {
+		return
+	}
+	a.aiChats = slices.DeleteFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == id })
+	a.noteVaultChanged()
+
+	dropFrom := func(s *aiPanel) {
+		if s == nil {
+			return
+		}
+		if idx := slices.IndexFunc(s.convs, func(c *aiConversation) bool { return c != nil && c.ID == id }); idx >= 0 {
+			stopAIConversation(s.convs[idx])
+			s.convs = slices.Delete(s.convs, idx, idx+1)
+		}
+		if s.convID == id {
+			stopActiveAIConversation(s)
+			resetActiveConversationDraft(s, s.targetOS)
+		}
+	}
+	for tid, s := range a.aiSessions {
+		if tid != a.aiActiveTabID {
+			dropFrom(s)
+		}
+	}
+}
+
+func (a *app) mergePersistedConvsInto(s *aiPanel, scope string) {
+	if s == nil || len(a.aiChats) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(s.convs))
+	for _, c := range s.convs {
+		if c != nil && c.ID != "" {
+			seen[c.ID] = true
+		}
+	}
+	added := false
+	for _, rec := range a.aiChats {
+		if rec.Scope != scope || rec.ID == "" || seen[rec.ID] {
+			continue
+		}
+		s.convs = append(s.convs, recordToConversation(rec))
+		seen[rec.ID] = true
+		added = true
+	}
+	if added {
+		sortAIConversations(s.convs)
+	}
+}
+
+func (a *app) hydrateAISessionsFromVault() {
+	a.mergePersistedConvsInto(&a.ai, a.aiScopeKeyForTabID(a.aiActiveTabID))
+	for tid, s := range a.aiSessions {
+		if tid != a.aiActiveTabID {
+			a.mergePersistedConvsInto(s, a.aiScopeKeyForTabID(tid))
+		}
+	}
+}
+
+func (a *app) flushAIConversationsOnExit() {
+	saveActiveConversation(&a.ai)
+	flushPanel := func(s *aiPanel, tabID int) {
+		if s == nil {
+			return
+		}
+		for _, c := range s.convs {
+			if c != nil && c.Loading && len(c.Turns) > 0 {
+				a.persistAIConversation(tabID, c)
+			}
+		}
+	}
+	flushPanel(&a.ai, a.aiActiveTabID)
+	for tid, s := range a.aiSessions {
+		if tid != a.aiActiveTabID {
+			flushPanel(s, tid)
+		}
+	}
 }
 
 // toggleAI 切换 AI Agent 侧栏展开与收起，不丢失已有对话。
@@ -945,9 +1312,11 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 					if turnIdx < len(c.Turns) {
 						c.Turns[turnIdx].err = msg
 					}
+					a.persistAIConversation(targetTabID, c)
 					return
 				}
 				finishConversationTurn(c, turnIdx, userContent, res)
+				a.persistAIConversation(targetTabID, c)
 			})
 		})
 	}()
@@ -1289,9 +1658,11 @@ func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
 								name := strings.TrimSpace(p.renameConvDraft)
 								if name != "" {
 									item.Title = name
+									item.UpdatedAt = time.Now()
 									if item.ID == p.convID {
 										p.convTitle = name
 									}
+									a.persistAIConversation(a.currentAITabID(), item)
 								}
 								p.renamingConvID = ""
 							})
@@ -1302,9 +1673,11 @@ func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
 								name := strings.TrimSpace(p.renameConvDraft)
 								if name != "" {
 									item.Title = name
+									item.UpdatedAt = time.Now()
 									if item.ID == p.convID {
 										p.convTitle = name
 									}
+									a.persistAIConversation(a.currentAITabID(), item)
 								}
 								p.renamingConvID = ""
 							})
@@ -1432,6 +1805,42 @@ func (a *app) aiWelcomeView(c *ui.Context, colors design.Colors) {
 				}
 				a.startAgentRun(item.label, item.prompt, a.ai.attachedContexts, "")
 				a.ai.attachedContexts = nil
+			})
+		}
+
+		if len(a.ai.convs) > 0 {
+			ui.Column(c).Gap(6).Padding(6, 0, 0, 0).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "最近会话").FontSize(design.TextSmall).FontWeight(600).TextColor(t.TextMuted).Grow(1)
+					if len(a.ai.convs) > 3 {
+						ui.Button(c.Key("aiWelcomeAllHistory"), "查看全部历史").Height(22).Padding(0, 8).OnClick(func() {
+							saveActiveConversation(&a.ai)
+							a.ai.showHistory = true
+						})
+					}
+				})
+				limit := min(3, len(a.ai.convs))
+				for i := 0; i < limit; i++ {
+					conv := a.ai.convs[i]
+					if conv == nil {
+						continue
+					}
+					item := conv
+					rb := ui.ButtonBase(c.Key("aiRecentConv:"+item.ID)).Label("恢复会话 "+item.Title).
+						Padding(7, 10).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Transition(design.Hover)
+					if rb.Hovered() {
+						rb.Background(colors.Selected)
+					}
+					rb.Children(func() {
+						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+							ui.Icon(c, design.Icon("history")).FontSize(12).TextColor(t.TextMuted)
+							ui.Text(c, item.Title).FontSize(design.TextSmall).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							ui.Text(c, fmt.Sprintf("%d 轮", len(item.Turns))).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Shrink(0)
+						})
+					}).OnClick(func() {
+						a.selectAIConversation(item.ID)
+					})
+				}
 			})
 		}
 	})

@@ -98,6 +98,7 @@ func main() {
 			stop()
 			a.stopSyncLoop()
 			a.stopSyncDir()
+			a.flushAIConversationsOnExit()
 			a.closeAll()
 		})
 	})

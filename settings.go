@@ -1141,6 +1141,7 @@ func (a *app) applyBackupRecords(bv *vault.Vault) {
 		bForwards   []hosts.Forward
 		bSnippets   []snippet
 		bKnownHosts []knownHost
+		bAIChats    []aiChatRecord
 	)
 	for _, fn := range []func() error{
 		func() error { return decodeAll(bv, kindHost, &bHosts) },
@@ -1149,6 +1150,7 @@ func (a *app) applyBackupRecords(bv *vault.Vault) {
 		func() error { return decodeAll(bv, kindForward, &bForwards) },
 		func() error { return decodeAll(bv, kindSnippet, &bSnippets) },
 		func() error { return decodeAll(bv, kindKnownHost, &bKnownHosts) },
+		func() error { return decodeAll(bv, kindAIChat, &bAIChats) },
 	} {
 		if err := fn(); err != nil {
 			a.settingsPanel.backupErr = err.Error()
@@ -1237,6 +1239,13 @@ func (a *app) applyBackupRecords(bv *vault.Vault) {
 			return
 		}
 		changes = append(changes, ch)
+	}
+
+	for _, ch := range bAIChats {
+		if ch.ID == "" || slices.ContainsFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == ch.ID }) {
+			continue
+		}
+		changes = append(changes, aiChatChange(ch))
 	}
 
 	if _, hasSettings, _ := a.vault.Get(settingsID); !hasSettings {

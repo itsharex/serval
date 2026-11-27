@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ const (
 	kindProxy    = "proxy"
 	kindSnippet  = "snippet"
 	kindForward  = "forward"
+	kindAIChat   = "aichat"
 
 	// settingsID 是随同步设置记录的固定 ID，多台设备修改后按同一条记录的 rev 合并。
 	settingsID = "settings"
@@ -41,7 +43,7 @@ func rememberedKeyName(vaultID string) string { return "vault-key/" + vaultID }
 
 // reload 从保险库重新读出主机、私钥、代码片段和随同步设置。保险库是唯一的数据来源，界面上的状态只是它的副本。
 func (a *app) reload() {
-	a.hosts, a.keys, a.proxies, a.snippets, a.forwards, a.settings, a.hostsError = nil, nil, nil, nil, nil, settings{}, ""
+	a.hosts, a.keys, a.proxies, a.snippets, a.forwards, a.aiChats, a.settings, a.hostsError = nil, nil, nil, nil, nil, nil, settings{}, ""
 	if err := decodeAll(a.vault, kindHost, &a.hosts); err != nil {
 		a.hostsError = err.Error()
 	}
@@ -57,12 +59,25 @@ func (a *app) reload() {
 	if err := decodeAll(a.vault, kindSnippet, &a.snippets); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
+	if err := decodeAll(a.vault, kindAIChat, &a.aiChats); err != nil && a.hostsError == "" {
+		a.hostsError = err.Error()
+	}
+	slices.SortStableFunc(a.aiChats, func(x, y aiChatRecord) int {
+		if c := y.UpdatedAt.Compare(x.UpdatedAt); c != 0 {
+			return c
+		}
+		if c := y.CreatedAt.Compare(x.CreatedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.ID, y.ID)
+	})
 	if err := decodeSettings(a.vault, &a.settings); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
 	a.customGroups = slices.Clone(a.settings.CustomGroups)
 	a.dropStaleTunnels()
 	a.refreshTerminals()
+	a.hydrateAISessionsFromVault()
 }
 
 func decodeAll[T any](v *vault.Vault, kind string, out *[]T) error {
@@ -104,6 +119,8 @@ func proxyChange(p hosts.Proxy) vault.Change { return mustJSONChange(kindProxy, 
 func snippetChange(s snippet) vault.Change { return mustJSONChange(kindSnippet, s.ID, s) }
 
 func forwardChange(f hosts.Forward) vault.Change { return mustJSONChange(kindForward, f.ID, f) }
+
+func aiChatChange(rec aiChatRecord) vault.Change { return mustJSONChange(kindAIChat, rec.ID, rec) }
 
 func (a *app) proxyByID(id string) (hosts.Proxy, bool) {
 	i := slices.IndexFunc(a.proxies, func(p hosts.Proxy) bool { return p.ID == id })

@@ -1679,3 +1679,166 @@ func TestFormatExecResultUTF8AndNullSanitization(t *testing.T) {
 		t.Fatal("formatExecResult 截断后必须保持合法 UTF-8")
 	}
 }
+
+func TestAIConversationHistoryPersistsAcrossRestart(t *testing.T) {
+	var sawPriorInFollowUp atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		msgs, _ := req["messages"].([]any)
+		var lastUser string
+		var sawDiskQuestion bool
+		for _, m := range msgs {
+			mm, _ := m.(map[string]any)
+			if mm["role"] == "user" {
+				ct, _ := mm["content"].(string)
+				lastUser = ct
+				if strings.Contains(ct, "检查磁盘空间") {
+					sawDiskQuestion = true
+				}
+			}
+		}
+		if strings.Contains(lastUser, "继续") && sawDiskQuestion {
+			sawPriorInFollowUp.Store(true)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": "排查结果正常。\n```bash\ndf -h\n```"}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.connectDev()
+
+	h.a.openAI()
+	h.tt.Frame()
+
+	// 1. 第一条会话 + 重命名
+	h.a.ai.query = "检查磁盘空间"
+	h.a.runAIGenerate()
+	h.pump("第一条会话完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+	firstID := h.a.ai.convID
+	if firstID == "" {
+		t.Fatal("第一条会话应生成持久化 convID")
+	}
+	h.click("历史会话")
+	h.tt.Frame()
+	h.click("重命名会话 " + firstID)
+	h.tt.Frame()
+	h.a.ai.renameConvDraft = "磁盘排查记录"
+	h.click("保存")
+	h.tt.Frame()
+
+	// 2. 新开会话并发送第二条会话
+	h.click("新建会话")
+	h.tt.Frame()
+	h.a.ai.query = "查看监听端口"
+	h.a.runAIGenerate()
+	h.pump("第二条会话完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+
+	// 3. 验证写入磁盘 vault.json 且密文不包含明文历史
+	if h.vaultFileContains("检查磁盘空间") || h.vaultFileContains("磁盘排查记录") {
+		t.Fatal("AI 对话历史不应以明文出现在 vault.json 中")
+	}
+
+	// 4. 模拟关闭程序并重启（reopen 会重新打开 vault.json 并清零内存状态）
+	h.reopen()
+	if err := h.a.vault.Unlock(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	h.a.reload()
+	h.tt.Frame()
+	if len(h.a.tabs) == 0 {
+		h.a.connect(h.host("dev"), nil)
+	}
+	h.pump("等待恢复 dev 会话", func() bool {
+		return h.a.current() != nil && h.a.current().client != nil
+	})
+
+	h.a.openAI()
+	h.tt.Frame()
+	if !h.tt.HasText("最近会话") || !h.tt.HasText("磁盘排查记录") {
+		t.Fatalf("重启后欢迎页应显示最近会话与重命名标题，texts=%q", h.tt.Texts())
+	}
+
+	h.click("历史会话")
+	h.tt.Frame()
+	if !h.tt.HasText("本终端历史会话（2）") || !h.tt.HasText("磁盘排查记录") || !h.tt.HasText("查看监听端口") {
+		t.Fatalf("重启后历史列表应恢复 2 条会话，texts=%q", h.tt.Texts())
+	}
+
+	// 5. 打开重命名的历史会话并继续追问，验证上下文消息已恢复
+	h.click("打开会话 磁盘排查记录")
+	h.tt.Frame()
+	if len(h.a.ai.turns) != 1 || h.a.ai.turns[0].query != "检查磁盘空间" || h.a.ai.command != "df -h" {
+		t.Fatalf("未能完整恢复历史会话内容: turns=%+v cmd=%q", h.a.ai.turns, h.a.ai.command)
+	}
+
+	h.a.ai.query = "继续"
+	h.a.runAIGenerate()
+	h.pump("恢复历史后追问完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 2 && !h.a.ai.turns[1].running
+	})
+	if !sawPriorInFollowUp.Load() {
+		t.Fatal("重启恢复的历史会话在追问时未带上先前的对话上下文")
+	}
+
+	// 6. 新开本地终端，其历史与 dev 主机隔离
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.tt.Frame()
+	h.click("历史会话")
+	h.tt.Frame()
+	if !h.tt.HasText("本终端历史会话（0）") {
+		t.Fatalf("本地终端不应混入 dev 主机的历史会话: texts=%q", h.tt.Texts())
+	}
+
+	// 7. 切回 dev 删除第一条历史后再次重启，验证墓碑删除持久化
+	h.a.active = 0
+	h.tt.Frame()
+	h.click("历史会话")
+	h.tt.Frame()
+	h.click("删除会话 " + firstID)
+	h.tt.Frame()
+
+	h.reopen()
+	if err := h.a.vault.Unlock(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	h.a.reload()
+	h.tt.Frame()
+	if len(h.a.tabs) == 0 {
+		h.a.connect(h.host("dev"), nil)
+	}
+	h.pump("等待恢复 dev 会话", func() bool {
+		return h.a.current() != nil && h.a.current().client != nil
+	})
+	h.a.openAI()
+	h.tt.Frame()
+	h.click("历史会话")
+	h.tt.Frame()
+	if !h.tt.HasText("本终端历史会话（1）") || h.tt.HasText("磁盘排查记录") || !h.tt.HasText("查看监听端口") {
+		t.Fatalf("删除历史并重启后应仅剩 1 条会话，texts=%q", h.tt.Texts())
+	}
+
+	// 8. 锁定保险库应清空内存中的历史记录
+	h.a.lockVault()
+	if len(h.a.aiChats) != 0 || len(h.a.ai.convs) != 0 {
+		t.Fatalf("lockVault 后应清空内存中的 AI 历史: aiChats=%d convs=%d", len(h.a.aiChats), len(h.a.ai.convs))
+	}
+}
